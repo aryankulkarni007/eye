@@ -429,7 +429,10 @@ main() {
 
         let fields: Vec<_> = s.field_list().unwrap().fields().collect();
         assert_eq!(fields.len(), 2);
-        assert_eq!(fields[0].type_ref().unwrap().name().unwrap().text(), "int32");
+        assert_eq!(
+            fields[0].type_ref().unwrap().name().unwrap().text(),
+            "int32"
+        );
         assert_eq!(fields[0].name().unwrap().text(), "x");
         assert_eq!(fields[1].name().unwrap().text(), "y");
     }
