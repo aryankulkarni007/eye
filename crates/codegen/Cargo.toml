@@ -1,0 +1,10 @@
+[package]
+name = "eye-codegen"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "codegen"
+
+[dependencies]
+hir.workspace = true

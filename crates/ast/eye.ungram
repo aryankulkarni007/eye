@@ -1,0 +1,60 @@
+// The eye grammar - v0.1 subset, mirroring crates/parser/src/grammar.rs.
+//
+// This file is the source of truth for `cargo xtask codegen`, which
+// regenerates crates/ast/src/generated.rs from it.
+//
+// Conventions:
+//   * Tokens that need a typed accessor are labelled (e.g. `name:'ident'`).
+//     Unlabelled tokens - punctuation, keywords - generate nothing.
+//   * A node whose body is an alternation of *nodes* (Item, Stmt, Expr)
+//     generates a typed `enum`; an alternation of *tokens* (Literal)
+//     generates a plain node with no accessor.
+//   * The few semantic accessors a structural generator cannot derive
+//     (LetStmt::kind, BinExpr::op, PrefixExpr::op, Literal::literal_kind)
+//     are hand-written in crates/ast/src/lib.rs.
+
+SourceFile = items:Item*
+
+Item = StructDef | FnDef
+
+StructDef = 'structure' name:'ident' FieldList ';'
+
+FieldList = '{' fields:Field* '}'
+
+Field = TypeRef name:'ident' ','
+
+TypeRef = name:'ident'
+
+FnDef = name:'ident' ParamList body:Block
+
+ParamList = '(' ')'
+
+Block = '{' stmts:Stmt* '}'
+
+Stmt = LetStmt | ExprStmt
+
+LetStmt = TypeRef? name:'ident' '=' value:Expr ';'
+
+ExprStmt = Expr ';'
+
+Expr = Literal | NameRef | CallExpr | StructLit | BinExpr | PrefixExpr | FieldExpr
+
+Literal = 'int' | 'float' | 'string' | 'true' | 'false' | 'char'
+
+NameRef = name:'ident'
+
+CallExpr = callee:Expr ArgList
+
+ArgList = '(' args:Expr* ')'
+
+BinExpr = lhs:Expr rhs:Expr
+
+PrefixExpr = '-' operand:Expr
+
+FieldExpr = expr:Expr '.' name_ref:NameRef
+
+StructLit = NameRef field_list:StructLitFieldList
+
+StructLitFieldList = '{' fields:StructLitField* '}'
+
+StructLitField = name:'ident' value:Expr?

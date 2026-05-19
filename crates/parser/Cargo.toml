@@ -1,0 +1,20 @@
+[package]
+name = "eye-parser"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "parser"
+
+[dependencies]
+token.workspace = true
+lexer.workspace = true
+syntax.workspace = true
+drop_bomb.workspace = true
+rowan.workspace = true
+text-size.workspace = true
+thin-vec.workspace = true
+smallvec.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

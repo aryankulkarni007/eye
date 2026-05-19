@@ -1,0 +1,15 @@
+[package]
+name = "eye-ast"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "ast"
+
+[dependencies]
+syntax.workspace = true
+
+[dev-dependencies]
+lexer.workspace = true
+parser.workspace = true
+insta.workspace = true
