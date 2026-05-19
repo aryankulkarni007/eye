@@ -1,0 +1,16 @@
+[package]
+name = "eye"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+drop_bomb = "0.1.5"
+memchr = "2.8.0"
+memmap2 = "0.9.10"
+rowan = "0.16.1"
+rustc-hash = "2.1.2"
+unicode-ident = "1.0.24"
+
+[dev-dependencies]
+insta = "1"
