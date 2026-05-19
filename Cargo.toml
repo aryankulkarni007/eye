@@ -1,16 +1,47 @@
-[package]
-name = "eye"
+[workspace]
+resolver = "3"
+members = ["crates/token", "crates/lexer", "crates/syntax", "crates/parser", "crates/ast", "crates/xtask"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[workspace.dependencies]
+# external
 anyhow = "1.0.102"
 drop_bomb = "0.1.5"
+logos = "0.16"
 memchr = "2.8.0"
 memmap2 = "0.9.10"
+proc-macro2 = "1"
+quote = "1"
 rowan = "0.16.1"
 rustc-hash = "2.1.2"
-unicode-ident = "1.0.24"
-
-[dev-dependencies]
+smol_str = "0.3"
+text-size = "1.1"
+ungrammar = "1.16"
 insta = "1"
+# internal — keyed by short lib name, backed by `eye-*` packages
+token = { path = "crates/token", package = "eye-token" }
+lexer = { path = "crates/lexer", package = "eye-lexer" }
+syntax = { path = "crates/syntax", package = "eye-syntax" }
+parser = { path = "crates/parser", package = "eye-parser" }
+ast = { path = "crates/ast", package = "eye-ast" }
+
+# ---- the `eye` binary: thin driver over the compiler crates ----
+[package]
+name = "eye"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "eye"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+memmap2.workspace = true
+ast.workspace = true
+lexer.workspace = true
+parser.workspace = true
+syntax.workspace = true

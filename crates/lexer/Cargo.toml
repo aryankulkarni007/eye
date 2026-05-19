@@ -1,0 +1,19 @@
+[package]
+name = "eye-lexer"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "lexer"
+
+[dependencies]
+token.workspace = true
+logos.workspace = true
+memchr.workspace = true
+memmap2.workspace = true
+rustc-hash.workspace = true
+smol_str.workspace = true
+text-size.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

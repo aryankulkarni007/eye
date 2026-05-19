@@ -4,7 +4,7 @@
 //! and internal nodes alike — so [`SyntaxKind`] is the superset of the lexer's
 //! [`TokenKind`] plus the grammar's node kinds.
 
-use crate::token::TokenKind;
+use token::TokenKind;
 
 /// Defines [`SyntaxKind`] from a single variant list and derives the
 /// `u16` → variant lookup from it, so the `repr` discriminants and the
@@ -50,6 +50,7 @@ syntax_kinds! {
     FnDef, ParamList, Block,
     LetStmt, ExprStmt,
     Literal, NameRef, CallExpr, ArgList,
+    BinExpr, PrefixExpr,
     StructLit, StructLitFieldList, StructLitField,
     ErrorNode,
 }
@@ -150,24 +151,25 @@ impl rowan::Language for EyeLang {
 
 pub type SyntaxNode = rowan::SyntaxNode<EyeLang>;
 pub type SyntaxToken = rowan::SyntaxToken<EyeLang>;
+pub type SyntaxNodeChildren = rowan::SyntaxNodeChildren<EyeLang>;
 
 /// Maps eye surface syntax — punctuation and keywords — to [`SyntaxKind`],
 /// so grammar code reads as `p.at(T![;])` instead of naming enum variants.
 #[macro_export]
 macro_rules! T {
-    [;]     => { $crate::syntax::SyntaxKind::Semicolon };
-    [,]     => { $crate::syntax::SyntaxKind::Comma };
-    [:]     => { $crate::syntax::SyntaxKind::Colon };
-    [=]     => { $crate::syntax::SyntaxKind::Assign };
-    ['(']   => { $crate::syntax::SyntaxKind::Oparen };
-    [')']   => { $crate::syntax::SyntaxKind::Cparen };
-    ['{']   => { $crate::syntax::SyntaxKind::Obrace };
-    ['}']   => { $crate::syntax::SyntaxKind::Cbrace };
-    ['[']   => { $crate::syntax::SyntaxKind::Obrack };
-    [']']   => { $crate::syntax::SyntaxKind::Cbrack };
-    [->]    => { $crate::syntax::SyntaxKind::Arrow };
-    [const] => { $crate::syntax::SyntaxKind::Const };
-    [var]   => { $crate::syntax::SyntaxKind::Var };
-    [structure] => { $crate::syntax::SyntaxKind::Structure };
-    [enum]  => { $crate::syntax::SyntaxKind::Enum };
+    [;]     => { $crate::SyntaxKind::Semicolon };
+    [,]     => { $crate::SyntaxKind::Comma };
+    [:]     => { $crate::SyntaxKind::Colon };
+    [=]     => { $crate::SyntaxKind::Assign };
+    ['(']   => { $crate::SyntaxKind::Oparen };
+    [')']   => { $crate::SyntaxKind::Cparen };
+    ['{']   => { $crate::SyntaxKind::Obrace };
+    ['}']   => { $crate::SyntaxKind::Cbrace };
+    ['[']   => { $crate::SyntaxKind::Obrack };
+    [']']   => { $crate::SyntaxKind::Cbrack };
+    [->]    => { $crate::SyntaxKind::Arrow };
+    [const] => { $crate::SyntaxKind::Const };
+    [var]   => { $crate::SyntaxKind::Var };
+    [structure] => { $crate::SyntaxKind::Structure };
+    [enum]  => { $crate::SyntaxKind::Enum };
 }

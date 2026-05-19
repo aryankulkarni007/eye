@@ -3,22 +3,59 @@
 How to extend the compiler when growing `main.eye`'s v0.1 subset toward the
 full language. Read this before touching the grammar.
 
+## Workspace layout
+
+The compiler is a Cargo workspace — one crate per pipeline stage, wired by the
+`eye` binary at the repo root. Dependencies flow one way:
+
+```
+token ──┬──▶ lexer ──┐
+        └──▶ syntax ──┴──▶ parser ──▶ ast ──▶ eye (bin)
+
+xtask  ──▶ generates crates/ast/src/generated.rs   (off to the side)
+```
+
+| Crate | Path | Owns |
+|-------|------|------|
+| `eye-token`  | `crates/token/src/lib.rs`  | `Token`, `TokenKind` (+ its `logos` rules), `Diagnostic` |
+| `eye-lexer`  | `crates/lexer/src/lib.rs`  | `Lexer` (the `logos` driver), `SourceText`, `Interner`, `Lexed` |
+| `eye-syntax` | `crates/syntax/src/lib.rs` | `SyntaxKind`, rowan binding, `T!` |
+| `eye-parser` | `crates/parser/src/lib.rs` + `grammar.rs` | event stream, grammar, `build_tree` |
+| `eye-ast`    | `crates/ast/src/lib.rs` + `generated.rs` + `eye.ungram` | typed views over the CST |
+| `xtask`      | `crates/xtask/src/main.rs` | `cargo xtask codegen` — regenerates `ast/generated.rs` |
+| `eye`        | `src/main.rs`              | thin driver over the crates above |
+
+Each crate's lib name is the short form (`use lexer::Lexer`), the package name
+is `eye-*`. A stage only sees the crates below it — `ast` cannot reach into the
+`parser`, `syntax` cannot reach the `lexer`. That boundary is deliberate: keep
+it. `xtask` is a build tool, not part of the compiler — nothing depends on it.
+
+## External crates the front-end leans on
+
+| Crate | Role |
+|-------|------|
+| `logos`      | DFA lexer. The lex rules live in `#[token]`/`#[regex]` attributes *on* `TokenKind`. |
+| `rowan`      | The lossless CST (green/red trees). |
+| `ungrammar`  | The grammar file format (`eye.ungram`) `xtask` reads to generate the typed AST. |
+| `smol-str`   | Inline string storage for the `Interner` — short identifiers never heap-allocate. |
+| `text-size`  | `TextSize`/`TextRange` — the one byte-range type, shared with rowan. |
+
 ## The pipeline
 
 ```
 source bytes
-  │  SourceText          src/lexer.rs   — mmap/owned holder, line table
+  │  SourceText          lexer  — mmap/owned holder, line table
   ▼
-tokens + Interner        src/lexer.rs   — Lexer::tokenize() -> Lexed
-  │  TokenKind            src/token.rs   — flat token kinds
+tokens + Interner        lexer  — Lexer::tokenize() drives logos -> Lexed
+  │  TokenKind            token  — flat token kinds, logos rules attached
   ▼
-event stream             src/parser.rs  — Parser emits Copy POD events
-  │  grammar rules        src/grammar.rs — recursive-descent, resilient
+event stream             parser — Parser emits Copy POD events
+  │  grammar rules        parser/src/grammar.rs — recursive-descent, resilient
   ▼
-green tree (CST)         src/parser.rs  — build_tree drives rowan, lossless
-  │  SyntaxKind           src/syntax.rs  — unified leaf+node kind enum
+green tree (CST)         parser — build_tree drives rowan, lossless
+  │  SyntaxKind           syntax — unified leaf+node kind enum
   ▼
-typed AST                src/ast.rs     — zero-cost typed views over the CST
+typed AST                ast    — generated views over the CST
   │
   ▼
 HIR → C transpile        (not yet built)
@@ -31,59 +68,65 @@ Two invariants hold at every stage and must keep holding:
    newlines, comments) lives in the tree — never drop it.
 2. **Resilience.** The parser never bails. Malformed input yields an
    `ErrorNode` plus a diagnostic; a tree always comes out. Every accessor in
-   `ast.rs` returns `Option`/iterator so a partial parse is still walkable.
+   the `ast` crate returns `Option`/iterator so a partial parse is still
+   walkable.
 
 ## The shape of every node kind
 
-A grammar construct touches the same set of layers in the same order. There is
+A grammar construct touches the same set of crates in the same order. There is
 no single place to "add a feature" — it is a slice through all of them.
 
-| Layer | File | What to add |
-|-------|------|-------------|
-| Token kind | `src/token.rs` | variant in `define_tokens!` (only for new lexemes) |
-| Lexing | `src/lexer.rs` | recognise it in `next_token` / a `lex_*` helper; keyword? add to `keyword()` |
-| Syntax kind | `src/syntax.rs` | variant in `syntax_kinds!`; map it in `From<TokenKind>`; `T!` macro arm for punctuation/keywords |
-| Grammar | `src/grammar.rs` | a parse rule that opens a marker, parses, completes with a `SyntaxKind` node kind |
-| Typed view | `src/ast.rs` | `ast_node!`/`ast_enum!` wrapper + typed accessors |
-| Tests | each file's `mod tests` | unit tests; refresh insta snapshots |
+| Layer | Crate | What to add |
+|-------|-------|-------------|
+| Token kind | `token` | variant in `define_tokens!` *with* its `logos` rule (only for new lexemes) |
+| Syntax kind | `syntax` | variant in `syntax_kinds!`; map it in `From<TokenKind>`; `T!` arm for punctuation/keywords |
+| Grammar | `parser` (`grammar.rs`) | a parse rule that opens a marker, parses, completes with a `SyntaxKind` node kind |
+| Typed view | `ast` | a rule in `eye.ungram`, then `cargo xtask codegen` |
+| Tests | each crate's `mod tests` | unit tests; refresh insta snapshots |
 
-The reason it is mechanical: `syntax.rs` holds the *exhaustive* `From<TokenKind>`
-match — a new `TokenKind` will not compile until it is mapped. That compiler
-error is the checklist.
+The reason it is mechanical: the `syntax` crate holds the *exhaustive*
+`From<TokenKind>` match — a new `TokenKind` will not compile until it is
+mapped. That compiler error is the checklist.
 
 ## Adding a new token / lexeme
 
 Only when the surface syntax has bytes the lexer cannot already produce.
 
-1. **`token.rs`** — add a `TokenKind` variant in `define_tokens!` with its
-   display string. Group it with its neighbours (keyword, operator, …).
-2. **`lexer.rs`** —
-   - **keyword**: add one arm to `keyword()`. Nothing else; `lex_ident`
-     already routes idents through it.
-   - **operator/punctuation**: add a `match` arm in `next_token`. Multi-char
-     operators disambiguate on `peek(1)` — see the `=`/`<`/`&` arms. **Never
-     eagerly `peek(2)`**: peeking past a not-yet-consumed byte can index the
-     middle of a multi-byte UTF-8 char and panic. Consume one byte, then peek
-     again (see `lex_minus_or_comment`).
-3. **`syntax.rs`** — add the matching `SyntaxKind` variant in the *token kinds*
-   block of `syntax_kinds!`, then add its arm to `From<TokenKind>` (the build
-   breaks until you do). Add a `T!` arm if grammar code will name it.
-4. Test in `lexer.rs::tests` — extend `keywords_vs_idents` /
+1. **`token` crate** — add a `TokenKind` variant in `define_tokens!`, with its
+   display string *and* its `logos` rule as an attribute:
+   - a fixed lexeme (operator, punctuation, keyword): `#[token("…")]`.
+   - a pattern (identifier-like, numeric): `#[regex(r"…")]`.
+   - a lexeme that needs a diagnostic on a malformed/unclosed form: a
+     `#[token("…", callback)]` whose callback `bump`s the token to its true
+     end and pushes a `Diagnostic` into `lex.extras` — see `lex_string`,
+     `lex_char`, `lex_block_comment`.
+
+   `logos` resolves overlaps by **longest match first**, then `priority` as
+   the tie-breaker — a keyword `#[token("loop")]` outranks the `Ident` regex
+   automatically. If the derive reports a rule conflict, give the rules an
+   explicit `priority = N`. `Eof` and `Illegal` carry *no* rule: the lexer
+   driver synthesizes `Eof` at end of input and `Illegal` from a lex error.
+2. **`syntax` crate** — add the matching `SyntaxKind` variant in the *token
+   kinds* block of `syntax_kinds!`, then add its arm to `From<TokenKind>` (the
+   build breaks until you do). Add a `T!` arm if grammar code will name it.
+   A new *trivia* kind must also be added to `SyntaxKind::is_trivia`.
+3. Test in the `lexer` crate's `mod tests` — extend `keywords_vs_idents` /
    `operators_and_delimiters`, or add a focused test.
 
-Interning: `end_token` interns `Ident` and `String` text into the lexer-owned
-`Interner`. A new identifier-like or string-like token should be interned the
-same way; a pure operator/keyword should not.
+Interning: the lexer driver interns `Ident` and `String` text into the
+`Interner` (a string literal without its quotes). A new identifier-like or
+string-like token should be interned the same way in `Lexer::tokenize`; a pure
+operator/keyword should not.
 
 ## Adding a new grammar construct (the common case)
 
 Most features — `if`, `loop`, real params, binary operators, more types — need
 no new token, only a new *node*.
 
-1. **`syntax.rs`** — add a `SyntaxKind` variant in the *node kinds* block of
+1. **`syntax` crate** — add a `SyntaxKind` variant in the *node kinds* block of
    `syntax_kinds!` (after `SourceFile`, before `ErrorNode`). Node kinds are not
    in `From<TokenKind>` — they are produced only by `marker.complete(...)`.
-2. **`grammar.rs`** — write the parse rule. The pattern, every time:
+2. **`parser/src/grammar.rs`** — write the parse rule. The pattern, every time:
    ```rust
    fn my_thing(p: &mut Parser) {
        let m = p.open();
@@ -103,80 +146,107 @@ no new token, only a new *node*.
    - Hook the new rule into its parent rule's `if p.at(...)` dispatch.
 3. **`grammar.rs` doc comment** — update the EBNF block at the top of the file.
    It is the source of truth for the grammar; keep it exact.
-4. **`ast.rs`** — add the typed view:
-   ```rust
-   ast_node! { MyThing = MyThing }
+4. **`ast` crate** — add the typed view by editing the **grammar file**, not
+   Rust:
+   - Add a rule to `crates/ast/eye.ungram` mirroring the new node. Label any
+     token that needs an accessor (`name:'ident'`); label one of two
+     same-type children so they get distinct accessors. A node that is one of
+     several others is an alternation of node names (`Expr = A | B | …`) and
+     generates a typed `enum`.
+   - Run `cargo xtask codegen` — it rewrites `crates/ast/src/generated.rs`
+     (committed) with the struct, its `AstNode` impl, and child accessors.
+   - Only a *semantic* accessor — one that reads meaning out of a token kind,
+     like `LetStmt::kind()` (`const`/`var`) or `BinExpr::op()` — is
+     hand-written, as an extra `impl` block in `crates/ast/src/lib.rs`. The
+     structural accessors are always generated.
+5. **Tests** — unit-test the rule in the `parser` crate and the accessors in
+   the `ast` crate. Refresh snapshots: `INSTA_UPDATE=always cargo test
+   --workspace`, then review the `.snap` diff before committing.
 
-   impl MyThing {
-       pub fn child(&self) -> Option<ChildNode> { child(&self.syntax) }
-       pub fn name(&self)  -> Option<SyntaxToken> { token(&self.syntax, SyntaxKind::Ident) }
-   }
-   ```
-   - Three helpers cover almost everything: `child::<N>` (first castable child
-     node), `children::<N>` (all of them, in order), `token(parent, kind)`
-     (first *direct* child token of a kind).
-   - Alternatives (a node that is one of several kinds) use `ast_enum!` — see
-     `Item`, `Stmt`, `Expr`.
-   - Accessors recompute on each call and never cache; that is intentional.
-5. **Tests** — unit-test the rule in `grammar.rs`/`parser.rs` and the accessors
-   in `ast.rs`. Refresh snapshots: `INSTA_UPDATE=always cargo test`, then
-   review the `.snap` diff before committing.
+## The typed-AST generator
 
-## Precedence — when expressions get operators
+`crates/ast/eye.ungram` is the grammar; `cargo xtask codegen` turns it into
+`crates/ast/src/generated.rs`. The generator (`crates/xtask/src/main.rs`)
+handles the rule shapes the v0.1 grammar uses:
 
-`grammar.rs::expr` is currently atom + postfix only (`call`, struct-literal).
-Adding binary/unary operators means a **Pratt parser**: a binding-power table,
-a loop that consumes an operator only while its left binding power exceeds the
-caller's, and `CompletedMarker::precede` to retroactively wrap the LHS in a
-`BinExpr` node. `precede` is the existing mechanism — `expr`'s postfix loop
-already uses it. Do not switch to a tree-rewriting parser; precede keeps the
-event buffer append-only.
+- `A = B | C` (all node refs) → a typed `enum`.
+- a node with child nodes → `support::child` / `support::children` accessors.
+- a labelled token → a `support::token` accessor.
+- two children of the same type → positional accessors (`lhs`/`rhs`).
+
+It deliberately does *not* try to be a general ungrammar code generator — it
+targets the shapes in `eye.ungram`. The hand-written half lives in
+`crates/ast/src/lib.rs`: the `AstNode` trait, the `support` helpers,
+`AstChildren`, and the four semantic accessor impls. `generated.rs` is
+committed and must stay in sync — re-run `cargo xtask codegen` after any
+`eye.ungram` edit; CI can verify with `git diff --exit-code`.
+
+## Precedence — the expression parser
+
+`grammar.rs::expr` is a **Pratt parser**: `expr_bp(p, min_bp)` parses an LHS,
+then folds in infix operators while their left binding power is at least
+`min_bp`; `infix_binding_power` is the precedence table. Prefix-unary `-` and
+postfix forms (call, struct-literal) live in `lhs`. Every operator wraps its
+operand with `CompletedMarker::precede`, which keeps the event buffer
+append-only — no tree rewriting. To add an operator: a `TokenKind`/`SyntaxKind`
+if the lexeme is new, an arm in `infix_binding_power`, and a `BinOp` variant in
+the `ast` crate (`crates/ast/src/lib.rs`, the hand-written half).
 
 ## Worked example — adding `if`/`else`
 
 The tokens (`If`, `Else`) and their `SyntaxKind`s already exist. So:
 
-1. `syntax.rs` — add node kind `IfExpr` (`if` is an expression in eye).
+1. `syntax` crate — add node kind `IfExpr` (`if` is an expression in eye).
 2. `grammar.rs` — `fn if_expr(p)`: open marker, `advance` the `if`, parse the
    condition `expr`, parse a `block`, then `if p.eat(T![else])` parse another
    `block` (or a nested `if_expr`). `complete(p, SyntaxKind::IfExpr)`. Wire it
    into `atom` (so it nests in expressions) and update the EBNF.
-3. `ast.rs` — `ast_node! { IfExpr = IfExpr }` with `condition()`, `then_block()`,
-   `else_branch()` accessors; add `IfExpr` to the `Expr` `ast_enum!`.
+3. `ast` crate — add `IfExpr = condition:Expr then:Block else_branch:Block?`
+   to `eye.ungram` and add `IfExpr` to the `Expr` alternation; run
+   `cargo xtask codegen`.
 4. Tests for parse + accessors; refresh the CST snapshot.
 
-No lexer or `token.rs` change at all — the lexemes were already there.
+No `lexer` or `token` change at all — the lexemes were already there.
 
 ## Gotchas
 
-- **Exhaustive matches are the guardrail.** `From<TokenKind>` in `syntax.rs`
-  has no `_` arm. A new token won't compile until mapped — follow the error.
-- **UTF-8 in the lexer.** Index bytes for ASCII; for anything multi-byte go
-  through `peek`/`advance` which decode properly. `advance_by` debug-asserts a
-  char boundary. The regression test `minus_before_multibyte_char_no_panic`
-  guards this class of bug.
+- **Exhaustive matches are the guardrail.** `From<TokenKind>` in the `syntax`
+  crate has no `_` arm. A new token won't compile until mapped — follow the
+  error.
+- **The lexer is `logos`, the rules are data.** There is no hand-written
+  scanner to edit — a new lexeme is a new attribute on a `TokenKind` variant.
+  Unicode identifiers ride on the `\p{XID_Start}…` regex; an unclosed literal
+  stays a real token (not an error) because its callback `bump`s and
+  diagnoses rather than failing to match.
+- **Ranges are `TextRange`.** `Token`, `Diagnostic` and `ParseError` all carry
+  a `text-size` `TextRange`; it is the same type rowan uses, so there is no
+  conversion at the CST boundary. `SourceText::line_col` takes a `TextSize`.
 - **Trivia is not the parser's concern but is the tree's.** Grammar code never
-  sees trivia (`nth`/`at` skip it); `build_tree` re-interleaves it. A new
-  trivia kind must be added to `SyntaxKind::is_trivia`.
-- **Snapshots.** `src/snapshots/*.snap` are committed. Any grammar/lexer change
-  shifts them — regenerate with `INSTA_UPDATE=always cargo test` and eyeball
-  the diff; a snapshot diff *is* the review of your tree shape.
+  sees trivia (`nth`/`at` skip it); `build_tree` re-interleaves it.
+- **`generated.rs` is generated.** Never hand-edit it — edit `eye.ungram` and
+  run `cargo xtask codegen`. Hand-written AST code goes in `lib.rs`.
+- **Snapshots.** `crates/lexer/src/snapshots/` and
+  `crates/parser/src/snapshots/` hold the committed `*.snap` files. insta names
+  each `<crate>__<module>__<name>.snap`. Any grammar/lexer change shifts a
+  snapshot; regenerate with `INSTA_UPDATE=always cargo test --workspace` and
+  eyeball the diff — a snapshot diff *is* the review of your tree shape.
 - **Defer semantics to HIR.** Escape-sequence decoding, name resolution, type
   checking — none belong in lexer/parser/AST. The CST and AST are syntactic and
   lossless; meaning is HIR's job.
-- **`lib.rs` vs `main.rs`.** Pipeline modules are public in the `eye` lib crate
-  so forward-looking API is not dead-code-flagged. New public stage API goes
-  through `lib.rs`; `main.rs` stays a thin driver.
+- **Crate boundaries.** A pipeline stage is `pub` API of its crate, so
+  forward-looking API is not dead-code-flagged. An item used across a crate
+  boundary must be `pub` — `pub(crate)` stops at the crate edge. New stages get
+  a new crate under `crates/`; `src/main.rs` stays a thin driver.
 
 ## Checklist
 
 ```
-[ ] token.rs    — new TokenKind variant            (only for new lexemes)
-[ ] lexer.rs    — recognise it; keyword() if a kw
-[ ] syntax.rs   — SyntaxKind variant + From<TokenKind> arm + T! arm
-[ ] grammar.rs  — parse rule, wired into its parent, EBNF updated
-[ ] ast.rs      — ast_node!/ast_enum! wrapper + typed accessors
-[ ] tests       — unit tests in each touched module
-[ ] snapshots   — INSTA_UPDATE=always cargo test, review the diff
-[ ] cargo build — 0 warnings
+[ ] token crate   — new TokenKind variant + its logos rule  (only for new lexemes)
+[ ] syntax crate  — SyntaxKind variant + From<TokenKind> arm + T! arm
+[ ] grammar.rs    — parse rule, wired into its parent, EBNF updated
+[ ] eye.ungram    — new rule; then `cargo xtask codegen`
+[ ] ast lib.rs    — hand-written semantic accessor, only if one is needed
+[ ] tests         — unit tests in each touched crate
+[ ] snapshots     — INSTA_UPDATE=always cargo test --workspace, review the diff
+[ ] cargo build --workspace — 0 warnings
 ```

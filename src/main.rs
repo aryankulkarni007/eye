@@ -1,7 +1,5 @@
-use eye::ast;
-use eye::lexer::{Interner, Lexer, SourceText, Symbol};
-use eye::parser;
-use eye::syntax::SyntaxToken;
+use lexer::{Interner, Lexer, SourceText, Symbol};
+use syntax::SyntaxToken;
 
 /// A token's text, or a placeholder when the parse left the slot empty.
 fn tok_text(t: Option<SyntaxToken>) -> String {
@@ -30,6 +28,30 @@ fn describe_expr(expr: &ast::Expr) -> String {
             let fieldc = s.field_list().map(|fl| fl.fields().count()).unwrap_or(0);
             format!("struct-lit {} ({fieldc} fields)", tok_text(name))
         }
+        ast::Expr::BinExpr(b) => {
+            let lhs = b
+                .lhs()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            let rhs = b
+                .rhs()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            match b.op() {
+                Some(op) => format!("({lhs} {op:?} {rhs})"),
+                None => format!("({lhs} ? {rhs})"),
+            }
+        }
+        ast::Expr::PrefixExpr(u) => {
+            let operand = u
+                .operand()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            match u.op() {
+                Some(op) => format!("({op:?} {operand})"),
+                None => format!("(? {operand})"),
+            }
+        }
     }
 }
 
@@ -42,16 +64,18 @@ fn dump_stmt(stmt: &ast::Stmt) {
                 Some(ast::LetKind::Var) => "var",
                 None => "<missing>",
             };
-            let ty = l.type_ref().and_then(|t| t.name());
+            // a `let_stmt` type is optional (`type_ref?`): absent means the
+            // type is inferred, not a recovery hole. `<missing>` is reserved
+            // for a `TypeRef` node that exists but lost its name token.
+            let ty = match l.type_ref() {
+                None => "<inferred>".to_string(),
+                Some(t) => tok_text(t.name()),
+            };
             let value = l
                 .value()
                 .map(|e| describe_expr(&e))
                 .unwrap_or_else(|| "<missing>".to_string());
-            println!(
-                "    {kw} {} {} = {value}",
-                tok_text(ty),
-                tok_text(l.name()),
-            );
+            println!("    {kw} {ty} {} = {value}", tok_text(l.name()));
         }
         ast::Stmt::ExprStmt(e) => {
             let expr = e
@@ -118,7 +142,7 @@ fn main() -> anyhow::Result<()> {
     if !lexed.diags.is_empty() {
         eprintln!("{} lexer diagnostic(s):", lexed.diags.len());
         for diag in &lexed.diags {
-            let lc = source.line_col(diag.span.start);
+            let lc = source.line_col(diag.range.start());
             eprintln!("  {}:{}: {}", lc.line, lc.col, diag.msg);
         }
         std::process::exit(1);
@@ -135,7 +159,7 @@ fn main() -> anyhow::Result<()> {
     if !parse.errors.is_empty() {
         eprintln!("\n{} parse diagnostic(s):", parse.errors.len());
         for err in &parse.errors {
-            let lc = source.line_col(err.span.start);
+            let lc = source.line_col(err.range.start());
             eprintln!("  {}:{}: {}", lc.line, lc.col, err.msg);
         }
         std::process::exit(1);

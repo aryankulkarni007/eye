@@ -1,0 +1,11 @@
+[package]
+name = "eye-syntax"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "syntax"
+
+[dependencies]
+token.workspace = true
+rowan.workspace = true

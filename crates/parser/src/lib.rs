@@ -21,9 +21,13 @@ use std::num::NonZeroU32;
 use drop_bomb::DropBomb;
 use rowan::{GreenNodeBuilder, Language};
 
-use crate::lexer::SourceText;
-use crate::syntax::{EyeLang, SyntaxKind, SyntaxNode};
-use crate::token::{Span, Token};
+use text_size::TextRange;
+
+use lexer::SourceText;
+use syntax::{EyeLang, SyntaxKind, SyntaxNode};
+use token::Token;
+
+mod grammar;
 
 /// Index into the sibling [`Vec<ParseError>`]. Keeps [`Event`] POD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +60,7 @@ enum Event {
 #[derive(Debug, Clone)]
 pub struct ParseError {
     pub msg: &'static str,
-    pub span: Span,
+    pub range: TextRange,
 }
 
 /// The finished parse: a lossless CST plus every diagnostic.
@@ -149,9 +153,9 @@ impl<'t> Parser<'t> {
         self.at(SyntaxKind::Eof)
     }
 
-    /// Span of the token under the cursor — the anchor for diagnostics.
-    fn cursor_span(&self) -> Span {
-        self.tokens[self.pos.min(self.tokens.len() - 1)].span
+    /// Range of the token under the cursor — the anchor for diagnostics.
+    fn cursor_range(&self) -> TextRange {
+        self.tokens[self.pos.min(self.tokens.len() - 1)].range
     }
 
     /// Consume the current non-trivia token.
@@ -185,7 +189,7 @@ impl<'t> Parser<'t> {
         let idx = ErrorIdx(self.errors.len() as u32);
         self.errors.push(ParseError {
             msg,
-            span: self.cursor_span(),
+            range: self.cursor_range(),
         });
         self.events.push(Event::Error(idx));
     }
@@ -305,7 +309,7 @@ fn build_tree(tokens: &[Token], mut events: Vec<Event>, source: &SourceText) -> 
             }
             // a token span is always a valid slice of its own source; a
             // failure here means the token stream and source disagree
-            let text = source.slice(tok.span).expect("token span outside source");
+            let text = source.slice(tok.range).expect("token range outside source");
             builder.token(EyeLang::kind_to_raw(kind), text);
             *raw += 1;
         }
@@ -341,7 +345,7 @@ fn build_tree(tokens: &[Token], mut events: Vec<Event>, source: &SourceText) -> 
                 emit_trivia(&mut builder, &mut raw);
                 let tok = tokens[raw];
                 let kind: SyntaxKind = tok.kind.into();
-                let text = source.slice(tok.span).expect("token span outside source");
+                let text = source.slice(tok.range).expect("token range outside source");
                 builder.token(EyeLang::kind_to_raw(kind), text);
                 raw += 1;
             }
@@ -355,7 +359,7 @@ fn build_tree(tokens: &[Token], mut events: Vec<Event>, source: &SourceText) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::{Lexer, SourceText};
+    use lexer::{Lexer, SourceText};
 
     /// Lex + parse `src` into a [`Parse`].
     fn parse_src(src: &str) -> Parse {
@@ -398,6 +402,15 @@ main() {
         assert!(!parse.errors.is_empty(), "expected a diagnostic");
         // the tree still round-trips even through error recovery
         assert_eq!(parse.green.to_string(), "structure { };");
+    }
+
+    #[test]
+    fn operator_expr_parses_clean_and_round_trips() {
+        // a mix of arithmetic, comparison, logical and prefix operators
+        let src = "main() {\n    const x = -1 + 2 * 3 == 7 && a || b;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
     }
 
     #[test]

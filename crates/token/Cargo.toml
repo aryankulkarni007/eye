@@ -1,0 +1,11 @@
+[package]
+name = "eye-token"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "token"
+
+[dependencies]
+logos.workspace = true
+text-size.workspace = true

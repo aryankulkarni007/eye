@@ -1,5 +1,5 @@
 ---
-source: src/parser.rs
+source: crates/parser/src/lib.rs
 expression: "format!(\"{:#?}\", parse.green)"
 ---
 SourceFile@0..127
@@ -10,23 +10,23 @@ SourceFile@0..127
     FieldList@15..45
       Wspace@15..16 " "
       Obrace@16..17 "{"
-      Field@17..35
+      Field@17..29
         TypeRef@17..28
           Newline@17..18 "\n"
           Wspace@18..22 "    "
           Ident@22..27 "int32"
           Wspace@27..28 " "
         Ident@28..29 "x"
-        Comma@29..30 ","
-        Newline@30..31 "\n"
-        Wspace@31..35 "    "
-      Field@35..44
-        TypeRef@35..41
+      Comma@29..30 ","
+      Field@30..42
+        TypeRef@30..41
+          Newline@30..31 "\n"
+          Wspace@31..35 "    "
           Ident@35..40 "int32"
           Wspace@40..41 " "
         Ident@41..42 "y"
-        Comma@42..43 ","
-        Newline@43..44 "\n"
+      Comma@42..43 ","
+      Newline@43..44 "\n"
       Cbrace@44..45 "}"
     Semicolon@45..46 ";"
     Newline@46..47 "\n"
