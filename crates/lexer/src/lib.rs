@@ -1,4 +1,4 @@
-//! The lexer — raw source bytes to a flat [`Token`] stream.
+//! The lexer - raw source bytes to a flat [`Token`] stream.
 //!
 //! [`Lexer::tokenize`] drives `logos` (the lex rules live on [`TokenKind`] in
 //! the `token` crate) and yields a [`Lexed`]: the token vector, the populated
@@ -16,7 +16,7 @@ use token::{Token, TokenKind};
 
 pub use token::Diagnostic;
 
-/// A interned string handle — an index into an [`Interner`]'s table. `Copy`
+/// A interned string handle - an index into an [`Interner`]'s table. `Copy`
 /// and pointer-free, so name comparison downstream is a `u32` equality check
 /// instead of a `str` compare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,11 +25,11 @@ pub struct Symbol(pub u32);
 /// The canonical string table. Every identifier and string literal the lexer
 /// sees is interned here, so the same text always maps to the same [`Symbol`].
 ///
-/// Strings are stored as [`SmolStr`]: identifiers — almost always short —
+/// Strings are stored as [`SmolStr`]: identifiers - almost always short -
 /// stay inline with no heap allocation, and a cache-hit clone is `O(1)`.
 ///
 /// The lexer pre-populates this during tokenizing; later stages (HIR name
-/// resolution) re-intern identifier text against the *same* table — a cache
+/// resolution) re-intern identifier text against the *same* table - a cache
 /// hit yields the original `Symbol`. The table outlives the lexer: it is
 /// handed off in [`Lexed`].
 #[derive(Debug)]
@@ -212,7 +212,7 @@ impl<'a> Lexer<'a> {
 
     /// Drives `logos` to completion, yielding the token stream (up to and
     /// including a synthesized [`TokenKind::Eof`]), the populated string
-    /// table, and every diagnostic — see [`Lexed`].
+    /// table, and every diagnostic - see [`Lexed`].
     pub fn tokenize(self) -> Lexed {
         let src = self.source.as_str();
         let mut lex = TokenKind::lexer(src);
@@ -286,7 +286,7 @@ mod tests {
         Lexer::new(&source).tokenize()
     }
 
-    /// Non-trivia token kinds — the shape the parser actually consumes.
+    /// Non-trivia token kinds - the shape the parser actually consumes.
     fn kinds(src: &str) -> Vec<TokenKind> {
         lex(src)
             .tokens
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn crlf_line_tracking() {
         // Windows `\r\n`: `memchr` finds the `\n`, so the line start lands one
-        // byte past it — the `\r` is the trailing byte of the previous line.
+        // byte past it - the `\r` is the trailing byte of the previous line.
         let src = "a\r\nbc\r\nd";
         let st = SourceText::new(src.to_string());
         // line starts: 0, after first `\n` (=3), after second `\n` (=7)

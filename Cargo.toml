@@ -21,7 +21,7 @@ smol_str = "0.3"
 text-size = "1.1"
 ungrammar = "1.16"
 insta = "1"
-# internal — keyed by short lib name, backed by `eye-*` packages
+# internal - keyed by short lib name, backed by `eye-*` packages
 token = { path = "crates/token", package = "eye-token" }
 lexer = { path = "crates/lexer", package = "eye-lexer" }
 syntax = { path = "crates/syntax", package = "eye-syntax" }
@@ -45,3 +45,5 @@ ast.workspace = true
 lexer.workspace = true
 parser.workspace = true
 syntax.workspace = true
+smallvec = "1.15.1"
+thin-vec = "0.2.18"

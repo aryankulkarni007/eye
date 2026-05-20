@@ -1,7 +1,7 @@
 //! The parser event stream.
 //!
 //! The parser never builds a tree. It emits a flat, append-only buffer of
-//! [`Event`]s — the rust-analyzer model. A second pass ([`build_tree`]) walks
+//! [`Event`]s - the rust-analyzer model. A second pass ([`build_tree`]) walks
 //! the events alongside the token stream and drives `rowan::GreenNodeBuilder`
 //! to produce a lossless concrete syntax tree.
 //!
@@ -10,7 +10,7 @@
 //! The event stream is a single [`Vec<Event>`], preallocated with enough
 //! headroom that typical input never reallocates; past that it grows only by
 //! amortized doubling. The real guarantee is per-item: [`Event`] is `Copy` POD
-//! — no `String`/`Box`/`Vec` inside any variant, so no event ever allocates.
+//! - no `String`/`Box`/`Vec` inside any variant, so no event ever allocates.
 //! Diagnostic messages live out-of-band in a sibling [`Vec<ParseError>`] and
 //! are `&'static str`; events carry only an [`ErrorIdx`]. [`Marker`] open,
 //! complete and abandon all mutate the buffer in place.
@@ -38,7 +38,7 @@ pub struct ErrorIdx(u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Event {
     /// Start an internal node. `fwd_parent`, when set, is the event index of
-    /// a later `Open` that should become this node's parent — the retroactive
+    /// a later `Open` that should become this node's parent - the retroactive
     /// wrap produced by [`CompletedMarker::precede`].
     Open {
         kind: SyntaxKind,
@@ -70,7 +70,7 @@ pub struct Parse {
 }
 
 /// How many lookahead probes the parser may make without consuming a token
-/// before [`Parser::nth`] panics — a guard against non-progressing grammar
+/// before [`Parser::nth`] panics - a guard against non-progressing grammar
 /// loops.
 const FUEL: u32 = 256;
 
@@ -123,7 +123,7 @@ impl<'t> Parser<'t> {
     /// of the stream this is always [`SyntaxKind::Eof`].
     pub fn nth(&self, n: usize) -> SyntaxKind {
         let fuel = self.fuel.get();
-        assert!(fuel != 0, "parser ran out of fuel — non-progressing loop");
+        assert!(fuel != 0, "parser ran out of fuel - non-progressing loop");
         self.fuel.set(fuel - 1);
 
         let mut idx = self.pos;
@@ -153,7 +153,7 @@ impl<'t> Parser<'t> {
         self.at(SyntaxKind::Eof)
     }
 
-    /// Range of the token under the cursor — the anchor for diagnostics.
+    /// Range of the token under the cursor - the anchor for diagnostics.
     fn cursor_range(&self) -> TextRange {
         self.tokens[self.pos.min(self.tokens.len() - 1)].range
     }
@@ -204,7 +204,7 @@ impl<'t> Parser<'t> {
     }
 
     /// Start a node. Returns a [`Marker`] that *must* be completed or
-    /// abandoned — its [`DropBomb`] enforces this.
+    /// abandoned - its [`DropBomb`] enforces this.
     pub fn open(&mut self) -> Marker {
         let idx = self.events.len() as u32;
         self.events.push(Event::Tombstone);
@@ -263,7 +263,7 @@ pub struct CompletedMarker {
 impl CompletedMarker {
     /// Open a fresh node *before* this one and make this completed node its
     /// first child. This is how postfix/precedence forms wrap a node already
-    /// emitted to the stream — without shifting the buffer.
+    /// emitted to the stream - without shifting the buffer.
     pub fn precede(self, p: &mut Parser) -> Marker {
         let m = p.open();
         match &mut p.events[self.idx as usize] {
@@ -286,7 +286,7 @@ pub fn parse(tokens: &[Token], source: &SourceText) -> Parse {
     debug_assert_eq!(
         green.to_string(),
         source.as_str(),
-        "CST round-trip mismatch — build_tree dropped or duplicated text"
+        "CST round-trip mismatch - build_tree dropped or duplicated text"
     );
     Parse { green, errors }
 }
@@ -297,7 +297,7 @@ pub fn parse(tokens: &[Token], source: &SourceText) -> Parse {
 fn build_tree(tokens: &[Token], mut events: Vec<Event>, source: &SourceText) -> SyntaxNode {
     let mut builder = GreenNodeBuilder::new();
     let mut raw = 0usize;
-    // scratch reused across every forward-parent chain — no per-node alloc
+    // scratch reused across every forward-parent chain - no per-node alloc
     let mut parents: Vec<SyntaxKind> = Vec::new();
 
     let emit_trivia = |builder: &mut GreenNodeBuilder, raw: &mut usize| {
@@ -390,7 +390,7 @@ main() {
 
     #[test]
     fn cst_round_trips_to_source() {
-        // the CST is lossless — it reproduces the input bytes exactly
+        // the CST is lossless - it reproduces the input bytes exactly
         let parse = parse_src(SAMPLE);
         assert_eq!(parse.green.to_string(), SAMPLE);
     }

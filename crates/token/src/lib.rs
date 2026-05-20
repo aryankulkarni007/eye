@@ -1,4 +1,4 @@
-//! Lexical tokens — the shared vocabulary of the compiler front-end.
+//! Lexical tokens - the shared vocabulary of the compiler front-end.
 //!
 //! [`Token`] and [`TokenKind`] are produced by the lexer and consumed by the
 //! syntax and parser crates, so they live in this leaf crate that everything
@@ -7,7 +7,7 @@
 //! [`TokenKind`] carries the `logos` lexer rules directly: every variant is
 //! annotated with the `#[token]`/`#[regex]` that matches it, so the lexer
 //! crate is a thin driver over `TokenKind::lexer`. Ranges are `text-size`'s
-//! [`TextRange`] — the same range type `rowan` uses for the CST.
+//! [`TextRange`] - the same range type `rowan` uses for the CST.
 
 use std::borrow::Cow;
 
@@ -29,7 +29,7 @@ pub struct Diagnostic {
     pub range: TextRange,
 }
 
-/// `logos` lexer state — collects the diagnostics the literal/comment
+/// `logos` lexer state - collects the diagnostics the literal/comment
 /// callbacks emit for unclosed or malformed lexemes.
 #[derive(Debug, Default)]
 pub struct LexExtras(pub Vec<Diagnostic>);
@@ -69,7 +69,7 @@ macro_rules! define_tokens {
 }
 
 define_tokens! {
-    // `Eof` and `Illegal` are never produced by `logos` — the lexer driver
+    // `Eof` and `Illegal` are never produced by `logos` - the lexer driver
     // synthesizes `Eof` at the end of input and `Illegal` from a lex error.
     Eof = "EOF",
     Illegal = "ILLEGAL",
@@ -190,7 +190,7 @@ define_tokens! {
 //
 // `logos` matches only the opening byte(s) of these; the callback scans the
 // remainder, `bump`s the token to its true end, and records a diagnostic for
-// an unclosed or malformed lexeme — so an unclosed literal is still a real
+// an unclosed or malformed lexeme - so an unclosed literal is still a real
 // `String`/`Char`/`Bcomment` token, never a lex error.
 
 /// Records a diagnostic spanning the just-lexed (bumped) token.
@@ -259,7 +259,7 @@ fn lex_char(lex: &mut logos::Lexer<TokenKind>) {
             }
         }
         Some(c) if c != '\n' => i += c.len_utf8(),
-        // `\n` or end of input — no char to put in the literal
+        // `\n` or end of input - no char to put in the literal
         other => {
             lex.bump(i);
             diag(

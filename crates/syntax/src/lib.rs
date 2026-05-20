@@ -1,7 +1,7 @@
 //! The unified syntax-kind enum and the `rowan` language binding.
 //!
-//! `rowan` keeps one kind enum for every node in the tree — leaves (tokens)
-//! and internal nodes alike — so [`SyntaxKind`] is the superset of the lexer's
+//! `rowan` keeps one kind enum for every node in the tree - leaves (tokens)
+//! and internal nodes alike - so [`SyntaxKind`] is the superset of the lexer's
 //! [`TokenKind`] plus the grammar's node kinds.
 
 use token::TokenKind;
@@ -32,7 +32,7 @@ macro_rules! syntax_kinds {
 }
 
 syntax_kinds! {
-    // ---- token kinds (leaves) — mirror of `TokenKind` ----
+    // ---- token kinds (leaves) - mirror of `TokenKind` ----
     Eof, Illegal,
     Ident,
     Int, Float, String, True, False, Char,
@@ -153,7 +153,7 @@ pub type SyntaxNode = rowan::SyntaxNode<EyeLang>;
 pub type SyntaxToken = rowan::SyntaxToken<EyeLang>;
 pub type SyntaxNodeChildren = rowan::SyntaxNodeChildren<EyeLang>;
 
-/// Maps eye surface syntax — punctuation and keywords — to [`SyntaxKind`],
+/// Maps eye surface syntax - punctuation and keywords - to [`SyntaxKind`],
 /// so grammar code reads as `p.at(T![;])` instead of naming enum variants.
 #[macro_export]
 macro_rules! T {

@@ -1,11 +1,12 @@
---- DESIGN.EYE ---
+--- BASIC V0.1 DESIGN.EYE ---
 
---- STRUCTURES ---
+--- STRUCTURE ---
 structure Point {
     int32 x,
     int32 y,
 };
 
+--- ENUM ---
 enum Shape =
 | Square
 | Circle
@@ -32,7 +33,7 @@ main() {
     pt_ref.y = 30;
 
     -- expression-based assignment
-    let max = if x > counter { x } else { counter };
+    const max = if x > counter { x } else { counter };
 
     loop {
         if counter > 10 { break; }

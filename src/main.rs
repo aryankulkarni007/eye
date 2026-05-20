@@ -1,13 +1,14 @@
 use lexer::{Interner, Lexer, SourceText, Symbol};
+use smallvec::SmallVec;
 use syntax::SyntaxToken;
 
-/// A token's text, or a placeholder when the parse left the slot empty.
+/// a token's text, or a placeholder when the parse left the slot empty.
 fn tok_text(t: Option<SyntaxToken>) -> String {
     t.map(|t| t.text().to_string())
         .unwrap_or_else(|| "<missing>".to_string())
 }
 
-/// One-line summary of an expression — recurses through calls.
+/// one-line summary of an expression - recurses through calls.
 fn describe_expr(expr: &ast::Expr) -> String {
     match expr {
         ast::Expr::Literal(l) => match l.literal_kind() {
@@ -87,7 +88,7 @@ fn dump_stmt(stmt: &ast::Stmt) {
     }
 }
 
-/// Walks the typed AST and prints a structured summary — a visible check
+/// walks the typed ast and prints a structured summary - a visible check
 /// that the typed layer reads the CST correctly.
 fn dump_ast(file: &ast::SourceFile) {
     println!("\n--- AST ---");
@@ -114,7 +115,7 @@ fn dump_ast(file: &ast::SourceFile) {
     }
 }
 
-/// Prints the interned string table — every identifier and string literal,
+/// Prints the interned string table - every identifier and string literal,
 /// deduplicated, in intern order. Proof the lexer populated the [`Interner`]
 /// handed off in `Lexed`; HIR name resolution will re-intern against it.
 fn dump_symbols(interner: &Interner) {
@@ -125,7 +126,8 @@ fn dump_symbols(interner: &Interner) {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    // array backed smallvec for <exec_name> <file_name>
+    let args: SmallVec<[String; 2]> = std::env::args().collect();
 
     // check usage
     if args.len() < 2 {

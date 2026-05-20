@@ -1,19 +1,19 @@
-//! The typed AST — a thin, typed *view* over the lossless CST.
+//! The typed AST - a thin, typed *view* over the lossless CST.
 //!
 //! The CST ([`SyntaxNode`]) is untyped: every node is the same Rust type and
 //! the only thing distinguishing them is a [`SyntaxKind`] tag. That is what
-//! makes it lossless and cheap to build, but it is miserable to walk — every
+//! makes it lossless and cheap to build, but it is miserable to walk - every
 //! access is a `match` on a kind.
 //!
 //! This module layers typed wrappers on top. Each grammar node gets a
 //! zero-cost newtype around the `SyntaxNode` it wraps; the wrapper exposes
 //! named accessors (`.name()`, `.fields()`, …) instead of raw child iteration.
-//! Nothing is copied — an [`AstNode`] is one `SyntaxNode` (an `Arc` handle),
+//! Nothing is copied - an [`AstNode`] is one `SyntaxNode` (an `Arc` handle),
 //! so casting is a kind check and a move.
 //!
 //! ## Generated vs. hand-written
 //!
-//! The structural layer — every node/enum struct and its child accessors —
+//! The structural layer - every node/enum struct and its child accessors -
 //! is **generated** from `eye.ungram` into [`generated`] by `cargo xtask
 //! codegen`. This module hand-writes only what a structural generator cannot
 //! derive: the [`AstNode`] trait, the [`support`] helpers, and the four
@@ -44,7 +44,7 @@ pub trait AstNode {
     where
         Self: Sized;
 
-    /// The untyped node underneath — the escape hatch back to the CST.
+    /// The untyped node underneath - the escape hatch back to the CST.
     fn syntax(&self) -> &SyntaxNode;
 }
 
@@ -73,7 +73,7 @@ impl<N: AstNode> Iterator for AstChildren<N> {
 }
 
 /// Child-access helpers the generated accessors are built from. Each is a
-/// cheap cursor walk over a node's immediate children — recomputed on every
+/// cheap cursor walk over a node's immediate children - recomputed on every
 /// call, never cached.
 pub mod support {
     use super::{AstChildren, AstNode};
@@ -113,7 +113,7 @@ pub enum LetKind {
 }
 
 impl LetStmt {
-    /// `const` vs `var` — the leading keyword.
+    /// `const` vs `var` - the leading keyword.
     pub fn kind(&self) -> Option<LetKind> {
         self.syntax()
             .children_with_tokens()
@@ -199,7 +199,7 @@ impl BinOp {
 }
 
 impl BinExpr {
-    /// The operator token — the direct child token between the two operands.
+    /// The operator token - the direct child token between the two operands.
     pub fn op_token(&self) -> Option<SyntaxToken> {
         self.syntax()
             .children_with_tokens()
@@ -239,7 +239,7 @@ mod tests {
         SourceFile::cast(parse.green).expect("root is a SourceFile")
     }
 
-    /// The canonical `main.eye` program — exercises every v0.1 node kind.
+    /// The canonical `main.eye` program - exercises every v0.1 node kind.
     const MAIN_EYE: &str = "\
 structure Point {
     int32 x,
@@ -297,7 +297,7 @@ main() {
         };
         let stmts: Vec<_> = f.body().unwrap().stmts().collect();
 
-        // `const x = 0;` — inferred type, no annotation
+        // `const x = 0;` - inferred type, no annotation
         let Stmt::LetStmt(x) = &stmts[0] else {
             panic!("first stmt is a let");
         };
@@ -309,7 +309,7 @@ main() {
         };
         assert_eq!(lit.literal_kind(), Some(LiteralKind::Int));
 
-        // `var Point p = Point { x, y };` — explicit type, struct literal
+        // `var Point p = Point { x, y };` - explicit type, struct literal
         let Stmt::LetStmt(p) = &stmts[2] else {
             panic!("third stmt is a let");
         };
@@ -326,7 +326,7 @@ main() {
     }
 
     /// Digs out the value expression of the first statement, which must be a
-    /// `let` — a shorthand for the operator tests below.
+    /// `let` - a shorthand for the operator tests below.
     fn first_let_value(src: &str) -> Expr {
         let file = source_file(src);
         let Some(Item::FnDef(f)) = file.items().next() else {
@@ -355,7 +355,7 @@ main() {
         assert!(matches!(add.lhs(), Some(Expr::Literal(_))));
 
         let Some(Expr::BinExpr(mul)) = add.rhs() else {
-            panic!("right of '+' is the '*' binop — '*' binds tighter");
+            panic!("right of '+' is the '*' binop - '*' binds tighter");
         };
         assert_eq!(mul.op(), Some(BinOp::Mul));
     }
@@ -377,7 +377,7 @@ main() {
 
     #[test]
     fn struct_lit_named_fields() {
-        // explicit `name: value` form — the value is a full expression
+        // explicit `name: value` form - the value is a full expression
         let Expr::StructLit(sl) =
             first_let_value("main() {\n    const p = Point { x: 0, y: 1 };\n}\n")
         else {
@@ -394,7 +394,7 @@ main() {
 
     #[test]
     fn struct_lit_shorthand_has_no_value() {
-        // bare-name form — `value()` is `None`, `name()` still resolves
+        // bare-name form - `value()` is `None`, `name()` still resolves
         let Expr::StructLit(sl) = first_let_value("main() {\n    const p = Point { x, y };\n}\n")
         else {
             panic!("value is a struct literal");

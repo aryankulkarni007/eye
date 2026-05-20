@@ -1,4 +1,4 @@
-//! The eye grammar — v0.1 subset covering exactly `main.eye`.
+//! The eye grammar - v0.1 subset covering exactly `main.eye`.
 //!
 //! ```text
 //! source_file := item*
@@ -26,7 +26,7 @@
 //!
 //! Every function opens a [`Marker`], parses, and completes it with a node
 //! kind. Parsing is resilient: an unexpected token is wrapped in an
-//! `ErrorNode` and skipped — the parser never bails, so a tree always comes
+//! `ErrorNode` and skipped - the parser never bails, so a tree always comes
 //! out.
 //!
 //! [`Marker`]: crate::Marker
@@ -34,7 +34,7 @@
 use crate::{CompletedMarker, Parser};
 use syntax::{SyntaxKind, T};
 
-/// True if `p` is positioned at a token that can begin an expression — an
+/// True if `p` is positioned at a token that can begin an expression - an
 /// atom, or the prefix `-`.
 fn at_expr_start(p: &Parser) -> bool {
     matches!(
@@ -113,7 +113,7 @@ fn fn_def(p: &mut Parser) {
 fn param_list(p: &mut Parser) {
     let m = p.open();
     // `(` and `)` are separate tokens; an empty `()` is just a ParamList
-    // with no params — unit is inferred from the absence of content
+    // with no params - unit is inferred from the absence of content
     p.expect(T!['('], "expected '('");
     p.expect(T![')'], "expected ')'");
     m.complete(p, SyntaxKind::ParamList);
@@ -181,7 +181,7 @@ fn infix_binding_power(kind: SyntaxKind) -> Option<(u8, u8)> {
     })
 }
 
-/// Right binding power of the prefix `-` — above every infix operator, so
+/// Right binding power of the prefix `-` - above every infix operator, so
 /// `-a * b` parses as `(-a) * b`.
 const PREFIX_BP: u8 = 11;
 
@@ -287,11 +287,11 @@ fn struct_body(p: &mut Parser) {
 
 /// A field initializer in a struct literal. A bare `Ident` is the shorthand
 /// form (`Point { x }`); `Ident ':' expr` is the explicit form
-/// (`Point { x: 0 }`). One node kind serves both — the presence of a value
+/// (`Point { x: 0 }`). One node kind serves both - the presence of a value
 /// expression distinguishes them.
 fn struct_lit_field(p: &mut Parser) {
     let m = p.open();
-    p.advance(); // field name — the caller checked it is an Ident
+    p.advance(); // field name - the caller checked it is an Ident
     if p.eat(T![:]) {
         expr(p);
     }

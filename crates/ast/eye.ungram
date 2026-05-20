@@ -1,11 +1,11 @@
-// The eye grammar — v0.1 subset, mirroring crates/parser/src/grammar.rs.
+// The eye grammar - v0.1 subset, mirroring crates/parser/src/grammar.rs.
 //
 // This file is the source of truth for `cargo xtask codegen`, which
 // regenerates crates/ast/src/generated.rs from it.
 //
 // Conventions:
 //   * Tokens that need a typed accessor are labelled (e.g. `name:'ident'`).
-//     Unlabelled tokens — punctuation, keywords — generate nothing.
+//     Unlabelled tokens - punctuation, keywords - generate nothing.
 //   * A node whose body is an alternation of *nodes* (Item, Stmt, Expr)
 //     generates a typed `enum`; an alternation of *tokens* (Literal)
 //     generates a plain node with no accessor.
