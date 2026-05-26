@@ -450,6 +450,16 @@ main() {
     }
 
     #[test]
+    fn nested_field_access_parses_clean_and_round_trips() {
+        // Chained `a.b.c` exercises the postfix loop in `lhs`, producing
+        // `FieldExpr(FieldExpr(a, b), c)` rather than two siblings.
+        let src = "main() {\n    print(\"{}\", a.b.c);\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    #[test]
     fn cst_snapshot() {
         let parse = parse_src(SAMPLE);
         insta::assert_snapshot!(format!("{:#?}", parse.green));

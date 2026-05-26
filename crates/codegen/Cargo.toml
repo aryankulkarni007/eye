@@ -8,3 +8,9 @@ name = "codegen"
 
 [dependencies]
 hir.workspace = true
+
+[dev-dependencies]
+lexer.workspace = true
+parser.workspace = true
+ast.workspace = true
+insta.workspace = true

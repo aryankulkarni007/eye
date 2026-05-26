@@ -46,7 +46,7 @@ impl<'a> CGen<'a> {
             TypeRef::Path(name) => match name.as_str() {
                 "int32" => "int32_t".to_string(),
                 "bool" => "bool".to_string(),
-                other => format!("struct {}", other),
+                other => other.to_string(),
             },
             TypeRef::Error => "void* /* ERROR TY */".to_string(),
         }
@@ -54,7 +54,7 @@ impl<'a> CGen<'a> {
 
     fn gen_struct(&mut self, struct_def: &Struct) {
         self.output
-            .push_str(&format!("struct {} {{\n", struct_def.name));
+            .push_str(&format!("typedef struct {} {{\n", struct_def.name));
         self.indent_level += 1;
 
         for &field_id in &struct_def.fields {
@@ -66,7 +66,8 @@ impl<'a> CGen<'a> {
         }
 
         self.indent_level -= 1;
-        self.output.push_str("};\n\n");
+        self.output
+            .push_str(&format!("}} {};\n\n", struct_def.name));
     }
 
     fn gen_function(&mut self, r#fn: &Function) {
@@ -188,8 +189,8 @@ impl<'a> CGen<'a> {
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         self.output.push_str(", ");
-                        self.gen_expr(*arg, body);
                     }
+                    self.gen_expr(*arg, body);
                 }
                 self.output.push(')');
             }
@@ -229,5 +230,131 @@ impl<'a> CGen<'a> {
             self.gen_expr(*arg, body);
         }
         self.output.push(')');
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ast::{AstNode, SourceFile};
+    use hir::core::lower_source_file;
+    use lexer::{Lexer, SourceText};
+
+    fn emit(src: &str) -> String {
+        let source = SourceText::new(src.to_string());
+        let tokens = Lexer::new(&source).tokenize().tokens;
+        let parse = parser::parse(&tokens, &source);
+        assert!(parse.errors.is_empty(), "parse errors: {:?}", parse.errors);
+        let file = SourceFile::cast(parse.green).expect("root is SourceFile");
+        let hir = lower_source_file(file);
+        assert!(
+            hir.diagnostics.is_empty(),
+            "hir diagnostics: {:?}",
+            hir.diagnostics
+        );
+        CGen::new(&hir).gen_all()
+    }
+
+    /// Canonical `main.eye`. Pinning the C output cements the v0.1 codegen
+    /// behaviour - any incidental change downstream forces a snapshot
+    /// review.
+    #[test]
+    fn main_eye_c_output_snapshot() {
+        let src = "\
+structure Point {
+    int32 x,
+    int32 y,
+};
+
+main() {
+    const int32 x = 0;
+    const int32 y = 0;
+    var Point p = Point { x, y };
+
+    print(\"{}\", p.x);
+    print(\"{}\", p.y);
+}
+";
+        insta::assert_snapshot!(emit(src));
+    }
+
+    /// Regression for the call-arg emission bug: the loop used to guard
+    /// `gen_expr` behind `if i > 0`, dropping arg 0 for every non-`print`
+    /// call. The v0.1 parser has no fn-call-with-args path outside
+    /// `print(...)`, so we build the HIR directly and feed it into the
+    /// expression generator.
+    #[test]
+    fn user_fn_call_emits_every_argument_in_order() {
+        use hir::core::{
+            Body, Expr, Function, Literal, Resolution, Stmt, HIR,
+        };
+
+        let mut hir = HIR::default();
+
+        let callee_fn = hir.functions.alloc(Function {
+            name: "add".into(),
+            params: Vec::new(),
+            ret: None,
+            body: None,
+        });
+
+        let mut body = Body::default();
+        let callee = body.exprs.alloc(Expr::Path(Resolution::Fn(callee_fn)));
+        let a1 = body.exprs.alloc(Expr::Literal(Literal::Int(1)));
+        let a2 = body.exprs.alloc(Expr::Literal(Literal::Int(2)));
+        let a3 = body.exprs.alloc(Expr::Literal(Literal::Int(3)));
+        let call = body.exprs.alloc(Expr::Call {
+            callee,
+            args: vec![a1, a2, a3],
+        });
+        let call_stmt = body.stmts.alloc(Stmt::Expr(call));
+        body.block.push(call_stmt);
+        let body_id = hir.bodies.alloc(body);
+
+        let main_fn = hir.functions.alloc(Function {
+            name: "main".into(),
+            params: Vec::new(),
+            ret: None,
+            body: Some(body_id),
+        });
+        hir.items.values.insert("main".into(), main_fn);
+        hir.items.values.insert("add".into(), callee_fn);
+
+        let c = CGen::new(&hir).gen_all();
+        assert!(
+            c.contains("add(1, 2, 3)"),
+            "expected `add(1, 2, 3)` in output, got:\n{c}"
+        );
+        assert!(
+            !c.contains("add(, "),
+            "leading separator should not appear, got:\n{c}"
+        );
+    }
+
+    /// Regression for nested field access: the HIR previously used
+    /// `NameRef::nth(1)`, which returns `None` when the base is itself
+    /// a `FieldExpr`. The C output should contain the chained `.y`.
+    #[test]
+    fn nested_field_access_lowers_correctly() {
+        let src = "\
+structure Inner {
+    int32 y,
+};
+
+structure Outer {
+    Inner i,
+};
+
+main() {
+    const Inner i = Inner { y: 42 };
+    const Outer o = Outer { i: i };
+    print(\"{}\", o.i.y);
+}
+";
+        let c = emit(src);
+        assert!(
+            c.contains("o.i.y"),
+            "expected chained field access `o.i.y` in output, got:\n{c}"
+        );
     }
 }

@@ -125,7 +125,11 @@ dependencies = [
 name = "eye-codegen"
 version = "0.1.0"
 dependencies = [
+ "eye-ast",
  "eye-hir",
+ "eye-lexer",
+ "eye-parser",
+ "insta",
 ]
 
 [[package]]

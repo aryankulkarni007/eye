@@ -1,1 +1,4 @@
 /target
+/eyesrc/*.c
+/eyesrc/main
+/eyesrc/design

@@ -10,9 +10,9 @@
 //! Pipeline runs in three passes from [`lower_source_file`]:
 //! 1. `collect_items` registers every top-level [`Struct`] and [`Function`]
 //!    in [`HIR::items`]. Forward refs work because bodies have not been walked
-//!    yet. Duplicate declarations are *not* detected: a second definition with
-//!    the same name silently overwrites the first in [`ItemScope`]. Both items
-//!    still occupy arena slots.
+//!    yet. Duplicate declarations emit an [`HirDiagnostic`]; the later
+//!    definition still overwrites the earlier one in [`ItemScope`], and both
+//!    items keep their arena slots so existing IDs do not invalidate.
 //! 2. Name resolution. Type resolution is deferred to codegen for v0.1: a
 //!    [`TypeRef`] stays as a `Path(name)` string with no `StructId` attached.
 //!    Value resolution (locals + items) is folded into pass 3 since lexical
@@ -201,6 +201,16 @@ pub struct HIR {
     /// don't collide (struct names start uppercase by convention, but the
     /// resolver treats them in one map until the language says otherwise).
     pub items: ItemScope,
+    /// Diagnostics produced during lowering. Non-empty means the input had
+    /// semantic issues even if the parser was happy.
+    pub diagnostics: Vec<HirDiagnostic>,
+}
+
+/// A semantic diagnostic raised during HIR lowering.
+#[derive(Debug, Clone)]
+pub struct HirDiagnostic {
+    pub ptr: SyntaxNodePtr,
+    pub msg: String,
 }
 
 #[derive(Debug, Default)]
@@ -422,11 +432,19 @@ impl<'a> LoweringCtx<'a> {
                     None => self.alloc_expr(Expr::Missing, ptr),
                 };
 
+                // The parser appends exactly one NameRef child *after* the
+                // `.` token for the field name. `FieldExpr::name_ref()` is
+                // a `support::child` accessor that returns the *first*
+                // NameRef, which is the base when the base is itself a bare
+                // NameRef (e.g. `p.x`) and is missing on nested access
+                // (`a.b.c` - the outer FieldExpr has FieldExpr+NameRef as
+                // children). The field name is always the last NameRef
+                // child.
                 let name: SmolStr = fe
                     .syntax()
                     .children()
                     .filter_map(ast::NameRef::cast)
-                    .nth(1)
+                    .last()
                     .and_then(|nr| nr.name())
                     .map(|t| SmolStr::from(t.text().trim()))
                     .unwrap_or_default();
@@ -506,7 +524,9 @@ pub fn lower_source_file(file: ast::SourceFile) -> HIR {
 
 /// Walk top-level items, allocate signatures, populate [`ItemScope`].
 /// Returns the AST nodes for each function so pass 3 can lower their bodies
-/// without re-traversing the file.
+/// without re-traversing the file. Emits a diagnostic on duplicate names
+/// (later definitions still take effect; the original slot stays allocated
+/// but is shadowed in the scope map).
 fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId, ast::FnDef)> {
     let mut fn_asts = Vec::new();
     for item in file.items() {
@@ -535,6 +555,14 @@ fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId, ast::FnDef
                     name: name.clone(),
                     fields,
                 });
+                if hir.items.types.contains_key(&name)
+                    || hir.items.values.contains_key(&name)
+                {
+                    hir.diagnostics.push(HirDiagnostic {
+                        ptr: SyntaxNodePtr::new(s.syntax()),
+                        msg: format!("duplicate item `{name}`"),
+                    });
+                }
                 hir.items.types.insert(name, struct_id);
             }
             ast::Item::FnDef(f) => {
@@ -549,6 +577,14 @@ fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId, ast::FnDef
                     ret: None,
                     body: None,
                 });
+                if hir.items.values.contains_key(&name)
+                    || hir.items.types.contains_key(&name)
+                {
+                    hir.diagnostics.push(HirDiagnostic {
+                        ptr: SyntaxNodePtr::new(f.syntax()),
+                        msg: format!("duplicate item `{name}`"),
+                    });
+                }
                 hir.items.values.insert(name, fn_id);
                 fn_asts.push((fn_id, f));
             }
@@ -639,6 +675,111 @@ main() {
             }
         }
         assert_eq!(sl_field_count, 2, "Point literal has two fields");
+    }
+
+    #[test]
+    fn duplicate_struct_emits_diagnostic() {
+        let hir = lower("\
+structure Point {
+    int32 x,
+};
+
+structure Point {
+    int32 y,
+};
+
+main() {}
+");
+        assert_eq!(
+            hir.diagnostics.len(),
+            1,
+            "expected one diagnostic, got: {:?}",
+            hir.diagnostics
+        );
+        assert!(
+            hir.diagnostics[0].msg.contains("duplicate item `Point`"),
+            "unexpected message: {}",
+            hir.diagnostics[0].msg
+        );
+        // both struct arena slots persist so existing IDs stay valid
+        assert_eq!(hir.structs.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_fn_emits_diagnostic() {
+        let hir = lower("\
+main() {}
+main() {}
+");
+        assert_eq!(hir.diagnostics.len(), 1, "{:?}", hir.diagnostics);
+        assert!(
+            hir.diagnostics[0].msg.contains("duplicate item `main`"),
+            "unexpected message: {}",
+            hir.diagnostics[0].msg
+        );
+        assert_eq!(hir.functions.len(), 2);
+    }
+
+    #[test]
+    fn fn_and_struct_with_same_name_collide() {
+        // Cross-namespace collision should still be flagged: in v0.1 the
+        // resolver treats both namespaces as one for name-resolution.
+        let hir = lower("\
+structure Foo {
+    int32 x,
+};
+
+Foo() {}
+");
+        assert_eq!(hir.diagnostics.len(), 1, "{:?}", hir.diagnostics);
+        assert!(
+            hir.diagnostics[0].msg.contains("duplicate item `Foo`"),
+            "unexpected message: {}",
+            hir.diagnostics[0].msg
+        );
+    }
+
+    #[test]
+    fn well_formed_program_has_no_diagnostics() {
+        let hir = lower(MAIN_EYE);
+        assert!(
+            hir.diagnostics.is_empty(),
+            "expected zero diagnostics, got: {:?}",
+            hir.diagnostics
+        );
+    }
+
+    /// Regression for the `NameRef::nth(1)` bug: when the base of a field
+    /// access is itself a field expression (`a.b.c`), the outer FieldExpr
+    /// has only one direct NameRef child (the field name); `nth(1)` would
+    /// silently return `None` and drop the name.
+    #[test]
+    fn nested_field_access_resolves_field_name() {
+        let src = "\
+main() {
+    print(\"{}\", a.b.c);
+}
+";
+        let hir = lower(src);
+        let main_id = *hir.items.values.get("main").unwrap();
+        let body_id = hir.functions[main_id].body.expect("main has body");
+        let body = &hir.bodies[body_id];
+
+        // collect every Expr::Field name; expect `c` and `b` to be present.
+        let mut names: Vec<&str> = body
+            .exprs
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Expr::Field { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["b", "c"],
+            "nested field access dropped a name"
+        );
     }
 
     /// Manual dump - run with `cargo test -p eye-hir dump -- --nocapture`.
