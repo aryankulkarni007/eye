@@ -1,7 +1,8 @@
-# Adding features to the eye pipeline
+# Adding features to the Eye pipeline
 
-How to extend the compiler when growing `main.eye`'s v0.1 subset toward the
-full language. Read this before touching the grammar.
+How to extend the compiler end-to-end: lexer through HIR lowering and C codegen.
+Read [`FUTURE.md`](FUTURE.md) for what is already shipped and known limitations.
+Read [`VISION.md`](VISION.md) before adding kernel syntax that might belong in stdlib.
 
 ## Workspace layout
 
@@ -10,20 +11,23 @@ The compiler is a Cargo workspace - one crate per pipeline stage, wired by the
 
 ```
 token ──┬──▶ lexer ──┐
-        └──▶ syntax ──┴──▶ parser ──▶ ast ──▶ eye (bin)
+        └──▶ syntax ──┴──▶ parser ──▶ ast ──▶ hir ──▶ codegen ──▶ eye (bin)
 
 xtask  ──▶ generates crates/ast/src/generated.rs   (off to the side)
 ```
 
-| Crate        | Path                                                    | Owns                                                            |
-| ------------ | ------------------------------------------------------- | --------------------------------------------------------------- |
-| `eye-token`  | `crates/token/src/lib.rs`                               | `Token`, `TokenKind` (+ its `logos` rules), `Diagnostic`        |
-| `eye-lexer`  | `crates/lexer/src/lib.rs`                               | `Lexer` (the `logos` driver), `SourceText`, `Interner`, `Lexed` |
-| `eye-syntax` | `crates/syntax/src/lib.rs`                              | `SyntaxKind`, rowan binding, `T!`                               |
-| `eye-parser` | `crates/parser/src/lib.rs` + `grammar.rs`               | event stream, grammar, `build_tree`                             |
-| `eye-ast`    | `crates/ast/src/lib.rs` + `generated.rs` + `eye.ungram` | typed views over the CST                                        |
-| `xtask`      | `crates/xtask/src/main.rs`                              | `cargo xtask codegen` - regenerates `ast/generated.rs`          |
-| `eye`        | `src/main.rs`                                           | thin driver over the crates above                               |
+| Crate          | Path                                                      | Owns                                                                 |
+| -------------- | --------------------------------------------------------- | -------------------------------------------------------------------- |
+| `eye-token`    | `crates/token/src/lib.rs`                                 | `Token`, `TokenKind` (+ its `logos` rules), `Diagnostic`             |
+| `eye-lexer`    | `crates/lexer/src/lib.rs`                                 | `Lexer` (the `logos` driver), `SourceText`, `Interner`, `Lexed`      |
+| `eye-syntax`   | `crates/syntax/src/lib.rs`                                | `SyntaxKind`, rowan binding, `T!`                                    |
+| `eye-parser`   | `crates/parser/src/lib.rs` + `grammar.rs`                 | event stream, grammar, `build_tree`                                  |
+| `eye-ast`      | `crates/ast/src/lib.rs` + `generated.rs` + `eye.ungram`   | typed views over the CST                                             |
+| `eye-hir`      | `crates/hir/src/core/` + `core/lower/`                    | `HIR`, `lower_source_file`, name resolution, `expr_types`, diags     |
+| `eye-codegen`  | `crates/codegen/src/core/` + `core/{expr,stmt,matches,…}` | `CGen`, HIR → C string                                               |
+| `xtask`        | `crates/xtask/src/main.rs`                                | `cargo xtask codegen` - regenerates `ast/generated.rs`             |
+| `eye`          | `src/main.rs`                                             | driver: lex → parse → lower → codegen → clang                        |
+| `eye-lsp`      | `crates/lsp/src/`                                         | `eye_lsp::run` — semantic tokens + parser diagnostics over LSP       |
 
 Each crate's lib name is the short form (`use lexer::Lexer`), the package name
 is `eye-*`. A stage only sees the crates below it - `ast` cannot reach into the
@@ -58,7 +62,13 @@ green tree (CST)         parser - build_tree drives rowan, lossless
 typed AST                ast    - generated views over the CST
   │
   ▼
-HIR → C transpile        (not yet built)
+HIR                      hir    - lower_source_file (collect → lower bodies)
+  │  lower/ split by concern: types, collect, expr, stmt, pat, matches, …
+  ▼
+C source                 codegen - CGen::gen_all (core/ split by concern)
+  │
+  ▼
+native binary            eye driver - clang link, optional clang-format
 ```
 
 Two invariants hold at every stage and must keep holding:
@@ -210,6 +220,65 @@ The tokens (`If`, `Else`) and their `SyntaxKind`s already exist. So:
 
 No `lexer` or `token` change at all - the lexemes were already there.
 
+## Adding semantics (HIR)
+
+After the AST parses, meaning lives in `eye-hir`. Entry point:
+`lower_source_file` in `crates/hir/src/core/lower/mod.rs`.
+
+| Submodule | Path | Typical change |
+| --------- | ---- | -------------- |
+| Item collection | `lower/collect.rs` | new top-level item kinds |
+| Types / literals | `lower/types.rs` | new `TypeRef` shapes, literal typing |
+| Expressions | `lower/expr.rs` | new `Expr` variants, `expr_types` rules |
+| Statements | `lower/stmt.rs` | `let`, blocks, scopes |
+| Patterns | `lower/pat.rs` | match patterns (not `let` bindings) |
+| Context | `lower/ctx.rs` | resolve, alloc, field-type lookup |
+
+`LoweringCtx` and `Scopes` are defined in `lower/mod.rs` so split `impl` blocks
+in child files can access private fields (same pattern as `CGen` in codegen).
+
+Rules:
+
+- Name resolution and exhaustiveness belong here, not in the parser.
+- Populate `body.expr_types` when codegen or match lowering needs a type.
+- Add unit tests in `crates/hir/src/core/tests.rs`.
+- Record user-facing limitations in [`FUTURE.md`](FUTURE.md).
+
+## Adding codegen (C backend)
+
+`CGen` in `crates/codegen/src/core.rs`; methods split across `core/*.rs`.
+
+| File | Owns |
+| ---- | ---- |
+| `types.rs` | `map_type_ref`, `get_expr_type`, `c_declarator`, `print` specifiers |
+| `items.rs` | struct, union, enum, function prologue |
+| `stmt.rs` | `let`, expression statements, match hoist prelude |
+| `expr.rs` | expression emission, ternary `if` |
+| `matches.rs` | `switch`, `_matchN` hoist |
+| `print.rs` | `print` intrinsic |
+
+Value-position `match` is hoisted from `gen_stmt` before the use site is emitted
+(see [`M5.md`](M5.md)). If you add an expression form that can contain a
+match inline, update the hoist walk in `matches.rs`.
+
+Add regression tests in `crates/codegen/src/core/tests.rs`. For externally
+visible behaviour, add or extend a test in `tests/e2e.rs` and an `eyesrc/*.eye`
+fixture.
+
+## Extending `eye-lsp`
+
+Crate layout mirrors the compiler split: [`crates/lsp/src/`](../crates/lsp/src/)
+
+| Module | Change |
+|--------|--------|
+| `legend.rs` | New semantic token type — keep indices in sync with `SemanticTokensLegend` |
+| `highlight/cst.rs` | Classify new AST nodes (accurate name colors) |
+| `highlight/token_kind.rs` | New lexer keyword / operator mapping |
+| `diagnostics.rs` | New diagnostic sources (e.g. HIR after v0.5) |
+| `server/` | New LSP methods |
+
+Tests live in each module’s `#[cfg(test)]` block. See [`editor-setup.md`](editor-setup.md).
+
 ## Gotchas
 
 - **Exhaustive matches are the guardrail.** `From<TokenKind>` in the `syntax`
@@ -243,12 +312,17 @@ No `lexer` or `token` change at all - the lexemes were already there.
 ## Checklist
 
 ```
-[ ] token crate   - new TokenKind variant + its logos rule  (only for new lexemes)
-[ ] syntax crate  - SyntaxKind variant + From<TokenKind> arm + T! arm
-[ ] grammar.rs    - parse rule, wired into its parent, EBNF updated
-[ ] eye.ungram    - new rule; then `cargo xtask codegen`
-[ ] ast lib.rs    - hand-written semantic accessor, only if one is needed
-[ ] tests         - unit tests in each touched crate
-[ ] snapshots     - INSTA_UPDATE=always cargo test --workspace, review the diff
-[ ] cargo build --workspace - 0 warnings
+[ ] token crate     - new TokenKind variant + its logos rule  (only for new lexemes)
+[ ] syntax crate    - SyntaxKind variant + From<TokenKind> arm + T! arm
+[ ] grammar.rs      - parse rule, wired into its parent, EBNF updated
+[ ] eye.ungram      - new rule; then `cargo xtask codegen`
+[ ] ast lib.rs      - hand-written semantic accessor, only if one is needed
+[ ] hir lower/      - lower the new construct; expr_types / diags as needed
+[ ] hir tests       - crates/hir/src/core/tests.rs
+[ ] codegen core/   - emit C; update match hoist walk if expr trees change
+[ ] codegen tests   - crates/codegen/src/core/tests.rs
+[ ] e2e             - tests/e2e.rs + eyesrc fixture when behaviour is user-visible
+[ ] FUTURE.md       - shipped surface, limitations, oversights
+[ ] snapshots       - INSTA_UPDATE=always cargo test --workspace, review the diff
+[ ] cargo clippy --workspace --all-targets -- -D warnings
 ```

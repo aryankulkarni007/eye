@@ -1,0 +1,27 @@
+[package]
+name = "eye-lsp"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "eye_lsp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eye-lsp"
+path = "src/main.rs"
+
+[dependencies]
+lsp-server = "0.7"
+lsp-types = "0.95"
+serde_json = "1"
+anyhow.workspace = true
+lexer.workspace = true
+syntax.workspace = true
+parser.workspace = true
+ast.workspace = true
+token.workspace = true
+text-size.workspace = true
+
+[dev-dependencies]
+insta = { workspace = true }

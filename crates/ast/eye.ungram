@@ -1,4 +1,4 @@
-// The eye grammar - v0.1 subset, mirroring crates/parser/src/grammar.rs.
+// The Eye grammar (v0.4 surface: through enums, match, FFI, union, arrays)
 //
 // This file is the source of truth for `cargo xtask codegen`, which
 // regenerates crates/ast/src/generated.rs from it.
@@ -15,29 +15,68 @@
 
 SourceFile = items:Item*
 
-Item = StructDef | FnDef
+Item = StructDef | FnDef | EnumDef | UnionDef | ExternBlock
 
 StructDef = 'structure' name:'ident' FieldList ';'
 
+UnionDef = 'union' name:'ident' FieldList ';'
+
+ExternBlock = 'extern' '{' fns:ExternFn* '}'
+
+ExternFn = name:'ident' ParamList ('->' ret_type:TypeRef)? ';'
+
 FieldList = '{' fields:Field* '}'
 
-Field = TypeRef name:'ident' ','
+Field = ty:TypeRef name:'ident' ','
 
-TypeRef = name:'ident'
+EnumDef = 'enum' name:'ident' '=' variants:Variant* ';'
 
-FnDef = name:'ident' ParamList body:Block
+Variant = '|'? name:'ident'
 
-ParamList = '(' ')'
+FnDef = name:'ident' ParamList ('->' ret_type:TypeRef)? body:Block
 
-Block = '{' stmts:Stmt* '}'
+ParamList = '(' params:Param* ')'
+
+Param = ty:TypeRef name:'ident' ','?
+
+Block = '{' stmts:Stmt* tail_expr:Expr? '}'
 
 Stmt = LetStmt | ExprStmt
 
-LetStmt = TypeRef? name:'ident' '=' value:Expr ';'
+LetStmt = ty:TypeRef? name:'ident' '=' value:Expr ';'
 
 ExprStmt = Expr ';'
 
-Expr = Literal | NameRef | CallExpr | StructLit | BinExpr | PrefixExpr | FieldExpr
+// --- TYPE SYSTEM UPDATES ---
+TypeRef = IdentType | RefType | PtrType | ArrayType
+
+IdentType = name:'ident'
+
+RefType = '&' inner:TypeRef
+
+PtrType = inner:TypeRef '*'
+
+ArrayType = '[' elem:TypeRef ';' len:Expr ']'
+
+Expr =
+  Literal
+  | NameRef
+  | CallExpr
+  | StructLit
+  | ArrayLit
+  | IndexExpr
+  | BinExpr
+  | PrefixExpr
+  | FieldExpr
+  | AssignExpr
+  | IfExpr
+  | LoopExpr
+  | BreakExpr
+  | ContinueExpr
+  | RefExpr
+  | DerefExpr
+  | CastExpr
+  | MatchExpr
 
 Literal = 'int' | 'float' | 'string' | 'true' | 'false' | 'char'
 
@@ -47,14 +86,48 @@ CallExpr = callee:Expr ArgList
 
 ArgList = '(' args:Expr* ')'
 
+ArrayLit = '[' elems:Expr* ']'
+
+IndexExpr = base:Expr '[' index:Expr ']'
+
 BinExpr = lhs:Expr rhs:Expr
 
 PrefixExpr = '-' operand:Expr
 
 FieldExpr = expr:Expr '.' name_ref:NameRef
 
+AssignExpr = lhs:Expr '=' rhs:Expr
+
+IfExpr = 'if' condition:Expr then_branch:Block ('else' else_branch:Block)?
+
+LoopExpr = 'loop' body:Block
+
+BreakExpr = 'break' expr:Expr?
+
+ContinueExpr = 'continue'
+
+RefExpr = '&' expr:Expr
+
+DerefExpr = '*' expr:Expr
+
+CastExpr = operand:Expr 'as' ty:TypeRef
+
 StructLit = NameRef field_list:StructLitFieldList
 
 StructLitFieldList = '{' fields:StructLitField* '}'
 
 StructLitField = name:'ident' value:Expr?
+
+MatchExpr = 'match' scrut:Expr arm_list:MatchArmList
+
+MatchArmList = '{' arms:MatchArm* '}'
+
+MatchArm = pat:Pat '->' body:Expr ','?
+
+Pat = PathPat | BareIdentPat | WildcardPat
+
+PathPat = qualifier:NameRef '.' name:NameRef
+
+BareIdentPat = name:NameRef
+
+WildcardPat = '_'

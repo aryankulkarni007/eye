@@ -2,7 +2,7 @@
 source: crates/parser/src/lib.rs
 expression: "format!(\"{:#?}\", parse.green)"
 ---
-SourceFile@0..132
+SourceFile@0..130
   StructDef@0..48
     Structure@0..9 "structure"
     Wspace@9..10 " "
@@ -11,7 +11,7 @@ SourceFile@0..132
       Wspace@15..16 " "
       Obrace@16..17 "{"
       Field@17..29
-        TypeRef@17..28
+        IdentType@17..28
           Newline@17..18 "\n"
           Wspace@18..22 "    "
           Ident@22..27 "int32"
@@ -19,7 +19,7 @@ SourceFile@0..132
         Ident@28..29 "x"
       Comma@29..30 ","
       Field@30..42
-        TypeRef@30..41
+        IdentType@30..41
           Newline@30..31 "\n"
           Wspace@31..35 "    "
           Ident@35..40 "int32"
@@ -31,74 +31,74 @@ SourceFile@0..132
     Semicolon@45..46 ";"
     Newline@46..47 "\n"
     Newline@47..48 "\n"
-  FnDef@48..132
+  FnDef@48..130
     Ident@48..52 "main"
     ParamList@52..55
       Oparen@52..53 "("
       Cparen@53..54 ")"
       Wspace@54..55 " "
-    Block@55..132
+    Block@55..130
       Obrace@55..56 "{"
-      LetStmt@56..78
+      LetStmt@56..76
         Newline@56..57 "\n"
         Wspace@57..61 "    "
-        Const@61..66 "const"
+        Let@61..64 "let"
+        Wspace@64..65 " "
+        Ident@65..66 "x"
         Wspace@66..67 " "
-        Ident@67..68 "x"
-        Wspace@68..69 " "
-        Assign@69..70 "="
-        Literal@70..72
-          Wspace@70..71 " "
-          Int@71..72 "0"
-        Semicolon@72..73 ";"
-        Newline@73..74 "\n"
-        Wspace@74..78 "    "
-      LetStmt@78..112
-        Var@78..81 "var"
-        TypeRef@81..88
-          Wspace@81..82 " "
-          Ident@82..87 "Point"
-          Wspace@87..88 " "
-        Ident@88..89 "p"
-        Wspace@89..90 " "
-        Assign@90..91 "="
-        StructLit@91..106
-          NameRef@91..98
-            Wspace@91..92 " "
-            Ident@92..97 "Point"
-            Wspace@97..98 " "
-          StructLitFieldList@98..106
-            Obrace@98..99 "{"
-            StructLitField@99..101
-              Wspace@99..100 " "
-              Ident@100..101 "x"
-            Comma@101..102 ","
-            StructLitField@102..105
+        Assign@67..68 "="
+        Literal@68..70
+          Wspace@68..69 " "
+          Int@69..70 "0"
+        Semicolon@70..71 ";"
+        Newline@71..72 "\n"
+        Wspace@72..76 "    "
+      LetStmt@76..110
+        Mut@76..79 "mut"
+        IdentType@79..86
+          Wspace@79..80 " "
+          Ident@80..85 "Point"
+          Wspace@85..86 " "
+        Ident@86..87 "p"
+        Wspace@87..88 " "
+        Assign@88..89 "="
+        StructLit@89..104
+          NameRef@89..96
+            Wspace@89..90 " "
+            Ident@90..95 "Point"
+            Wspace@95..96 " "
+          StructLitFieldList@96..104
+            Obrace@96..97 "{"
+            StructLitField@97..99
+              Wspace@97..98 " "
+              Ident@98..99 "x"
+            Comma@99..100 ","
+            StructLitField@100..103
+              Wspace@100..101 " "
+              Ident@101..102 "y"
               Wspace@102..103 " "
-              Ident@103..104 "y"
-              Wspace@104..105 " "
-            Cbrace@105..106 "}"
-        Semicolon@106..107 ";"
-        Newline@107..108 "\n"
-        Wspace@108..112 "    "
-      ExprStmt@112..130
-        CallExpr@112..128
-          NameRef@112..117
-            Ident@112..117 "print"
-          ArgList@117..128
-            Oparen@117..118 "("
-            Literal@118..122
-              String@118..122 "\"{}\""
-            Comma@122..123 ","
-            FieldExpr@123..127
-              NameRef@123..125
-                Wspace@123..124 " "
-                Ident@124..125 "p"
-              Dot@125..126 "."
-              NameRef@126..127
-                Ident@126..127 "x"
-            Cparen@127..128 ")"
-        Semicolon@128..129 ";"
-        Newline@129..130 "\n"
-      Cbrace@130..131 "}"
-      Newline@131..132 "\n"
+            Cbrace@103..104 "}"
+        Semicolon@104..105 ";"
+        Newline@105..106 "\n"
+        Wspace@106..110 "    "
+      ExprStmt@110..128
+        CallExpr@110..126
+          NameRef@110..115
+            Ident@110..115 "print"
+          ArgList@115..126
+            Oparen@115..116 "("
+            Literal@116..120
+              String@116..120 "\"{}\""
+            Comma@120..121 ","
+            FieldExpr@121..125
+              NameRef@121..123
+                Wspace@121..122 " "
+                Ident@122..123 "p"
+              Dot@123..124 "."
+              NameRef@124..125
+                Ident@124..125 "x"
+            Cparen@125..126 ")"
+        Semicolon@126..127 ";"
+        Newline@127..128 "\n"
+      Cbrace@128..129 "}"
+      Newline@129..130 "\n"

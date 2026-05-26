@@ -1,1 +1,14 @@
-/target
+# Rust build output
+/target/
+
+# Generated Eye compiler outputs
+/eyesrc/*.c
+/eyesrc/*
+!/eyesrc/*.eye
+
+# Local editor and OS files
+/.cursor/
+.DS_Store
+*.swp
+*.swo
+*~

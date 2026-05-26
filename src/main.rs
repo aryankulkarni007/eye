@@ -1,265 +1,75 @@
-use std::{
-    fs::File,
-    io::Write,
-    process::{Command, Stdio},
-};
+use std::path::Path;
 
 use ast::AstNode;
-use codegen::core::CGen;
+use clap::Parser;
 use hir::core::lower_source_file;
-use lexer::{Interner, Lexer, SourceText, Symbol};
-use smallvec::SmallVec;
-use syntax::SyntaxToken;
+use lexer::{Lexer, SourceText};
 
-/// a token's text, or a placeholder when the parse left the slot empty.
-#[allow(dead_code)]
-fn tok_text(t: Option<SyntaxToken>) -> String {
-    t.map(|t| t.text().to_string())
-        .unwrap_or_else(|| "<missing>".to_string())
-}
-
-/// one-line summary of an expression - recurses through calls.
-#[allow(dead_code)]
-fn describe_expr(expr: &ast::Expr) -> String {
-    match expr {
-        ast::Expr::Literal(l) => match l.literal_kind() {
-            Some(k) => format!("{k:?}({})", tok_text(l.token())),
-            None => format!("literal({})", tok_text(l.token())),
-        },
-        ast::Expr::NameRef(n) => format!("name {}", tok_text(n.name())),
-        ast::Expr::FieldExpr(field_expr) => {
-            let base = field_expr
-                .expr()
-                .map(|e| describe_expr(&e))
-                .unwrap_or_else(|| "<missing>".to_string());
-
-            let field = field_expr
-                .name_ref()
-                .and_then(|n| n.name())
-                .map(|t| tok_text(Some(t)))
-                .unwrap_or_else(|| "<missing>".to_string());
-
-            format!("{base}.{field}")
-        }
-        ast::Expr::CallExpr(c) => {
-            let callee = c
-                .callee()
-                .map(|e| describe_expr(&e))
-                .unwrap_or_else(|| "<missing>".to_string());
-            let argc = c.arg_list().map(|a| a.args().count()).unwrap_or(0);
-            format!("call {callee} ({argc} args)")
-        }
-        ast::Expr::StructLit(s) => {
-            let name = s.name_ref().and_then(|n| n.name());
-            let fieldc = s.field_list().map(|fl| fl.fields().count()).unwrap_or(0);
-            format!("struct-lit {} ({fieldc} fields)", tok_text(name))
-        }
-        ast::Expr::BinExpr(b) => {
-            let lhs = b
-                .lhs()
-                .map(|e| describe_expr(&e))
-                .unwrap_or_else(|| "<missing>".to_string());
-            let rhs = b
-                .rhs()
-                .map(|e| describe_expr(&e))
-                .unwrap_or_else(|| "<missing>".to_string());
-            match b.op() {
-                Some(op) => format!("({lhs} {op:?} {rhs})"),
-                None => format!("({lhs} ? {rhs})"),
-            }
-        }
-        ast::Expr::PrefixExpr(u) => {
-            let operand = u
-                .operand()
-                .map(|e| describe_expr(&e))
-                .unwrap_or_else(|| "<missing>".to_string());
-            match u.op() {
-                Some(op) => format!("({op:?} {operand})"),
-                None => format!("(? {operand})"),
-            }
-        }
-    }
-}
-
-/// Prints a statement under a function body.
-#[allow(dead_code)]
-fn dump_stmt(stmt: &ast::Stmt) {
-    match stmt {
-        ast::Stmt::LetStmt(l) => {
-            let kw = match l.kind() {
-                Some(ast::LetKind::Const) => "const",
-                Some(ast::LetKind::Var) => "var",
-                None => "<missing>",
-            };
-            // a `let_stmt` type is optional (`type_ref?`): absent means the
-            // type is inferred, not a recovery hole. `<missing>` is reserved
-            // for a `TypeRef` node that exists but lost its name token.
-            let ty = match l.type_ref() {
-                None => "<inferred>".to_string(),
-                Some(t) => tok_text(t.name()),
-            };
-            let value = l
-                .value()
-                .map(|e| describe_expr(&e))
-                .unwrap_or_else(|| "<missing>".to_string());
-            println!("    {kw} {ty} {} = {value}", tok_text(l.name()));
-        }
-        ast::Stmt::ExprStmt(e) => {
-            let expr = e
-                .expr()
-                .map(|e| describe_expr(&e))
-                .unwrap_or_else(|| "<missing>".to_string());
-            println!("    expr {expr}");
-        }
-    }
-}
-
-/// walks the typed ast and prints a structured summary - a visible check
-/// that the typed layer reads the CST correctly.
-#[allow(dead_code)]
-fn dump_ast(file: &ast::SourceFile) {
-    println!("\n--- AST ---");
-    for item in file.items() {
-        match item {
-            ast::Item::StructDef(s) => {
-                println!("structure {}", tok_text(s.name()));
-                if let Some(fl) = s.field_list() {
-                    for f in fl.fields() {
-                        let ty = f.type_ref().and_then(|t| t.name());
-                        println!("  field {} {}", tok_text(ty), tok_text(f.name()));
-                    }
-                }
-            }
-            ast::Item::FnDef(fd) => {
-                println!("fn {}()", tok_text(fd.name()));
-                if let Some(body) = fd.body() {
-                    for stmt in body.stmts() {
-                        dump_stmt(&stmt);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Prints the interned string table - every identifier and string literal,
-/// deduplicated, in intern order. Proof the lexer populated the [`Interner`]
-/// handed off in `Lexed`; HIR name resolution will re-intern against it.
-#[allow(dead_code)]
-fn dump_symbols(interner: &Interner) {
-    println!("\n--- SYMBOLS ({}) ---", interner.len());
-    for i in 0..interner.len() {
-        println!("  #{i} {:?}", interner.lookup(Symbol(i as u32)));
-    }
-}
+mod backend;
+mod cli;
+mod diagnostics;
+mod dump;
 
 fn main() -> anyhow::Result<()> {
-    // array backed smallvec for <exec_name> <file_name>
-    let args: SmallVec<[String; 2]> = std::env::args().collect();
+    let cli = cli::Cli::parse();
+    let input_path: &Path = cli.input.as_path();
 
-    // check usage
-    if args.len() < 2 {
-        eprintln!("usage: {} <file.eye>", &args[0]);
-        std::process::exit(-1);
+    // Validate input extension so we never overwrite a non-eye source when
+    // deriving the C output path below.
+    if input_path.extension().and_then(|e| e.to_str()) != Some("eye") {
+        eprintln!(
+            "error: expected a `.eye` source file, got `{}`",
+            input_path.display()
+        );
+        std::process::exit(1);
     }
 
-    let file = std::fs::File::open(&args[1])?;
+    let file = std::fs::File::open(input_path)?;
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
     let source = SourceText::from_mmap(mmap);
 
     let lexed = Lexer::new(&source).tokenize();
 
     if !lexed.diags.is_empty() {
-        eprintln!("{} lexer diagnostic(s):", lexed.diags.len());
-        for diag in &lexed.diags {
-            let lc = source.line_col(diag.range.start());
-            eprintln!("  {}:{}: {}", lc.line, lc.col, diag.msg);
-        }
+        diagnostics::report_lexer_diagnostics(&source, &lexed.diags);
         std::process::exit(1);
+    }
+
+    if cli.dump_symbols {
+        dump::symbols::dump_symbols(&lexed.interner);
     }
 
     let parse = parser::parse(&lexed.tokens, &source);
 
-    // Dump Untyped CST
-    // println!("{:#?}", parse.green);
+    if cli.dump_cst {
+        println!("\n--- CST ---");
+        println!("{:#?}", parse.green);
+    }
 
-    // Error check before proceeding to code generation
-    if !parse.errors.is_empty() {
-        eprintln!("\n{} parse diagnostic(s):", parse.errors.len());
-        for err in &parse.errors {
-            let lc = source.line_col(err.range.start());
-            eprintln!("  {}:{}: {}", lc.line, lc.col, err.msg);
-        }
+    if !parse.diagnostics.is_empty() {
+        diagnostics::report_parse_diagnostics(&source, &parse.diagnostics);
         std::process::exit(1);
     }
 
-    // Dump AST and Symbols
     let file_ast = ast::SourceFile::cast(parse.green.clone())
         .ok_or_else(|| anyhow::anyhow!("Root node is not a valid SourceFile"))?;
 
-    // dump_ast(&file_ast);
-    // dump_symbols(&lexed.interner);
+    if cli.dump_ast {
+        dump::ast::dump_ast(&file_ast);
+    }
 
     println!("compiling...");
     println!("lowering AST to HIR...");
     let hir = lower_source_file(file_ast);
 
-    println!("generating c code...");
-    let generator = CGen::new(&hir);
-    let mut generated_c = generator.gen_all();
-
-    println!("formatting c code...");
-    if let Ok(mut format_child) = Command::new("clang-format")
-        .arg("--fallback-style=LLVM")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        if let Some(mut stdin) = format_child.stdin.take() {
-            let _ = stdin.write_all(generated_c.as_bytes());
-        }
-
-        if let Ok(output) = format_child.wait_with_output()
-            && output.status.success()
-            && let Ok(formatted_str) = String::from_utf8(output.stdout)
-        {
-            generated_c = formatted_str;
-        }
-    } else {
-        println!("  (Note: clang-format missing from system; writing raw C layout)");
+    if cli.dump_hir {
+        dump::hir::dump_hir(&hir);
     }
 
-    let c_output_path = &args[1].replace("eye", "c");
-    let mut c_file = File::create(c_output_path)?;
-    c_file.write_all(generated_c.as_bytes())?;
-    println!("c source written to {}", c_output_path);
-
-    println!("invoking c compiler...");
-    let compile_status = Command::new("clang")
-        .args([
-            c_output_path,
-            "-o",
-            c_output_path.trim_end_matches(".c"),
-            "-O2",
-        ])
-        .status();
-
-    match compile_status {
-        Ok(status) if status.success() => {
-            println!(
-                "build successful: run `{}`",
-                c_output_path.trim_end_matches(".c")
-            );
-        }
-        Ok(status) => {
-            eprintln!("\nbackend compilation failed: {}", status);
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("\nFailed to launch C compiler (is clang installed?): {}", e);
-            std::process::exit(1);
-        }
+    if !hir.diagnostics.is_empty() {
+        diagnostics::report_hir_diagnostics(&source, &hir.diagnostics);
+        std::process::exit(1);
     }
-    Ok(())
+
+    backend::emit_and_compile(input_path, &hir)
 }

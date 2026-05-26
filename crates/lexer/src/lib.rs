@@ -310,9 +310,9 @@ mod tests {
     fn keywords_vs_idents() {
         use TokenKind::*;
         assert_eq!(
-            kinds("const var structure enum if else loop break continue foo"),
+            kinds("let mut structure enum if else loop break continue foo"),
             [
-                Const, Var, Structure, Enum, If, Else, Loop, Break, Continue, Ident, Eof
+                Let, Mut, Structure, Enum, If, Else, Loop, Break, Continue, Ident, Eof
             ]
         );
     }
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn spans_tile_the_source_with_no_gaps() {
-        let src = "const x = 0;";
+        let src = "let x = 0;";
         let lexed = lex(src);
         let mut cursor = TextSize::from(0);
         for tok in &lexed.tokens {
@@ -451,5 +451,104 @@ mod tests {
     fn token_stream_snapshot() {
         let lexed = lex("add(int32 a) -> int32 { a + 1 }");
         insta::assert_debug_snapshot!(lexed.tokens);
+    }
+
+    /// v0.2 surface forms that are new since v0.1: the `&` ref token in a
+    /// type and as a prefix, `.` member access on the LHS of an assignment,
+    /// and `=>` farrow.
+    #[test]
+    fn v02_punctuation_and_prefixes() {
+        use TokenKind::*;
+        // `mut &Point pt_ref = &pt;` - `&` appears both in a type position
+        // and as a prefix operator, lexed as the same `Amp` token either way
+        assert_eq!(
+            kinds("mut &Point pt_ref = &pt;"),
+            [Mut, Amp, Ident, Ident, Assign, Amp, Ident, Semicolon, Eof]
+        );
+
+        // `pt.x = 15;` - member access then assignment
+        assert_eq!(
+            kinds("pt.x = 15;"),
+            [Ident, Dot, Ident, Assign, Int, Semicolon, Eof]
+        );
+
+        // `=>` farrow is its own token, not `Assign` + `Gt`
+        assert_eq!(kinds("=> ="), [Farrow, Assign, Eof]);
+    }
+
+    /// The v0.2 waterfall enum syntax: `enum X = | A | B ;` - each `|` is a
+    /// `Pipe` token, distinct from the boolean `||`.
+    #[test]
+    fn waterfall_enum_pipes() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds("enum Shape = | Square | Circle ;"),
+            [
+                Enum, Ident, Assign, Pipe, Ident, Pipe, Ident, Semicolon, Eof
+            ]
+        );
+        // `||` still lexes as a single `Or`, not two `Pipe`s
+        assert_eq!(kinds("|| |"), [Or, Pipe, Eof]);
+    }
+
+    /// `if`/`else`/`loop`/`break`/`continue` keywords are reserved - the
+    /// trailing `breakage` is one identifier, not `break` + `age`.
+    #[test]
+    fn control_flow_keywords_dont_split_idents() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds("if else loop break continue"),
+            [If, Else, Loop, Break, Continue, Eof]
+        );
+        assert_eq!(
+            kinds("breakage continuee elsewhere"),
+            [Ident, Ident, Ident, Eof]
+        );
+    }
+
+    /// `match` is a reserved keyword (not an ident); bare `_` is its own
+    /// `Underscore` token, while `_foo` still lexes as a single `Ident`.
+    #[test]
+    fn match_keyword_and_underscore_tokens() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds("match x { _ -> 0 }"),
+            [Match, Ident, Obrace, Underscore, Arrow, Int, Cbrace, Eof]
+        );
+        // `matches` is just an identifier - keyword match is exact
+        assert_eq!(kinds("matches"), [Ident, Eof]);
+        // `_foo`/`foo_` are idents; bare `_` is the Underscore token
+        assert_eq!(kinds("_ _foo foo_"), [Underscore, Ident, Ident, Eof]);
+    }
+
+    /// `->` arrow as a return-type marker stays one token even when wedged
+    /// between identifiers.
+    #[test]
+    fn arrow_return_type() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds("add(int32 a, int32 b) -> int32"),
+            [
+                Ident, Oparen, Ident, Ident, Comma, Ident, Ident, Cparen, Arrow, Ident, Eof
+            ]
+        );
+    }
+
+    /// A multi-line block comment with `--*` as both open and close delimiter
+    /// - the form used in `eyesrc/design.eye`.
+    #[test]
+    fn block_comment_multiline() {
+        let lexed = lex("--*\n  * note\n--*\nlet x = 0;");
+        assert!(lexed.diags.is_empty(), "diags: {:?}", lexed.diags);
+        use TokenKind::*;
+        let stream: Vec<_> = lexed.tokens.iter().map(|t| t.kind).collect();
+        // block comment is one token; whitespace/newlines surround it
+        assert!(stream.contains(&Bcomment));
+        // significant tokens after the comment match `let x = 0;`
+        let nonws: Vec<_> = stream
+            .into_iter()
+            .filter(|k| !matches!(k, Wspace | Newline | Lcomment | Dcomment | Bcomment))
+            .collect();
+        assert_eq!(nonws, [Let, Ident, Assign, Int, Semicolon, Eof]);
     }
 }

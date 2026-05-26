@@ -1,6 +1,16 @@
 [workspace]
 resolver = "3"
-members = ["crates/token", "crates/lexer", "crates/syntax", "crates/parser", "crates/ast", "crates/hir", "crates/xtask", "crates/codegen"]
+members = [
+    "crates/token",
+    "crates/lexer",
+    "crates/syntax",
+    "crates/parser",
+    "crates/ast",
+    "crates/hir",
+    "crates/xtask",
+    "crates/codegen",
+    "crates/lsp"
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,6 +34,7 @@ insta = "1"
 thin-vec = "0.2.18"
 smallvec = "1.15.1"
 la-arena = "0.3"
+clap = { version = "4", features = ["derive"] }
 # internal - keyed by short lib name, backed by `eye-*` packages
 token = { path = "crates/token", package = "eye-token" }
 lexer = { path = "crates/lexer", package = "eye-lexer" }
@@ -32,6 +43,7 @@ parser = { path = "crates/parser", package = "eye-parser" }
 ast = { path = "crates/ast", package = "eye-ast" }
 hir = { path = "crates/hir", package = "eye-hir" }
 codegen = {path = "crates/codegen", package = "eye-codegen"}
+lsp = { path = "crates/lsp", package = "eye-lsp" }
 
 # ---- the `eye` binary: thin driver over the compiler crates ----
 [package]
@@ -53,3 +65,4 @@ syntax.workspace = true
 smallvec.workspace = true
 hir.workspace = true
 codegen.workspace = true
+clap.workspace = true
