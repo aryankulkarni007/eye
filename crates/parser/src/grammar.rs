@@ -223,6 +223,13 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
             let lit = lhs.precede(p);
             struct_body(p);
             lhs = lit.complete(p, SyntaxKind::StructLit);
+        } else if p.at(T![.]) {
+            let field_expr = lhs.precede(p);
+            p.advance();
+            let name_m = p.open();
+            p.expect(SyntaxKind::Ident, "expected field identifier after '.'");
+            name_m.complete(p, SyntaxKind::NameRef);
+            lhs = field_expr.complete(p, SyntaxKind::FieldExpr);
         } else {
             break;
         }

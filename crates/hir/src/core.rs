@@ -25,7 +25,7 @@ use ast::{AstNode, BinOp, UnaryOp};
 use la_arena::{Arena, ArenaMap, Idx};
 use rustc_hash::FxHashMap;
 use smol_str::SmolStr;
-use syntax::SyntaxNodePtr;
+use syntax::{SyntaxKind, SyntaxNodePtr, T};
 
 pub type Text = SmolStr;
 
@@ -415,6 +415,23 @@ impl<'a> LoweringCtx<'a> {
                     None => self.alloc_expr(Expr::Missing, ptr),
                 };
                 Expr::Unary { op, operand }
+            }
+            ast::Expr::FieldExpr(fe) => {
+                let base = match fe.expr() {
+                    Some(e) => self.lower_expr(&e),
+                    None => self.alloc_expr(Expr::Missing, ptr),
+                };
+
+                let name: SmolStr = fe
+                    .syntax()
+                    .children()
+                    .filter_map(ast::NameRef::cast)
+                    .nth(1)
+                    .and_then(|nr| nr.name())
+                    .map(|t| SmolStr::from(t.text().trim()))
+                    .unwrap_or_default();
+
+                Expr::Field { base, name }
             }
         };
         self.alloc_expr(hir_expr, ptr)

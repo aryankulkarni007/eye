@@ -1,3 +1,8 @@
+use std::{fs::File, io::Write, process::Command};
+
+use ast::AstNode;
+use codegen::core::CGen;
+use hir::core::lower_source_file;
 use lexer::{Interner, Lexer, SourceText, Symbol};
 use smallvec::SmallVec;
 use syntax::SyntaxToken;
@@ -16,6 +21,20 @@ fn describe_expr(expr: &ast::Expr) -> String {
             None => format!("literal({})", tok_text(l.token())),
         },
         ast::Expr::NameRef(n) => format!("name {}", tok_text(n.name())),
+        ast::Expr::FieldExpr(field_expr) => {
+            let base = field_expr
+                .expr()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+
+            let field = field_expr
+                .name_ref()
+                .and_then(|n| n.name())
+                .map(|t| tok_text(Some(t)))
+                .unwrap_or_else(|| "<missing>".to_string());
+
+            format!("{base}.{field}")
+        }
         ast::Expr::CallExpr(c) => {
             let callee = c
                 .callee()
@@ -151,13 +170,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     let parse = parser::parse(&lexed.tokens, &source);
+
+    // Dump Untyped CST
     println!("{:#?}", parse.green);
 
-    if let Some(file) = ast::AstNode::cast(parse.green.clone()) {
-        dump_ast(&file);
-    }
-    dump_symbols(&lexed.interner);
-
+    // Error check before proceeding to code generation
     if !parse.errors.is_empty() {
         eprintln!("\n{} parse diagnostic(s):", parse.errors.len());
         for err in &parse.errors {
@@ -167,5 +184,54 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
+    // Dump AST and Symbols
+    let file_ast = ast::SourceFile::cast(parse.green.clone())
+        .ok_or_else(|| anyhow::anyhow!("Root node is not a valid SourceFile"))?;
+
+    dump_ast(&file_ast);
+    dump_symbols(&lexed.interner);
+
+    println!("compiling...");
+    println!("lowering AST to HIR...");
+    let hir = lower_source_file(file_ast);
+
+    println!("generating c code...");
+    let generator = CGen::new(&hir);
+    let generated_c = generator.gen_all();
+
+    let c_output_path = &args[1].replace("eye", "c");
+    let mut c_file = File::create(c_output_path)?;
+    c_file.write_all(generated_c.as_bytes())?;
+    println!("c source written to {}", c_output_path);
+
+    println!("invoking c compiler...");
+    let compile_status = Command::new("clang")
+        .args([
+            c_output_path,
+            "-o",
+            c_output_path.trim_end_matches(".c"),
+            "-O2",
+        ])
+        .status();
+
+    match compile_status {
+        Ok(status) if status.success() => {
+            println!(
+                "build successful: run `{}`",
+                c_output_path.trim_end_matches(".c")
+            );
+        }
+        Ok(status) => {
+            eprintln!("\n backend compilation failed: {}", status);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!(
+                "\n Failed to launch C compiler (is clang installed?): {}",
+                e
+            );
+            std::process::exit(1);
+        }
+    }
     Ok(())
 }

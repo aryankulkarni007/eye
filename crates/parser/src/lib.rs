@@ -11,9 +11,9 @@
 //! headroom that typical input never reallocates; past that it grows only by
 //! amortized doubling. The real guarantee is per-item: [`Event`] is `Copy` POD
 //! - no `String`/`Box`/`Vec` inside any variant, so no event ever allocates.
-//! Diagnostic messages live out-of-band in a sibling [`Vec<ParseError>`] and
-//! are `&'static str`; events carry only an [`ErrorIdx`]. [`Marker`] open,
-//! complete and abandon all mutate the buffer in place.
+//!   Diagnostic messages live out-of-band in a sibling [`Vec<ParseError>`] and
+//!   are `&'static str`; events carry only an [`ErrorIdx`]. [`Marker`] open,
+//!   complete and abandon all mutate the buffer in place.
 
 use std::cell::Cell;
 use std::num::NonZeroU32;
@@ -382,7 +382,7 @@ structure Point {
 main() {
     const x = 0;
     var Point p = Point { x, y };
-    print(\"hi\");
+    print(\"{}\", p.x);
 }
 ";
 
@@ -436,6 +436,14 @@ main() {
     #[test]
     fn struct_lit_mixed_forms_parses_clean() {
         let src = "main() {\n    var Point p = Point { x, y: 0 };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    #[test]
+    fn field_access_expression_parses_clean_and_round_trips() {
+        let src = "main() {\n    print(\"{}\", p.x);\n    print(\"{}\", p.y);\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);

@@ -2,7 +2,7 @@
 source: crates/parser/src/lib.rs
 expression: "format!(\"{:#?}\", parse.green)"
 ---
-SourceFile@0..127
+SourceFile@0..132
   StructDef@0..48
     Structure@0..9 "structure"
     Wspace@9..10 " "
@@ -31,13 +31,13 @@ SourceFile@0..127
     Semicolon@45..46 ";"
     Newline@46..47 "\n"
     Newline@47..48 "\n"
-  FnDef@48..127
+  FnDef@48..132
     Ident@48..52 "main"
     ParamList@52..55
       Oparen@52..53 "("
       Cparen@53..54 ")"
       Wspace@54..55 " "
-    Block@55..127
+    Block@55..132
       Obrace@55..56 "{"
       LetStmt@56..78
         Newline@56..57 "\n"
@@ -81,16 +81,24 @@ SourceFile@0..127
         Semicolon@106..107 ";"
         Newline@107..108 "\n"
         Wspace@108..112 "    "
-      ExprStmt@112..125
-        CallExpr@112..123
+      ExprStmt@112..130
+        CallExpr@112..128
           NameRef@112..117
             Ident@112..117 "print"
-          ArgList@117..123
+          ArgList@117..128
             Oparen@117..118 "("
             Literal@118..122
-              String@118..122 "\"hi\""
-            Cparen@122..123 ")"
-        Semicolon@123..124 ";"
-        Newline@124..125 "\n"
-      Cbrace@125..126 "}"
-      Newline@126..127 "\n"
+              String@118..122 "\"{}\""
+            Comma@122..123 ","
+            FieldExpr@123..127
+              NameRef@123..125
+                Wspace@123..124 " "
+                Ident@124..125 "p"
+              Dot@125..126 "."
+              NameRef@126..127
+                Ident@126..127 "x"
+            Cparen@127..128 ")"
+        Semicolon@128..129 ";"
+        Newline@129..130 "\n"
+      Cbrace@130..131 "}"
+      Newline@131..132 "\n"

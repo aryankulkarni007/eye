@@ -37,7 +37,7 @@ LetStmt = TypeRef? name:'ident' '=' value:Expr ';'
 
 ExprStmt = Expr ';'
 
-Expr = Literal | NameRef | CallExpr | StructLit | BinExpr | PrefixExpr
+Expr = Literal | NameRef | CallExpr | StructLit | BinExpr | PrefixExpr | FieldExpr
 
 Literal = 'int' | 'float' | 'string' | 'true' | 'false' | 'char'
 
@@ -50,6 +50,8 @@ ArgList = '(' args:Expr* ')'
 BinExpr = lhs:Expr rhs:Expr
 
 PrefixExpr = '-' operand:Expr
+
+FieldExpr = expr:Expr '.' name_ref:NameRef
 
 StructLit = NameRef field_list:StructLitFieldList
 

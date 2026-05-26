@@ -315,6 +315,7 @@ pub enum Expr {
     StructLit(StructLit),
     BinExpr(BinExpr),
     PrefixExpr(PrefixExpr),
+    FieldExpr(FieldExpr),
 }
 impl AstNode for Expr {
     fn can_cast(kind: SyntaxKind) -> bool {
@@ -326,6 +327,7 @@ impl AstNode for Expr {
                 | SyntaxKind::StructLit
                 | SyntaxKind::BinExpr
                 | SyntaxKind::PrefixExpr
+                | SyntaxKind::FieldExpr
         )
     }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -336,6 +338,7 @@ impl AstNode for Expr {
             SyntaxKind::StructLit => Expr::StructLit(StructLit { syntax }),
             SyntaxKind::BinExpr => Expr::BinExpr(BinExpr { syntax }),
             SyntaxKind::PrefixExpr => Expr::PrefixExpr(PrefixExpr { syntax }),
+            SyntaxKind::FieldExpr => Expr::FieldExpr(FieldExpr { syntax }),
             _ => return None,
         };
         Some(res)
@@ -348,6 +351,7 @@ impl AstNode for Expr {
             Expr::StructLit(it) => it.syntax(),
             Expr::BinExpr(it) => it.syntax(),
             Expr::PrefixExpr(it) => it.syntax(),
+            Expr::FieldExpr(it) => it.syntax(),
         }
     }
 }
@@ -497,6 +501,33 @@ impl AstNode for PrefixExpr {
 }
 impl PrefixExpr {
     pub fn operand(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FieldExpr {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for FieldExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::FieldExpr
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::FieldExpr {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl FieldExpr {
+    pub fn expr(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+    pub fn name_ref(&self) -> Option<NameRef> {
         support::child(&self.syntax)
     }
 }

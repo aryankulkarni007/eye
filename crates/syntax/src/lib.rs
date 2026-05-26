@@ -50,7 +50,7 @@ syntax_kinds! {
     FnDef, ParamList, Block,
     LetStmt, ExprStmt,
     Literal, NameRef, CallExpr, ArgList,
-    BinExpr, PrefixExpr,
+    BinExpr, PrefixExpr, FieldExpr,
     StructLit, StructLitFieldList, StructLitField,
     ErrorNode,
 }
@@ -162,6 +162,7 @@ macro_rules! T {
     [,]     => { $crate::SyntaxKind::Comma };
     [:]     => { $crate::SyntaxKind::Colon };
     [=]     => { $crate::SyntaxKind::Assign };
+    [.]     => { $crate::SyntaxKind::Dot };
     ['(']   => { $crate::SyntaxKind::Oparen };
     [')']   => { $crate::SyntaxKind::Cparen };
     ['{']   => { $crate::SyntaxKind::Obrace };

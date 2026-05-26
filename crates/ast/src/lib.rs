@@ -198,6 +198,28 @@ impl BinOp {
     }
 }
 
+use std::fmt;
+
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let op_str = match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::And => "&&",
+            BinOp::Or => "||",
+            BinOp::Eq => "==",
+            BinOp::Neq => "!=",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::Leq => "<=",
+            BinOp::Geq => ">=",
+        };
+        write!(f, "{}", op_str)
+    }
+}
+
 impl BinExpr {
     /// The operator token - the direct child token between the two operands.
     pub fn op_token(&self) -> Option<SyntaxToken> {
@@ -217,6 +239,15 @@ impl BinExpr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     Neg,
+}
+
+impl fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let op_str = match self {
+            UnaryOp::Neg => "-",
+        };
+        write!(f, "{}", op_str)
+    }
 }
 
 impl PrefixExpr {

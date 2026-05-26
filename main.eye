@@ -10,5 +10,6 @@ main() {
     const int32 y = 0;
     var Point p = Point { x, y };
 
-    print("{}", p);
+    print("{}", p.x);
+    print("{}", p.y);
 }

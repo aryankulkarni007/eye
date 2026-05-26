@@ -102,6 +102,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "eye-ast",
+ "eye-codegen",
+ "eye-hir",
  "eye-lexer",
  "eye-parser",
  "eye-syntax",
@@ -117,6 +119,13 @@ dependencies = [
  "eye-parser",
  "eye-syntax",
  "insta",
+]
+
+[[package]]
+name = "eye-codegen"
+version = "0.1.0"
+dependencies = [
+ "eye-hir",
 ]
 
 [[package]]
