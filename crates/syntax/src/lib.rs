@@ -152,6 +152,7 @@ impl rowan::Language for EyeLang {
 pub type SyntaxNode = rowan::SyntaxNode<EyeLang>;
 pub type SyntaxToken = rowan::SyntaxToken<EyeLang>;
 pub type SyntaxNodeChildren = rowan::SyntaxNodeChildren<EyeLang>;
+pub type SyntaxNodePtr = rowan::ast::SyntaxNodePtr<EyeLang>;
 
 /// Maps eye surface syntax - punctuation and keywords - to [`SyntaxKind`],
 /// so grammar code reads as `p.at(T![;])` instead of naming enum variants.

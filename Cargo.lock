@@ -124,8 +124,12 @@ name = "eye-hir"
 version = "0.1.0"
 dependencies = [
  "eye-ast",
+ "eye-lexer",
+ "eye-parser",
  "eye-syntax",
  "la-arena",
+ "rustc-hash 2.1.2",
+ "smol_str",
 ]
 
 [[package]]
