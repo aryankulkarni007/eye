@@ -6,8 +6,8 @@ structure Point {
 };
 
 main() {
-    const x = 0;
-    const y = 0;
+    const int32 x = 0;
+    const int32 y = 0;
     var Point p = Point { x, y };
 
     print("{}", p);

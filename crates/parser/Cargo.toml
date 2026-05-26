@@ -13,6 +13,8 @@ syntax.workspace = true
 drop_bomb.workspace = true
 rowan.workspace = true
 text-size.workspace = true
+thin-vec.workspace = true
+smallvec.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

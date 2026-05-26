@@ -14,6 +14,7 @@ memmap2.workspace = true
 rustc-hash.workspace = true
 smol_str.workspace = true
 text-size.workspace = true
+thin-vec.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

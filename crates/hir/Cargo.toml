@@ -1,0 +1,12 @@
+[package]
+name = "eye-hir"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "hir"
+
+[dependencies]
+la-arena.workspace = true
+syntax.workspace = true
+ast.workspace = true

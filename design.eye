@@ -7,6 +7,9 @@ structure Point {
 };
 
 --- ENUM ---
+--*
+  * with waterfall syntax
+--*
 enum Shape =
 | Square
 | Circle

@@ -12,6 +12,7 @@ use rustc_hash::FxHashMap;
 use smol_str::SmolStr;
 use text_size::{TextRange, TextSize};
 
+use thin_vec::ThinVec;
 use token::{Token, TokenKind};
 
 pub use token::Diagnostic;
@@ -196,7 +197,7 @@ impl SourceText {
 pub struct Lexed {
     pub tokens: Vec<Token>,
     pub interner: Interner,
-    pub diags: Vec<Diagnostic>,
+    pub diags: ThinVec<Diagnostic>,
 }
 
 /// A thin driver over `logos`. Holds only the borrowed source; the real work
@@ -220,7 +221,7 @@ impl<'a> Lexer<'a> {
         let mut interner = Interner::new();
         // diagnostics from lex errors; the callback diagnostics for unclosed
         // literals/comments accumulate separately in `lex.extras`
-        let mut err_diags: Vec<Diagnostic> = Vec::new();
+        let mut err_diags: ThinVec<Diagnostic> = ThinVec::new();
 
         while let Some(result) = lex.next() {
             let span = lex.span();

@@ -13,6 +13,7 @@ use std::borrow::Cow;
 
 use logos::Logos;
 use text_size::{TextRange, TextSize};
+use thin_vec::ThinVec;
 
 /// Builds a [`TextRange`] from a `logos` byte span.
 fn to_range(span: std::ops::Range<usize>) -> TextRange {
@@ -32,7 +33,7 @@ pub struct Diagnostic {
 /// `logos` lexer state - collects the diagnostics the literal/comment
 /// callbacks emit for unclosed or malformed lexemes.
 #[derive(Debug, Default)]
-pub struct LexExtras(pub Vec<Diagnostic>);
+pub struct LexExtras(pub ThinVec<Diagnostic>);
 
 /// A lexed token: its kind and the byte range it covers in the source.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

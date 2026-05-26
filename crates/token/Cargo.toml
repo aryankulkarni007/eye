@@ -9,3 +9,4 @@ name = "token"
 [dependencies]
 logos.workspace = true
 text-size.workspace = true
+thin-vec.workspace = true

@@ -20,6 +20,8 @@ use std::num::NonZeroU32;
 
 use drop_bomb::DropBomb;
 use rowan::{GreenNodeBuilder, Language};
+use smallvec::SmallVec;
+use thin_vec::ThinVec;
 
 use text_size::TextRange;
 
@@ -66,7 +68,7 @@ pub struct ParseError {
 /// The finished parse: a lossless CST plus every diagnostic.
 pub struct Parse {
     pub green: SyntaxNode,
-    pub errors: Vec<ParseError>,
+    pub errors: ThinVec<ParseError>,
 }
 
 /// How many lookahead probes the parser may make without consuming a token
@@ -80,7 +82,7 @@ pub struct Parser<'t> {
     /// Raw index of the next non-trivia token (the parser's logical cursor).
     pos: usize,
     events: Vec<Event>,
-    errors: Vec<ParseError>,
+    errors: ThinVec<ParseError>,
     /// Reset on every [`advance`](Parser::advance); decremented on every
     /// lookahead. Hitting zero means the grammar is spinning.
     fuel: Cell<u32>,
@@ -95,7 +97,7 @@ impl<'t> Parser<'t> {
             // (Advance per token, Open + Close per node); 2x is generous
             // headroom so typical input fills this without reallocating
             events: Vec::with_capacity(tokens.len() * 2),
-            errors: Vec::new(),
+            errors: ThinVec::new(),
             fuel: Cell::new(FUEL),
         };
         p.pos = p.skip_trivia(0);
@@ -214,7 +216,7 @@ impl<'t> Parser<'t> {
         }
     }
 
-    fn finish(self) -> (Vec<Event>, Vec<ParseError>) {
+    fn finish(self) -> (Vec<Event>, ThinVec<ParseError>) {
         (self.events, self.errors)
     }
 }
@@ -297,8 +299,10 @@ pub fn parse(tokens: &[Token], source: &SourceText) -> Parse {
 fn build_tree(tokens: &[Token], mut events: Vec<Event>, source: &SourceText) -> SyntaxNode {
     let mut builder = GreenNodeBuilder::new();
     let mut raw = 0usize;
-    // scratch reused across every forward-parent chain - no per-node alloc
-    let mut parents: Vec<SyntaxKind> = Vec::new();
+    // scratch reused across every forward-parent chain - inline storage
+    // sized for the precede-chain depth typical exprs hit, so a node's
+    // forward-parent walk never allocates
+    let mut parents: SmallVec<[SyntaxKind; 4]> = SmallVec::new();
 
     let emit_trivia = |builder: &mut GreenNodeBuilder, raw: &mut usize| {
         while *raw < tokens.len() {
@@ -408,6 +412,30 @@ main() {
     fn operator_expr_parses_clean_and_round_trips() {
         // a mix of arithmetic, comparison, logical and prefix operators
         let src = "main() {\n    const x = -1 + 2 * 3 == 7 && a || b;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    #[test]
+    fn struct_lit_shorthand_form_parses_clean() {
+        let src = "main() {\n    var Point p = Point { x, y };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    #[test]
+    fn struct_lit_explicit_form_parses_clean() {
+        let src = "main() {\n    var Point p = Point { x: x, y: y };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    #[test]
+    fn struct_lit_mixed_forms_parses_clean() {
+        let src = "main() {\n    var Point p = Point { x, y: 0 };\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
