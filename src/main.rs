@@ -1,4 +1,8 @@
-use std::{fs::File, io::Write, process::Command};
+use std::{
+    fs::File,
+    io::Write,
+    process::{Command, Stdio},
+};
 
 use ast::AstNode;
 use codegen::core::CGen;
@@ -8,12 +12,14 @@ use smallvec::SmallVec;
 use syntax::SyntaxToken;
 
 /// a token's text, or a placeholder when the parse left the slot empty.
+#[allow(dead_code)]
 fn tok_text(t: Option<SyntaxToken>) -> String {
     t.map(|t| t.text().to_string())
         .unwrap_or_else(|| "<missing>".to_string())
 }
 
 /// one-line summary of an expression - recurses through calls.
+#[allow(dead_code)]
 fn describe_expr(expr: &ast::Expr) -> String {
     match expr {
         ast::Expr::Literal(l) => match l.literal_kind() {
@@ -76,6 +82,7 @@ fn describe_expr(expr: &ast::Expr) -> String {
 }
 
 /// Prints a statement under a function body.
+#[allow(dead_code)]
 fn dump_stmt(stmt: &ast::Stmt) {
     match stmt {
         ast::Stmt::LetStmt(l) => {
@@ -109,6 +116,7 @@ fn dump_stmt(stmt: &ast::Stmt) {
 
 /// walks the typed ast and prints a structured summary - a visible check
 /// that the typed layer reads the CST correctly.
+#[allow(dead_code)]
 fn dump_ast(file: &ast::SourceFile) {
     println!("\n--- AST ---");
     for item in file.items() {
@@ -137,6 +145,7 @@ fn dump_ast(file: &ast::SourceFile) {
 /// Prints the interned string table - every identifier and string literal,
 /// deduplicated, in intern order. Proof the lexer populated the [`Interner`]
 /// handed off in `Lexed`; HIR name resolution will re-intern against it.
+#[allow(dead_code)]
 fn dump_symbols(interner: &Interner) {
     println!("\n--- SYMBOLS ({}) ---", interner.len());
     for i in 0..interner.len() {
@@ -172,7 +181,7 @@ fn main() -> anyhow::Result<()> {
     let parse = parser::parse(&lexed.tokens, &source);
 
     // Dump Untyped CST
-    println!("{:#?}", parse.green);
+    // println!("{:#?}", parse.green);
 
     // Error check before proceeding to code generation
     if !parse.errors.is_empty() {
@@ -188,8 +197,8 @@ fn main() -> anyhow::Result<()> {
     let file_ast = ast::SourceFile::cast(parse.green.clone())
         .ok_or_else(|| anyhow::anyhow!("Root node is not a valid SourceFile"))?;
 
-    dump_ast(&file_ast);
-    dump_symbols(&lexed.interner);
+    // dump_ast(&file_ast);
+    // dump_symbols(&lexed.interner);
 
     println!("compiling...");
     println!("lowering AST to HIR...");
@@ -197,7 +206,29 @@ fn main() -> anyhow::Result<()> {
 
     println!("generating c code...");
     let generator = CGen::new(&hir);
-    let generated_c = generator.gen_all();
+    let mut generated_c = generator.gen_all();
+
+    println!("formatting c code...");
+    if let Ok(mut format_child) = Command::new("clang-format")
+        .arg("--fallback-style=LLVM")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        if let Some(mut stdin) = format_child.stdin.take() {
+            let _ = stdin.write_all(generated_c.as_bytes());
+        }
+
+        if let Ok(output) = format_child.wait_with_output()
+            && output.status.success()
+            && let Ok(formatted_str) = String::from_utf8(output.stdout)
+        {
+            generated_c = formatted_str;
+        }
+    } else {
+        println!("  (Note: clang-format missing from system; writing raw C layout)");
+    }
 
     let c_output_path = &args[1].replace("eye", "c");
     let mut c_file = File::create(c_output_path)?;
@@ -222,14 +253,11 @@ fn main() -> anyhow::Result<()> {
             );
         }
         Ok(status) => {
-            eprintln!("\n backend compilation failed: {}", status);
+            eprintln!("\nbackend compilation failed: {}", status);
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!(
-                "\n Failed to launch C compiler (is clang installed?): {}",
-                e
-            );
+            eprintln!("\nFailed to launch C compiler (is clang installed?): {}", e);
             std::process::exit(1);
         }
     }

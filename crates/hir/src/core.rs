@@ -25,7 +25,7 @@ use ast::{AstNode, BinOp, UnaryOp};
 use la_arena::{Arena, ArenaMap, Idx};
 use rustc_hash::FxHashMap;
 use smol_str::SmolStr;
-use syntax::{SyntaxKind, SyntaxNodePtr, T};
+use syntax::SyntaxNodePtr;
 
 pub type Text = SmolStr;
 
