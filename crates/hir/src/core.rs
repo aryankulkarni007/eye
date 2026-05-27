@@ -32,12 +32,15 @@ pub type Text = SmolStr;
 // ---- IDs ----
 
 pub type StructId = Idx<Struct>;
+pub type EnumId = Idx<Enum>;
 pub type FnId = Idx<Function>;
 pub type FieldId = Idx<Field>;
 pub type ExprId = Idx<Expr>;
 pub type StmtId = Idx<Stmt>;
 pub type PatId = Idx<Pat>;
 pub type LocalId = Idx<Local>;
+pub type BlockId = Idx<Block>;
+pub type BodyId = Idx<Body>;
 
 // ---- module-level items ----
 
@@ -45,6 +48,17 @@ pub type LocalId = Idx<Local>;
 pub struct Struct {
     pub name: Text,
     pub fields: Vec<FieldId>,
+}
+
+#[derive(Debug)]
+pub struct Enum {
+    pub name: Text,
+    pub variants: Vec<Variant>,
+}
+
+#[derive(Debug)]
+pub struct Variant {
+    pub name: Text,
 }
 
 #[derive(Debug)]
@@ -68,17 +82,18 @@ pub struct Param {
     pub ty: TypeRef,
 }
 
-pub type BodyId = Idx<Body>;
-
 // ---- types ----
 //
 // Stays *unresolved* at HIR time: just a name. Type inference / resolution
 // runs in a later pass and produces real `Ty` ids. Builtins (`int32`, `bool`)
 // are still recognized here as a convenience.
 
+// TODO: store types in arena instead of Box
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeRef {
     Path(Text),
+    Ref(Box<TypeRef>), // &T
+    Ptr(Box<TypeRef>), // *T
     Error,
 }
 
@@ -95,6 +110,9 @@ pub struct Body {
     /// Optional tail expression of the body block (none for v0.1).
     pub tail: Option<ExprId>,
     pub source_map: BodySourceMap,
+    pub blocks: Arena<Block>,
+    pub block_source_map: ArenaMap<BlockId, SyntaxNodePtr>,
+    pub expr_types: ArenaMap<ExprId, TypeRef>,
 }
 
 #[derive(Debug, Default)]
@@ -110,6 +128,12 @@ pub struct Local {
     pub ty: Option<TypeRef>,
     pub mutable: bool,
     pub pat: PatId,
+}
+
+#[derive(Debug)]
+pub struct Block {
+    pub stmts: Vec<StmtId>,
+    pub tail: Option<ExprId>,
 }
 
 #[derive(Debug)]
@@ -157,7 +181,27 @@ pub enum Expr {
         base: ExprId,
         name: Text,
     },
-    Block(Vec<StmtId>),
+    Assign {
+        lhs: ExprId,
+        rhs: ExprId,
+    },
+    If {
+        cond: ExprId,
+        then_branch: BlockId,
+        else_branch: Option<BlockId>,
+    },
+    Loop {
+        body: BlockId,
+    },
+    Break,
+    Continue,
+    Ref {
+        operand: ExprId,
+    },
+    Deref {
+        operand: ExprId,
+    },
+    Block(BlockId),
 }
 
 #[derive(Debug)]
@@ -186,6 +230,7 @@ pub enum Resolution {
     Local(LocalId),
     Fn(FnId),
     Struct(StructId),
+    Enum(EnumId),
     Unresolved(Text),
 }
 
@@ -194,6 +239,7 @@ pub enum Resolution {
 #[derive(Debug, Default)]
 pub struct HIR {
     pub structs: Arena<Struct>,
+    pub enums: Arena<Enum>,
     pub fields: Arena<Field>,
     pub functions: Arena<Function>,
     pub bodies: Arena<Body>,
@@ -215,8 +261,9 @@ pub struct HirDiagnostic {
 
 #[derive(Debug, Default)]
 pub struct ItemScope {
-    pub values: FxHashMap<Text, FnId>,
-    pub types: FxHashMap<Text, StructId>,
+    pub functions: FxHashMap<Text, FnId>,
+    pub structs: FxHashMap<Text, StructId>,
+    pub enums: FxHashMap<Text, EnumId>,
 }
 
 // ---- scopes (lexical, inside a body) ----
@@ -271,6 +318,14 @@ impl<'a> LoweringCtx<'a> {
         }
     }
 
+    #[allow(dead_code)]
+    fn alloc_expr_with_type(&mut self, expr: Expr, ptr: SyntaxNodePtr, ty: TypeRef) -> ExprId {
+        let id = self.body.exprs.alloc(expr);
+        self.body.source_map.expr.insert(id, ptr);
+        self.body.expr_types.insert(id, ty);
+        id
+    }
+
     fn alloc_expr(&mut self, expr: Expr, ptr: SyntaxNodePtr) -> ExprId {
         let id = self.body.exprs.alloc(expr);
         self.body.source_map.expr.insert(id, ptr);
@@ -289,6 +344,12 @@ impl<'a> LoweringCtx<'a> {
         id
     }
 
+    fn alloc_block(&mut self, block: Block, ptr: SyntaxNodePtr) -> BlockId {
+        let id = self.body.blocks.alloc(block);
+        self.body.block_source_map.insert(id, ptr);
+        id
+    }
+
     fn finish(self) -> Body {
         self.body
     }
@@ -300,13 +361,72 @@ impl<'a> LoweringCtx<'a> {
         if let Some(id) = self.scopes.lookup(name) {
             return Resolution::Local(id);
         }
-        if let Some(&id) = self.hir.items.values.get(name) {
+        if let Some(&id) = self.hir.items.functions.get(name) {
             return Resolution::Fn(id);
         }
-        if let Some(&id) = self.hir.items.types.get(name) {
+        if let Some(&id) = self.hir.items.structs.get(name) {
             return Resolution::Struct(id);
         }
+        if let Some(&id) = self.hir.items.enums.get(name) {
+            return Resolution::Enum(id);
+        }
         Resolution::Unresolved(name.clone())
+    }
+
+    fn block_tail_type(&self, block_id: BlockId) -> Option<TypeRef> {
+        let block = &self.body.blocks[block_id];
+        block
+            .tail
+            .and_then(|expr_id| self.body.expr_types.get(expr_id).cloned())
+    }
+
+    /// look up the type of a struct field given the struct type and field name.
+    fn lookup_field_type(&self, struct_ty: &TypeRef, field_name: &Text) -> TypeRef {
+        match struct_ty {
+            TypeRef::Path(name) => {
+                if let Some(&struct_id) = self.hir.items.structs.get(name) {
+                    let struct_def = &self.hir.structs[struct_id];
+                    for &field_id in &struct_def.fields {
+                        let field = &self.hir.fields[field_id];
+                        if &field.name == field_name {
+                            return field.ty.clone();
+                        }
+                    }
+                }
+                TypeRef::Error
+            }
+            TypeRef::Ref(inner) | TypeRef::Ptr(inner) => {
+                // NOTE: auto-deref: look through one level of indirection
+                self.lookup_field_type(inner, field_name)
+            }
+            TypeRef::Error => TypeRef::Error,
+        }
+    }
+
+    fn lower_block(&mut self, block: ast::Block) -> BlockId {
+        // Stmts must lower before the tail expression: the parser already
+        // ensures `block.stmts()` and `block.tail_expr()` are disjoint
+        // (the abandoned-marker form in the block parser puts a bare Expr
+        // in the tail slot only when no `;` follows). Locals defined by
+        // those stmts have to be in scope when the tail - typically a
+        // `loop { ... }` or `if { ... }` body - references them.
+        let ptr = SyntaxNodePtr::new(block.syntax());
+        let mut stmts = Vec::new();
+        let mut tail = None;
+
+        self.scopes.push();
+
+        for s in block.stmts() {
+            stmts.push(self.lower_stmt(&s));
+        }
+
+        if let Some(tail_expr) = block.tail_expr() {
+            tail = Some(self.lower_expr(&tail_expr));
+        }
+
+        self.scopes.pop();
+
+        self.alloc_block(Block { stmts, tail }, ptr)
     }
 
     fn lower_stmt(&mut self, stmt: &ast::Stmt) -> StmtId {
@@ -317,7 +437,7 @@ impl<'a> LoweringCtx<'a> {
                     .name()
                     .map(|t| SmolStr::from(t.text()))
                     .unwrap_or_default();
-                let ty = l.type_ref().map(|t| lower_type_ref(&t));
+                let ty = l.ty().map(|t| lower_type_ref(&t));
                 let mutable = matches!(l.kind(), Some(ast::LetKind::Var));
                 let init = l.value().map(|e| self.lower_expr(&e));
 
@@ -356,14 +476,26 @@ impl<'a> LoweringCtx<'a> {
 
     fn lower_expr(&mut self, expr: &ast::Expr) -> ExprId {
         let ptr = SyntaxNodePtr::new(expr.syntax());
+        let mut expr_type: Option<TypeRef> = None;
+
         let hir_expr = match expr {
-            ast::Expr::Literal(lit) => Expr::Literal(lower_literal(lit)),
+            ast::Expr::Literal(lit) => {
+                let literal = lower_literal(lit);
+                expr_type = Some(literal_type(&literal));
+                Expr::Literal(literal)
+            }
             ast::Expr::NameRef(nr) => {
                 let name: Text = nr
                     .name()
                     .map(|t| SmolStr::from(t.text()))
                     .unwrap_or_default();
-                Expr::Path(self.resolve(&name))
+                let resolution = self.resolve(&name);
+                // look up the type of the resolved entity.
+                expr_type = match &resolution {
+                    Resolution::Local(local_id) => self.body.locals[*local_id].ty.clone(),
+                    _ => None,
+                };
+                Expr::Path(resolution)
             }
             ast::Expr::CallExpr(c) => {
                 let callee = match c.callee() {
@@ -374,6 +506,7 @@ impl<'a> LoweringCtx<'a> {
                     .arg_list()
                     .map(|al| al.args().map(|a| self.lower_expr(&a)).collect())
                     .unwrap_or_default();
+                // call return type is unknown for now.
                 Expr::Call { callee, args }
             }
             ast::Expr::StructLit(sl) => {
@@ -381,6 +514,7 @@ impl<'a> LoweringCtx<'a> {
                     Some(t) => TypeRef::Path(SmolStr::from(t.text())),
                     None => TypeRef::Error,
                 };
+                expr_type = Some(ty.clone());
                 let mut fields = Vec::new();
                 if let Some(fl) = sl.field_list() {
                     for f in fl.fields() {
@@ -394,7 +528,17 @@ impl<'a> LoweringCtx<'a> {
                                 // shorthand desugar: synthesize Path expr.
                                 let resolution = self.resolve(&fname);
                                 let f_ptr = SyntaxNodePtr::new(f.syntax());
-                                self.alloc_expr(Expr::Path(resolution), f_ptr)
+                                let inner_ty = match &resolution {
+                                    Resolution::Local(local_id) => {
+                                        self.body.locals[*local_id].ty.clone()
+                                    }
+                                    _ => None,
+                                };
+                                let id = self.alloc_expr(Expr::Path(resolution), f_ptr);
+                                if let Some(t) = inner_ty {
+                                    self.body.expr_types.insert(id, t);
+                                }
+                                id
                             }
                         };
                         fields.push(StructLitField { name: fname, value });
@@ -414,6 +558,8 @@ impl<'a> LoweringCtx<'a> {
                     Some(e) => self.lower_expr(&e),
                     None => self.alloc_expr(Expr::Missing, ptr),
                 };
+                // Infer type from the left operand (simplified).
+                expr_type = self.body.expr_types.get(lhs).cloned();
                 Expr::Binary { op, lhs, rhs }
             }
             ast::Expr::PrefixExpr(p) => {
@@ -424,6 +570,7 @@ impl<'a> LoweringCtx<'a> {
                     Some(e) => self.lower_expr(&e),
                     None => self.alloc_expr(Expr::Missing, ptr),
                 };
+                expr_type = self.body.expr_types.get(operand).cloned();
                 Expr::Unary { op, operand }
             }
             ast::Expr::FieldExpr(fe) => {
@@ -431,15 +578,8 @@ impl<'a> LoweringCtx<'a> {
                     Some(e) => self.lower_expr(&e),
                     None => self.alloc_expr(Expr::Missing, ptr),
                 };
-
-                // The parser appends exactly one NameRef child *after* the
-                // `.` token for the field name. `FieldExpr::name_ref()` is
-                // a `support::child` accessor that returns the *first*
-                // NameRef, which is the base when the base is itself a bare
-                // NameRef (e.g. `p.x`) and is missing on nested access
-                // (`a.b.c` - the outer FieldExpr has FieldExpr+NameRef as
-                // children). The field name is always the last NameRef
-                // child.
+                // Field name: the last NameRef child, not the first (avoids the
+                // bug where the base is a bare NameRef).
                 let name: SmolStr = fe
                     .syntax()
                     .children()
@@ -449,19 +589,152 @@ impl<'a> LoweringCtx<'a> {
                     .map(|t| SmolStr::from(t.text().trim()))
                     .unwrap_or_default();
 
+                let base_ty = self
+                    .body
+                    .expr_types
+                    .get(base)
+                    .cloned()
+                    .unwrap_or(TypeRef::Error);
+                expr_type = Some(self.lookup_field_type(&base_ty, &name));
                 Expr::Field { base, name }
             }
+            ast::Expr::AssignExpr(a) => {
+                let lhs = a
+                    .lhs()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Missing, ptr));
+                let rhs = a
+                    .rhs()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Missing, ptr));
+                // Assignment type is the type of the RHS.
+                expr_type = self.body.expr_types.get(rhs).cloned();
+                Expr::Assign { lhs, rhs }
+            }
+            ast::Expr::IfExpr(i) => {
+                let cond = i
+                    .condition()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Missing, ptr));
+
+                let then_block =
+                    i.then_branch()
+                        .map(|b| self.lower_block(b))
+                        .unwrap_or_else(|| {
+                            let empty = Block {
+                                stmts: vec![],
+                                tail: None,
+                            };
+                            self.alloc_block(empty, ptr)
+                        });
+
+                let else_block = i.else_branch().map(|b| self.lower_block(b));
+
+                // The type of the if-expression is the type of the then-branch tail
+                // (or else-branch tail as fallback).
+                expr_type = self
+                    .block_tail_type(then_block)
+                    .or_else(|| else_block.and_then(|b| self.block_tail_type(b)));
+
+                Expr::If {
+                    cond,
+                    then_branch: then_block,
+                    else_branch: else_block,
+                }
+            }
+            ast::Expr::LoopExpr(l) => {
+                let body = l.body().map(|b| self.lower_block(b)).unwrap_or_else(|| {
+                    let empty = Block {
+                        stmts: vec![],
+                        tail: None,
+                    };
+                    self.alloc_block(empty, ptr)
+                });
+                // Loop type is unit (void).
+                Expr::Loop { body }
+            }
+            ast::Expr::BreakExpr(_) => {
+                // We don't store the optional value yet; could be extended later.
+                Expr::Break
+            }
+            ast::Expr::ContinueExpr(_) => Expr::Continue,
+            ast::Expr::RefExpr(r) => {
+                let operand = r
+                    .expr()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Missing, ptr));
+                let inner_ty = self
+                    .body
+                    .expr_types
+                    .get(operand)
+                    .cloned()
+                    .unwrap_or(TypeRef::Error);
+                expr_type = Some(TypeRef::Ref(Box::new(inner_ty)));
+                Expr::Ref { operand }
+            }
+            ast::Expr::DerefExpr(d) => {
+                let operand = d
+                    .expr()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Missing, ptr));
+                let op_ty = self
+                    .body
+                    .expr_types
+                    .get(operand)
+                    .cloned()
+                    .unwrap_or(TypeRef::Error);
+                let deref_ty = match &op_ty {
+                    TypeRef::Ref(inner) | TypeRef::Ptr(inner) => (**inner).clone(),
+                    _ => TypeRef::Error,
+                };
+                expr_type = Some(deref_ty);
+                Expr::Deref { operand }
+            }
         };
-        self.alloc_expr(hir_expr, ptr)
+
+        // allocate the expression and record its type if known
+        let id = self.alloc_expr(hir_expr, ptr);
+        if let Some(ty) = expr_type {
+            self.body.expr_types.insert(id, ty);
+        }
+        id
     }
 }
 
 // ---- free helpers ----
 
 fn lower_type_ref(ty: &ast::TypeRef) -> TypeRef {
-    match ty.name() {
-        Some(t) => TypeRef::Path(SmolStr::from(t.text())),
-        None => TypeRef::Error,
+    // v0.1 only emits IdentType; ref/ptr types are deferred to later passes.
+    // NOTE: now on v0.2 <- implemented ref and ptr types
+    match ty {
+        ast::TypeRef::IdentType(it) => match it.name() {
+            Some(t) => TypeRef::Path(SmolStr::from(t.text())),
+            None => TypeRef::Error,
+        },
+        ast::TypeRef::RefType(rt) => {
+            let inner = rt
+                .inner()
+                .map(|t| lower_type_ref(&t))
+                .unwrap_or(TypeRef::Error);
+            TypeRef::Ref(Box::new(inner))
+        }
+        ast::TypeRef::PtrType(pt) => {
+            let inner = pt
+                .inner()
+                .map(|t| lower_type_ref(&t))
+                .unwrap_or(TypeRef::Error);
+            TypeRef::Ptr(Box::new(inner))
+        }
+    }
+}
+
+fn literal_type(lit: &Literal) -> TypeRef {
+    match lit {
+        Literal::Int(_) => TypeRef::Path(SmolStr::new_static("int32")),
+        Literal::Float(_) => TypeRef::Path(SmolStr::new_static("float64")),
+        Literal::String(_) => TypeRef::Path(SmolStr::new_static("string")),
+        Literal::Bool(_) => TypeRef::Path(SmolStr::new_static("bool")),
+        Literal::Char(_) => TypeRef::Path(SmolStr::new_static("char")),
     }
 }
 
@@ -543,7 +816,7 @@ fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId, ast::FnDef
                             .name()
                             .map(|t| SmolStr::from(t.text()))
                             .unwrap_or_default();
-                        let ty = match f.type_ref() {
+                        let ty = match f.ty() {
                             Some(t) => lower_type_ref(&t),
                             None => TypeRef::Error,
                         };
@@ -555,38 +828,84 @@ fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId, ast::FnDef
                     name: name.clone(),
                     fields,
                 });
-                if hir.items.types.contains_key(&name)
-                    || hir.items.values.contains_key(&name)
+                if hir.items.structs.contains_key(&name) || hir.items.functions.contains_key(&name)
                 {
                     hir.diagnostics.push(HirDiagnostic {
                         ptr: SyntaxNodePtr::new(s.syntax()),
                         msg: format!("duplicate item `{name}`"),
                     });
                 }
-                hir.items.types.insert(name, struct_id);
+                hir.items.structs.insert(name, struct_id);
             }
             ast::Item::FnDef(f) => {
                 let name: Text = f
                     .name()
                     .map(|t| SmolStr::from(t.text()))
                     .unwrap_or_default();
-                // v0.1 grammar: ParamList is `( )`. No params to collect.
+                // NOTE: v0.1 grammar: ParamList is `( )`. No params to collect.
+                // now <- v0.2
+                let mut params = Vec::new();
+                if let Some(pl) = f.param_list() {
+                    for param_ast in pl.params() {
+                        let pname = param_ast
+                            .name()
+                            .map(|t| SmolStr::from(t.text()))
+                            .unwrap_or_default();
+                        let pty = match param_ast.ty() {
+                            Some(t) => lower_type_ref(&t),
+                            None => TypeRef::Error,
+                        };
+                        params.push(Param {
+                            name: pname,
+                            ty: pty,
+                        });
+                    }
+                }
+                let ret = f.ret_type().map(|t| lower_type_ref(&t));
                 let fn_id = hir.functions.alloc(Function {
                     name: name.clone(),
-                    params: Vec::new(),
-                    ret: None,
+                    params,
+                    ret,
                     body: None,
                 });
-                if hir.items.values.contains_key(&name)
-                    || hir.items.types.contains_key(&name)
+                if hir.items.functions.contains_key(&name) || hir.items.structs.contains_key(&name)
                 {
                     hir.diagnostics.push(HirDiagnostic {
                         ptr: SyntaxNodePtr::new(f.syntax()),
                         msg: format!("duplicate item `{name}`"),
                     });
                 }
-                hir.items.values.insert(name, fn_id);
+                hir.items.functions.insert(name, fn_id);
                 fn_asts.push((fn_id, f));
+            }
+            // v0.2 EnumDef: collection deferred. Skipping leaves no item in
+            // [`ItemScope`] for it, but the body lowering still walks the
+            // file's other items normally.
+            ast::Item::EnumDef(e) => {
+                let name: Text = e
+                    .name()
+                    .map(|t| SmolStr::from(t.text()))
+                    .unwrap_or_default();
+                let mut variants = Vec::new();
+                for v in e.variants() {
+                    let vname = v
+                        .name()
+                        .map(|t| SmolStr::from(t.text()))
+                        .unwrap_or_default();
+                    variants.push(Variant { name: vname });
+                }
+                let enum_id = hir.enums.alloc(Enum {
+                    name: name.clone(),
+                    variants,
+                });
+                if hir.items.structs.contains_key(&name) || hir.items.functions.contains_key(&name)
+                {
+                    hir.diagnostics.push(HirDiagnostic {
+                        ptr: SyntaxNodePtr::new(e.syntax()),
+                        msg: format!("duplicate item `{name}`"),
+                    });
+                }
+                hir.items.enums.insert(name, enum_id);
             }
         }
     }
@@ -594,19 +913,40 @@ fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId, ast::FnDef
 }
 
 fn lower_fn_body(hir: &mut HIR, fn_ast: &ast::FnDef) -> BodyId {
-    let mut body = {
-        let mut ctx = LoweringCtx::new(hir);
-        if let Some(block) = fn_ast.body() {
-            for stmt in block.stmts() {
-                let id = ctx.lower_stmt(&stmt);
-                ctx.body.block.push(id);
+    let mut ctx = LoweringCtx::new(hir);
+
+    if let Some(block) = fn_ast.body() {
+        // lower_block will push its own scope. We need parameters to be
+        // visible inside that scope, so push a scope first, add params,
+        // then lower_block will push another scope.
+        ctx.scopes.push();
+        if let Some(param_list) = fn_ast.param_list() {
+            for param_ast in param_list.params() {
+                let name: Text = param_ast
+                    .name()
+                    .map(|t| SmolStr::from(t.text()))
+                    .unwrap_or_default();
+                let ty = param_ast.ty().map(|t| lower_type_ref(&t));
+                let ptr = SyntaxNodePtr::new(param_ast.syntax());
+                let pat_id = ctx.alloc_pat(Pat::Missing, ptr);
+                let local_id = ctx.body.locals.alloc(Local {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                    mutable: false,
+                    pat: pat_id,
+                });
+                ctx.body.pats[pat_id] = Pat::Bind(local_id);
+                ctx.scopes.define(name, local_id);
             }
         }
-        ctx.finish()
-    };
-    // tail expr unsupported in v0.1 grammar; leave None.
-    body.tail = None;
-    hir.bodies.alloc(body)
+
+        let block_id = ctx.lower_block(block);
+        let lowered_block = &ctx.body.blocks[block_id];
+        ctx.body.block = lowered_block.stmts.clone();
+        ctx.body.tail = lowered_block.tail;
+        ctx.scopes.pop();
+    }
+    hir.bodies.alloc(ctx.finish())
 }
 
 #[cfg(test)]
@@ -643,14 +983,14 @@ main() {
         let hir = lower(MAIN_EYE);
         assert_eq!(hir.structs.len(), 1);
         assert_eq!(hir.functions.len(), 1);
-        assert!(hir.items.types.contains_key("Point"));
-        assert!(hir.items.values.contains_key("main"));
+        assert!(hir.items.structs.contains_key("Point"));
+        assert!(hir.items.functions.contains_key("main"));
     }
 
     #[test]
     fn shorthand_struct_lit_desugared() {
         let hir = lower(MAIN_EYE);
-        let main_id = *hir.items.values.get("main").unwrap();
+        let main_id = *hir.items.functions.get("main").unwrap();
         let body_id = hir.functions[main_id].body.expect("main has body");
         let body = &hir.bodies[body_id];
 
@@ -679,7 +1019,8 @@ main() {
 
     #[test]
     fn duplicate_struct_emits_diagnostic() {
-        let hir = lower("\
+        let hir = lower(
+            "\
 structure Point {
     int32 x,
 };
@@ -689,7 +1030,8 @@ structure Point {
 };
 
 main() {}
-");
+",
+        );
         assert_eq!(
             hir.diagnostics.len(),
             1,
@@ -707,10 +1049,12 @@ main() {}
 
     #[test]
     fn duplicate_fn_emits_diagnostic() {
-        let hir = lower("\
+        let hir = lower(
+            "\
 main() {}
 main() {}
-");
+",
+        );
         assert_eq!(hir.diagnostics.len(), 1, "{:?}", hir.diagnostics);
         assert!(
             hir.diagnostics[0].msg.contains("duplicate item `main`"),
@@ -724,13 +1068,15 @@ main() {}
     fn fn_and_struct_with_same_name_collide() {
         // Cross-namespace collision should still be flagged: in v0.1 the
         // resolver treats both namespaces as one for name-resolution.
-        let hir = lower("\
+        let hir = lower(
+            "\
 structure Foo {
     int32 x,
 };
 
 Foo() {}
-");
+",
+        );
         assert_eq!(hir.diagnostics.len(), 1, "{:?}", hir.diagnostics);
         assert!(
             hir.diagnostics[0].msg.contains("duplicate item `Foo`"),
@@ -761,7 +1107,7 @@ main() {
 }
 ";
         let hir = lower(src);
-        let main_id = *hir.items.values.get("main").unwrap();
+        let main_id = *hir.items.functions.get("main").unwrap();
         let body_id = hir.functions[main_id].body.expect("main has body");
         let body = &hir.bodies[body_id];
 
@@ -775,10 +1121,44 @@ main() {
             })
             .collect();
         names.sort();
-        assert_eq!(
-            names,
-            vec!["b", "c"],
-            "nested field access dropped a name"
+        assert_eq!(names, vec!["b", "c"], "nested field access dropped a name");
+    }
+
+    /// Regression for the lower-block ordering bug: a block's tail expression
+    /// (typically a `loop { ... }` body) used to be lowered *before* the
+    /// preceding stmts, so locals defined by those stmts were not yet in
+    /// scope. NameRefs inside the loop body fell through to
+    /// `Resolution::Unresolved`, which downstream made auto-deref on field
+    /// access impossible.
+    #[test]
+    fn tail_expression_sees_locals_defined_by_preceding_stmts() {
+        let src = "\
+structure P {
+    int32 x,
+};
+
+main() {
+    var P p = P { x: 0 };
+    var &P p_ref = &p;
+    loop {
+        if p_ref.x > 10 { break; }
+        p_ref.x = p_ref.x + 1;
+    }
+}
+";
+        let hir = lower(src);
+        let main_id = *hir.items.functions.get("main").unwrap();
+        let body_id = hir.functions[main_id].body.expect("main has body");
+        let body = &hir.bodies[body_id];
+
+        // Every `Path` expression that names `p_ref` must resolve to a
+        // Local, not fall through to Unresolved.
+        let unresolved_p_ref = body.exprs.iter().any(|(_, e)| {
+            matches!(e, Expr::Path(Resolution::Unresolved(n)) if n.as_str() == "p_ref")
+        });
+        assert!(
+            !unresolved_p_ref,
+            "p_ref inside the tail loop body did not resolve to the outer local"
         );
     }
 

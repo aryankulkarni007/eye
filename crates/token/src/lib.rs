@@ -169,6 +169,10 @@ define_tokens! {
     Farrow = "=>",
     #[token(".")]
     Dot = ".",
+    #[token("&")]
+    Amp = "&",
+    #[token("|")]
+    Pipe = "|",
 
     // trivia
     #[regex(r"[ \t\r]+")]

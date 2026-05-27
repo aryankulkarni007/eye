@@ -86,6 +86,12 @@ pub struct Parser<'t> {
     /// Reset on every [`advance`](Parser::advance); decremented on every
     /// lookahead. Hitting zero means the grammar is spinning.
     fuel: Cell<u32>,
+    /// When true, the postfix `{ ... }` form does not start a struct literal.
+    /// Set inside `if`/`loop` conditions to disambiguate `if x { ... }` from
+    /// `if x_struct_lit_then_block`. Restored to its prior value on entry to
+    /// any inner parenthesised context so `if foo(Bar { x }) { ... }` still
+    /// parses the inner literal.
+    no_struct_lit: Cell<bool>,
 }
 
 impl<'t> Parser<'t> {
@@ -99,6 +105,7 @@ impl<'t> Parser<'t> {
             events: Vec::with_capacity(tokens.len() * 2),
             errors: ThinVec::new(),
             fuel: Cell::new(FUEL),
+            no_struct_lit: Cell::new(false),
         };
         p.pos = p.skip_trivia(0);
         p
@@ -218,6 +225,18 @@ impl<'t> Parser<'t> {
 
     fn finish(self) -> (Vec<Event>, ThinVec<ParseError>) {
         (self.events, self.errors)
+    }
+
+    /// Suppress (or re-enable) struct-literal recognition by the postfix loop.
+    /// Returns the previous value so the caller can restore it - use the RAII
+    /// pattern `let prev = p.set_no_struct_lit(true); ...; p.set_no_struct_lit(prev);`.
+    pub(crate) fn set_no_struct_lit(&self, v: bool) -> bool {
+        self.no_struct_lit.replace(v)
+    }
+
+    /// True if struct-literal postfix is currently suppressed.
+    pub(crate) fn no_struct_lit(&self) -> bool {
+        self.no_struct_lit.get()
     }
 }
 
@@ -463,5 +482,183 @@ main() {
     fn cst_snapshot() {
         let parse = parse_src(SAMPLE);
         insta::assert_snapshot!(format!("{:#?}", parse.green));
+    }
+
+    // ---------- v0.2 grammar coverage ----------
+
+    /// `add(int32 a, int32 b) -> int32 { a + b }` - comma-separated params,
+    /// `->` return type, and a block whose body is a single tail expression.
+    #[test]
+    fn fn_def_with_return_type_and_tail_expr() {
+        let src = "add(int32 a, int32 b) -> int32 { a + b }\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    #[test]
+    fn empty_param_list_still_parses() {
+        let src = "main() {\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+    }
+
+    /// Waterfall enum body: `enum Shape = | A | B | C ;`.
+    #[test]
+    fn enum_def_waterfall_form_parses_clean() {
+        let src = "enum Shape =\n| Square\n| Circle\n| Triangle\n;\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `var &Point pt_ref = &pt;` - reference type annotation plus address-of
+    /// prefix expression on the right-hand side.
+    #[test]
+    fn ref_type_and_ref_expr_parse_clean() {
+        let src = "main() {\n    var pt = Point { 10, 20 };\n    var &Point pt_ref = &pt;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `*p` as a prefix expression - the deref form mirrors `&p`.
+    #[test]
+    fn deref_expr_parses_clean() {
+        let src = "main() {\n    var x = *p;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// Positional struct literal: `Point { 10, 20 }` has no field names.
+    #[test]
+    fn positional_struct_lit_parses_clean() {
+        let src = "main() {\n    var pt = Point { 10, 20 };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// Assignment to a name and to a field of a struct. Confirms the
+    /// AssignExpr kind dispatch in `expr_bp` triggers only on `=`.
+    #[test]
+    fn assign_expr_to_name_and_field_parse_clean() {
+        let src = "main() {\n    counter = counter + 1;\n    pt.x = 15;\n    pt_ref.y = 30;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `if cond { ... } else { ... }` as the right-hand side of a `const`
+    /// binding - exercises if-as-expression and the no-struct-lit gate inside
+    /// the condition.
+    #[test]
+    fn if_expr_as_value_parses_clean() {
+        let src = "main() {\n    const max = if x > counter { x } else { counter };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `if` used as a statement-position expression without a trailing `;`,
+    /// followed by another statement - the block-like rule in `block`.
+    #[test]
+    fn if_as_stmt_without_semicolon_parses_clean() {
+        let src = "main() {\n    if counter > 10 { break; }\n    counter = counter + 1;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `loop { ... }` with `break;` and `continue;` inside.
+    #[test]
+    fn loop_with_break_and_continue_parses_clean() {
+        let src = "main() {\n    loop {\n        if done { break; }\n        if skip { continue; }\n        counter = counter + 1;\n    }\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `break expr` carries a value; the parser must accept it without
+    /// requiring a separator before the expression.
+    #[test]
+    fn break_with_value_parses_clean() {
+        let src = "main() {\n    loop { break 42; }\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// Assignment is right-associative and lowest precedence. `a = b + c`
+    /// must group as `a = (b + c)`, not `(a = b) + c`. Walks the CST so the
+    /// check catches a swapped grouping rather than just a co-occurrence.
+    #[test]
+    fn assign_is_right_assoc_and_below_addition() {
+        let src = "main() {\n    a = b + c;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+
+        // SourceFile > FnDef > Block > ExprStmt > AssignExpr > {NameRef, BinExpr}
+        fn find_kind(node: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
+            if node.kind() == kind {
+                return Some(node.clone());
+            }
+            node.children().find_map(|c| find_kind(&c, kind))
+        }
+
+        let assign = find_kind(&parse.green, SyntaxKind::AssignExpr)
+            .expect("AssignExpr in tree");
+        let kids: Vec<SyntaxKind> = assign.children().map(|c| c.kind()).collect();
+        assert_eq!(kids, vec![SyntaxKind::NameRef, SyntaxKind::BinExpr],
+            "AssignExpr children must be (NameRef, BinExpr), got {:?}", kids);
+    }
+
+    /// Struct literal inside a call argument inside an if-condition - the
+    /// no_struct_lit gate must be cleared on entry to `arg_list`.
+    #[test]
+    fn struct_lit_inside_call_inside_if_condition() {
+        let src = "main() {\n    if foo(Bar { x: 0 }) { ok }\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `if x { ... }` - the bare name `x` must not gobble the following block
+    /// as a struct literal body.
+    #[test]
+    fn if_with_bare_name_condition_does_not_eat_block_as_struct_lit() {
+        let src = "main() {\n    if cond { ok }\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        // the if's body block must be an IfExpr > Block, not a StructLit
+        let s = format!("{:#?}", parse.green);
+        assert!(s.contains("IfExpr"));
+        assert!(!s.contains("StructLit"), "got StructLit in:\n{s}");
+    }
+
+    /// Boundary marker: nested-ref types (`&&Point`) and pointer-suffix types
+    /// (`Point*`) are not yet disambiguated in `let_stmt`'s type-form check.
+    /// This test pins the current behaviour so a future fix is easy to spot.
+    #[test]
+    fn double_ref_type_in_let_binding_currently_misparses() {
+        // `var &&Point p = &q;` - the heuristic sees `&` + `&` and decides
+        // there is no type, so `&&Point` parses as a logical-and prefix
+        // (which itself errors). Expect at least one diagnostic.
+        let parse = parse_src("main() {\n    var &&Point p = &q;\n}\n");
+        assert!(
+            !parse.errors.is_empty(),
+            "nested-ref type-form should fail until the heuristic learns it"
+        );
+    }
+
+    /// Full `eyesrc/design.eye` parses with zero diagnostics and round-trips
+    /// byte-for-byte. This is the integration check the unit tests can miss.
+    #[test]
+    fn design_eye_parses_clean_and_round_trips() {
+        let src = include_str!("../../../eyesrc/design.eye");
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
     }
 }

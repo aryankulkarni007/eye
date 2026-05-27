@@ -1,4 +1,4 @@
---- BASIC V0.1 DESIGN.EYE ---
+--- BASIC V0.2 DESIGN.EYE ---
 
 --- STRUCTURE ---
 structure Point {
@@ -22,13 +22,13 @@ add(int32 a, int32 b) -> int32 {
 
 main() {
     -- primitive bindings
-    const x = 10;
-    var counter = 0;
+    const int32 x = 10;
+    var int32 counter = 0;
 
     -- struct instantiation
-    var pt = Point { 10, 20 };
+    var Point pt = Point { x: 10, y: 20 };
 
-    -- Member Access & Modification
+    -- member access & modification
     pt.x = 15;
 
     -- pointer & reference usage
@@ -36,10 +36,11 @@ main() {
     pt_ref.y = 30;
 
     -- expression-based assignment
-    const max = if x > counter { x } else { counter };
+    const int32 max = if x > counter { x } else { counter };
 
     loop {
         if counter > 10 { break; }
+        print("{}", counter);
         counter = counter + 1;
     }
 }

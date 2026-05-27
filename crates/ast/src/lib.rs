@@ -26,7 +26,7 @@
 
 use std::marker::PhantomData;
 
-use syntax::{SyntaxKind, SyntaxNode, SyntaxNodeChildren, SyntaxToken};
+use syntax::{SyntaxKind, SyntaxNode, SyntaxNodeChildren, SyntaxToken, T};
 
 mod generated;
 pub use generated::*;
@@ -119,8 +119,8 @@ impl LetStmt {
             .children_with_tokens()
             .filter_map(|e| e.into_token())
             .find_map(|t| match t.kind() {
-                SyntaxKind::Const => Some(LetKind::Const),
-                SyntaxKind::Var => Some(LetKind::Var),
+                T![const] => Some(LetKind::Const),
+                T![var] => Some(LetKind::Var),
                 _ => None,
             })
     }
@@ -181,18 +181,18 @@ impl BinOp {
     /// The operator a token kind denotes, or `None` for a non-operator kind.
     fn from_kind(kind: SyntaxKind) -> Option<BinOp> {
         Some(match kind {
-            SyntaxKind::Plus => BinOp::Add,
-            SyntaxKind::Minus => BinOp::Sub,
-            SyntaxKind::Star => BinOp::Mul,
-            SyntaxKind::Slash => BinOp::Div,
-            SyntaxKind::And => BinOp::And,
-            SyntaxKind::Or => BinOp::Or,
-            SyntaxKind::Eq => BinOp::Eq,
-            SyntaxKind::Neq => BinOp::Neq,
-            SyntaxKind::Lt => BinOp::Lt,
-            SyntaxKind::Gt => BinOp::Gt,
-            SyntaxKind::Leq => BinOp::Leq,
-            SyntaxKind::Geq => BinOp::Geq,
+            T![+] => BinOp::Add,
+            T![-] => BinOp::Sub,
+            T![*] => BinOp::Mul,
+            T![/] => BinOp::Div,
+            T![&&] => BinOp::And,
+            T![||] => BinOp::Or,
+            T![==] => BinOp::Eq,
+            T![!=] => BinOp::Neq,
+            T![<] => BinOp::Lt,
+            T![>] => BinOp::Gt,
+            T![<=] => BinOp::Leq,
+            T![>=] => BinOp::Geq,
             _ => return None,
         })
     }
@@ -253,7 +253,7 @@ impl fmt::Display for UnaryOp {
 impl PrefixExpr {
     /// The operator. Only `-` (negation) exists in the v0.1 subset.
     pub fn op(&self) -> Option<UnaryOp> {
-        support::token(self.syntax(), SyntaxKind::Minus).map(|_| UnaryOp::Neg)
+        support::token(self.syntax(), T![-]).map(|_| UnaryOp::Neg)
     }
 }
 
@@ -299,10 +299,10 @@ main() {
 
         let fields: Vec<_> = s.field_list().unwrap().fields().collect();
         assert_eq!(fields.len(), 2);
-        assert_eq!(
-            fields[0].type_ref().unwrap().name().unwrap().text(),
-            "int32"
-        );
+        let TypeRef::IdentType(it) = fields[0].ty().unwrap() else {
+            panic!("field type is an ident type");
+        };
+        assert_eq!(it.name().unwrap().text(), "int32");
         assert_eq!(fields[0].name().unwrap().text(), "x");
         assert_eq!(fields[1].name().unwrap().text(), "y");
     }
@@ -333,7 +333,7 @@ main() {
             panic!("first stmt is a let");
         };
         assert_eq!(x.kind(), Some(LetKind::Const));
-        assert!(x.type_ref().is_none());
+        assert!(x.ty().is_none());
         assert_eq!(x.name().unwrap().text(), "x");
         let Some(Expr::Literal(lit)) = x.value() else {
             panic!("value is a literal");
@@ -345,7 +345,10 @@ main() {
             panic!("third stmt is a let");
         };
         assert_eq!(p.kind(), Some(LetKind::Var));
-        assert_eq!(p.type_ref().unwrap().name().unwrap().text(), "Point");
+        let TypeRef::IdentType(pty) = p.ty().unwrap() else {
+            panic!("let type is an ident type");
+        };
+        assert_eq!(pty.name().unwrap().text(), "Point");
         assert_eq!(p.name().unwrap().text(), "p");
         let Some(Expr::StructLit(sl)) = p.value() else {
             panic!("value is a struct literal");

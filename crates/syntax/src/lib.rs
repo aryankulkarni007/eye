@@ -7,7 +7,7 @@
 use token::TokenKind;
 
 /// Defines [`SyntaxKind`] from a single variant list and derives the
-/// `u16` → variant lookup from it, so the `repr` discriminants and the
+/// `u16` -> variant lookup from it, so the `repr` discriminants and the
 /// reverse mapping can never drift apart.
 macro_rules! syntax_kinds {
     ($($variant:ident),* $(,)?) => {
@@ -41,16 +41,20 @@ syntax_kinds! {
     Oparen, Cparen, Obrace, Cbrace, Obrack, Cbrack, Comma, Semicolon, Colon,
     Assign,
     Plus, Minus, Star, Slash, And, Or, Eq, Neq, Lt, Gt, Leq, Geq,
-    Arrow, Farrow, Dot,
+    Arrow, Farrow, Dot, Amp, Pipe,
     Wspace, Lcomment, Bcomment, Dcomment, Newline,
 
     // ---- node kinds (internal) ----
     SourceFile,
-    StructDef, FieldList, Field, TypeRef,
-    FnDef, ParamList, Block,
+    StructDef, FieldList, Field,
+    EnumDef, Variant,
+    FnDef, ParamList, Param, Block,
+    IdentType, RefType, PtrType,
     LetStmt, ExprStmt,
     Literal, NameRef, CallExpr, ArgList,
     BinExpr, PrefixExpr, FieldExpr,
+    AssignExpr, IfExpr, LoopExpr, BreakExpr, ContinueExpr,
+    RefExpr, DerefExpr,
     StructLit, StructLitFieldList, StructLitField,
     ErrorNode,
 }
@@ -122,6 +126,8 @@ impl From<TokenKind> for SyntaxKind {
             T::Arrow => S::Arrow,
             T::Farrow => S::Farrow,
             T::Dot => S::Dot,
+            T::Amp => S::Amp,
+            T::Pipe => S::Pipe,
             T::Wspace => S::Wspace,
             T::Lcomment => S::Lcomment,
             T::Bcomment => S::Bcomment,
@@ -156,13 +162,19 @@ pub type SyntaxNodePtr = rowan::ast::SyntaxNodePtr<EyeLang>;
 
 /// Maps eye surface syntax - punctuation and keywords - to [`SyntaxKind`],
 /// so grammar code reads as `p.at(T![;])` instead of naming enum variants.
+/// Every punctuation/keyword token in [`TokenKind`] has an arm here; expands
+/// to a fully-qualified path so the macro is usable in both expression and
+/// pattern position.
 #[macro_export]
 macro_rules! T {
+    // ---- punctuation ----
     [;]     => { $crate::SyntaxKind::Semicolon };
     [,]     => { $crate::SyntaxKind::Comma };
     [:]     => { $crate::SyntaxKind::Colon };
     [=]     => { $crate::SyntaxKind::Assign };
     [.]     => { $crate::SyntaxKind::Dot };
+    [&]     => { $crate::SyntaxKind::Amp };
+    [|]     => { $crate::SyntaxKind::Pipe };
     ['(']   => { $crate::SyntaxKind::Oparen };
     [')']   => { $crate::SyntaxKind::Cparen };
     ['{']   => { $crate::SyntaxKind::Obrace };
@@ -170,8 +182,162 @@ macro_rules! T {
     ['[']   => { $crate::SyntaxKind::Obrack };
     [']']   => { $crate::SyntaxKind::Cbrack };
     [->]    => { $crate::SyntaxKind::Arrow };
-    [const] => { $crate::SyntaxKind::Const };
-    [var]   => { $crate::SyntaxKind::Var };
+    [=>]    => { $crate::SyntaxKind::Farrow };
+
+    // ---- arithmetic / logical operators ----
+    [+]     => { $crate::SyntaxKind::Plus };
+    [-]     => { $crate::SyntaxKind::Minus };
+    [*]     => { $crate::SyntaxKind::Star };
+    [/]     => { $crate::SyntaxKind::Slash };
+    [&&]    => { $crate::SyntaxKind::And };
+    [||]    => { $crate::SyntaxKind::Or };
+
+    // ---- comparison ----
+    [==]    => { $crate::SyntaxKind::Eq };
+    [!=]    => { $crate::SyntaxKind::Neq };
+    [<]     => { $crate::SyntaxKind::Lt };
+    [>]     => { $crate::SyntaxKind::Gt };
+    [<=]    => { $crate::SyntaxKind::Leq };
+    [>=]    => { $crate::SyntaxKind::Geq };
+
+    // ---- keywords ----
+    [const]     => { $crate::SyntaxKind::Const };
+    [var]       => { $crate::SyntaxKind::Var };
     [structure] => { $crate::SyntaxKind::Structure };
-    [enum]  => { $crate::SyntaxKind::Enum };
+    [enum]      => { $crate::SyntaxKind::Enum };
+    [if]        => { $crate::SyntaxKind::If };
+    [else]      => { $crate::SyntaxKind::Else };
+    [loop]      => { $crate::SyntaxKind::Loop };
+    [break]     => { $crate::SyntaxKind::Break };
+    [continue]  => { $crate::SyntaxKind::Continue };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `T!` arm expands to the corresponding `SyntaxKind` variant. A new
+    /// arm that resolves to the wrong variant - or a renamed variant that
+    /// breaks an arm - fails compilation here, not at the call site.
+    #[test]
+    fn t_macro_punctuation() {
+        assert_eq!(T![;], SyntaxKind::Semicolon);
+        assert_eq!(T![,], SyntaxKind::Comma);
+        assert_eq!(T![:], SyntaxKind::Colon);
+        assert_eq!(T![=], SyntaxKind::Assign);
+        assert_eq!(T![.], SyntaxKind::Dot);
+        assert_eq!(T![&], SyntaxKind::Amp);
+        assert_eq!(T![|], SyntaxKind::Pipe);
+        assert_eq!(T!['('], SyntaxKind::Oparen);
+        assert_eq!(T![')'], SyntaxKind::Cparen);
+        assert_eq!(T!['{'], SyntaxKind::Obrace);
+        assert_eq!(T!['}'], SyntaxKind::Cbrace);
+        assert_eq!(T!['['], SyntaxKind::Obrack);
+        assert_eq!(T![']'], SyntaxKind::Cbrack);
+        assert_eq!(T![->], SyntaxKind::Arrow);
+        assert_eq!(T![=>], SyntaxKind::Farrow);
+    }
+
+    #[test]
+    fn t_macro_operators() {
+        assert_eq!(T![+], SyntaxKind::Plus);
+        assert_eq!(T![-], SyntaxKind::Minus);
+        assert_eq!(T![*], SyntaxKind::Star);
+        assert_eq!(T![/], SyntaxKind::Slash);
+        assert_eq!(T![&&], SyntaxKind::And);
+        assert_eq!(T![||], SyntaxKind::Or);
+        assert_eq!(T![==], SyntaxKind::Eq);
+        assert_eq!(T![!=], SyntaxKind::Neq);
+        assert_eq!(T![<], SyntaxKind::Lt);
+        assert_eq!(T![>], SyntaxKind::Gt);
+        assert_eq!(T![<=], SyntaxKind::Leq);
+        assert_eq!(T![>=], SyntaxKind::Geq);
+    }
+
+    #[test]
+    fn t_macro_keywords() {
+        assert_eq!(T![const], SyntaxKind::Const);
+        assert_eq!(T![var], SyntaxKind::Var);
+        assert_eq!(T![structure], SyntaxKind::Structure);
+        assert_eq!(T![enum], SyntaxKind::Enum);
+        assert_eq!(T![if], SyntaxKind::If);
+        assert_eq!(T![else], SyntaxKind::Else);
+        assert_eq!(T![loop], SyntaxKind::Loop);
+        assert_eq!(T![break], SyntaxKind::Break);
+        assert_eq!(T![continue], SyntaxKind::Continue);
+    }
+
+    /// `T!` resolves in pattern position too - grammar code matches on it.
+    #[test]
+    fn t_macro_pattern_position() {
+        let k = SyntaxKind::Amp;
+        assert!(matches!(k, T![&]));
+        let k = SyntaxKind::Pipe;
+        assert!(matches!(k, T![|]));
+        let k = SyntaxKind::Arrow;
+        assert!(matches!(k, T![->]));
+        let k = SyntaxKind::If;
+        assert!(matches!(k, T![if]));
+    }
+
+    /// New v0.2 token kinds map through `From<TokenKind>`. Every other variant
+    /// is covered by the exhaustive `match` in the impl itself.
+    #[test]
+    fn from_tokenkind_v02_tokens() {
+        assert_eq!(SyntaxKind::from(TokenKind::Amp), SyntaxKind::Amp);
+        assert_eq!(SyntaxKind::from(TokenKind::Pipe), SyntaxKind::Pipe);
+        assert_eq!(SyntaxKind::from(TokenKind::If), SyntaxKind::If);
+        assert_eq!(SyntaxKind::from(TokenKind::Else), SyntaxKind::Else);
+        assert_eq!(SyntaxKind::from(TokenKind::Loop), SyntaxKind::Loop);
+        assert_eq!(SyntaxKind::from(TokenKind::Break), SyntaxKind::Break);
+        assert_eq!(SyntaxKind::from(TokenKind::Continue), SyntaxKind::Continue);
+        assert_eq!(SyntaxKind::from(TokenKind::Enum), SyntaxKind::Enum);
+        assert_eq!(SyntaxKind::from(TokenKind::Arrow), SyntaxKind::Arrow);
+        assert_eq!(SyntaxKind::from(TokenKind::Farrow), SyntaxKind::Farrow);
+    }
+
+    /// `u16` round-trip through the rowan language binding. Picks new v0.2
+    /// node kinds plus a few originals to prove `from_u16` returns the right
+    /// variant for the full enum range.
+    #[test]
+    fn syntax_kind_u16_roundtrip() {
+        let kinds = [
+            SyntaxKind::Eof,
+            SyntaxKind::Amp,
+            SyntaxKind::Pipe,
+            SyntaxKind::EnumDef,
+            SyntaxKind::Variant,
+            SyntaxKind::Param,
+            SyntaxKind::IdentType,
+            SyntaxKind::RefType,
+            SyntaxKind::PtrType,
+            SyntaxKind::AssignExpr,
+            SyntaxKind::IfExpr,
+            SyntaxKind::LoopExpr,
+            SyntaxKind::BreakExpr,
+            SyntaxKind::ContinueExpr,
+            SyntaxKind::RefExpr,
+            SyntaxKind::DerefExpr,
+            SyntaxKind::ErrorNode,
+        ];
+        for k in kinds {
+            let raw = k as u16;
+            assert_eq!(SyntaxKind::from_u16(raw), k);
+        }
+    }
+
+    /// Trivia detection still recognises every trivia variant. Guards against
+    /// a new variant slipping in without being classified.
+    #[test]
+    fn trivia_classification() {
+        assert!(SyntaxKind::Wspace.is_trivia());
+        assert!(SyntaxKind::Newline.is_trivia());
+        assert!(SyntaxKind::Lcomment.is_trivia());
+        assert!(SyntaxKind::Dcomment.is_trivia());
+        assert!(SyntaxKind::Bcomment.is_trivia());
+        // non-trivia spot checks
+        assert!(!SyntaxKind::Ident.is_trivia());
+        assert!(!SyntaxKind::Amp.is_trivia());
+        assert!(!SyntaxKind::If.is_trivia());
+    }
 }

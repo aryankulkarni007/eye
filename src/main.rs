@@ -8,7 +8,7 @@ use std::{
 
 use ast::AstNode;
 use codegen::core::CGen;
-use hir::core::lower_source_file;
+use hir::core::{HIR, lower_source_file};
 use lexer::{Interner, Lexer, SourceText, Symbol};
 use smallvec::SmallVec;
 use syntax::SyntaxToken;
@@ -80,6 +80,31 @@ fn describe_expr(expr: &ast::Expr) -> String {
                 None => format!("(? {operand})"),
             }
         }
+        // v0.2 expression kinds: dump as opaque placeholders until the
+        // pretty-printer learns each form.
+        ast::Expr::AssignExpr(_) => "<assign>".to_string(),
+        ast::Expr::IfExpr(_) => "<if>".to_string(),
+        ast::Expr::LoopExpr(_) => "<loop>".to_string(),
+        ast::Expr::BreakExpr(_) => "<break>".to_string(),
+        ast::Expr::ContinueExpr(_) => "<continue>".to_string(),
+        ast::Expr::RefExpr(_) => "<ref>".to_string(),
+        ast::Expr::DerefExpr(_) => "<deref>".to_string(),
+    }
+}
+
+/// Render an `ast::TypeRef` as the surface form it covers in the source.
+#[allow(dead_code)]
+fn describe_type_ref(t: &ast::TypeRef) -> String {
+    match t {
+        ast::TypeRef::IdentType(it) => tok_text(it.name()),
+        ast::TypeRef::RefType(r) => match r.inner() {
+            Some(inner) => format!("&{}", describe_type_ref(&inner)),
+            None => "&<missing>".to_string(),
+        },
+        ast::TypeRef::PtrType(p) => match p.inner() {
+            Some(inner) => format!("{}*", describe_type_ref(&inner)),
+            None => "<missing>*".to_string(),
+        },
     }
 }
 
@@ -93,12 +118,12 @@ fn dump_stmt(stmt: &ast::Stmt) {
                 Some(ast::LetKind::Var) => "var",
                 None => "<missing>",
             };
-            // a `let_stmt` type is optional (`type_ref?`): absent means the
-            // type is inferred, not a recovery hole. `<missing>` is reserved
-            // for a `TypeRef` node that exists but lost its name token.
-            let ty = match l.type_ref() {
+            // a `let_stmt` type is optional (`ty?`): absent means the type
+            // is inferred, not a recovery hole. A present `TypeRef` is
+            // rendered via [`describe_type_ref`].
+            let ty = match l.ty() {
                 None => "<inferred>".to_string(),
-                Some(t) => tok_text(t.name()),
+                Some(t) => describe_type_ref(&t),
             };
             let value = l
                 .value()
@@ -127,8 +152,11 @@ fn dump_ast(file: &ast::SourceFile) {
                 println!("structure {}", tok_text(s.name()));
                 if let Some(fl) = s.field_list() {
                     for f in fl.fields() {
-                        let ty = f.type_ref().and_then(|t| t.name());
-                        println!("  field {} {}", tok_text(ty), tok_text(f.name()));
+                        let ty = f
+                            .ty()
+                            .map(|t| describe_type_ref(&t))
+                            .unwrap_or_else(|| "<missing>".to_string());
+                        println!("  field {ty} {}", tok_text(f.name()));
                     }
                 }
             }
@@ -138,6 +166,12 @@ fn dump_ast(file: &ast::SourceFile) {
                     for stmt in body.stmts() {
                         dump_stmt(&stmt);
                     }
+                }
+            }
+            ast::Item::EnumDef(e) => {
+                println!("enum {}", tok_text(e.name()));
+                for v in e.variants() {
+                    println!("  | {}", tok_text(v.name()));
                 }
             }
         }
@@ -152,6 +186,78 @@ fn dump_symbols(interner: &Interner) {
     println!("\n--- SYMBOLS ({}) ---", interner.len());
     for i in 0..interner.len() {
         println!("  #{i} {:?}", interner.lookup(Symbol(i as u32)));
+    }
+}
+
+/// Dump the full HIR to stderr for debugging. Call this from `main.rs`
+/// or any binary target to inspect what lowering produced.
+pub fn dump_hir(hir: &HIR) {
+    eprintln!("===== HIR DUMP =====");
+    eprintln!("--- Structs ({}) ---", hir.structs.len());
+    for (id, s) in hir.structs.iter() {
+        eprintln!("  Struct({:?}): name={}, fields={:?}", id, s.name, s.fields);
+    }
+    eprintln!("--- Enums ({}) ---", hir.enums.len());
+    for (id, e) in hir.enums.iter() {
+        eprintln!(
+            "  Enum({:?}): name={}, variants={:?}",
+            id, e.name, e.variants
+        );
+    }
+    eprintln!("--- Fields ({}) ---", hir.fields.len());
+    for (id, f) in hir.fields.iter() {
+        eprintln!("  Field({:?}): name={}, ty={:?}", id, f.name, f.ty);
+    }
+    eprintln!("--- Functions ({}) ---", hir.functions.len());
+    for (id, f) in hir.functions.iter() {
+        eprintln!(
+            "  Fn({:?}): name={}, params={:?}, ret={:?}, body={:?}",
+            id, f.name, f.params, f.ret, f.body
+        );
+    }
+    eprintln!("--- ItemScope ---");
+    eprintln!("  functions: {:?}", hir.items.functions);
+    eprintln!("  structs:   {:?}", hir.items.structs);
+    eprintln!("  enums:     {:?}", hir.items.enums);
+    eprintln!("--- Bodies ---");
+    for (id, body) in hir.bodies.iter() {
+        eprintln!("  Body({:?}):", id);
+        eprintln!("    locals ({})", body.locals.len());
+        for (lid, local) in body.locals.iter() {
+            eprintln!(
+                "      Local({:?}): name='{}', ty={:?}, mutable={}",
+                lid, local.name, local.ty, local.mutable
+            );
+        }
+        eprintln!("    pats ({})", body.pats.len());
+        for (pid, pat) in body.pats.iter() {
+            eprintln!("      Pat({:?}): {:?}", pid, pat);
+        }
+        eprintln!("    exprs ({})", body.exprs.len());
+        for (eid, expr) in body.exprs.iter() {
+            let ty = body.expr_types.get(eid);
+            eprintln!("      Expr({:?}): {:?}", eid, expr);
+            if let Some(t) = ty {
+                eprintln!("        type: {:?}", t);
+            }
+        }
+        eprintln!("    stmts ({})", body.stmts.len());
+        for (sid, stmt) in body.stmts.iter() {
+            eprintln!("      Stmt({:?}): {:?}", sid, stmt);
+        }
+        eprintln!("    blocks ({})", body.blocks.len());
+        for (bid, block) in body.blocks.iter() {
+            eprintln!(
+                "      Block({:?}): stmts={:?}, tail={:?}",
+                bid, block.stmts, block.tail
+            );
+        }
+        eprintln!("    body.block: {:?}", body.block);
+        eprintln!("    body.tail:  {:?}", body.tail);
+    }
+    eprintln!("--- Diagnostics ({}) ---", hir.diagnostics.len());
+    for d in &hir.diagnostics {
+        eprintln!("  {}: {:?}", d.msg, d.ptr);
     }
 }
 
@@ -206,7 +312,7 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    // Dump AST and Symbols
+    // dump ast and symbols
     let file_ast = ast::SourceFile::cast(parse.green.clone())
         .ok_or_else(|| anyhow::anyhow!("Root node is not a valid SourceFile"))?;
 
@@ -216,6 +322,8 @@ fn main() -> anyhow::Result<()> {
     println!("compiling...");
     println!("lowering AST to HIR...");
     let hir = lower_source_file(file_ast);
+
+    // dump_hir(&hir);
 
     if !hir.diagnostics.is_empty() {
         eprintln!("\n{} hir diagnostic(s):", hir.diagnostics.len());
@@ -302,7 +410,10 @@ fn format_with_clang_format(source: String) -> String {
     };
 
     if let Ok(Err(e)) = writer.join() {
-        eprintln!("  (clang-format stdin write failed: {}; using raw layout)", e);
+        eprintln!(
+            "  (clang-format stdin write failed: {}; using raw layout)",
+            e
+        );
         return source;
     }
 
