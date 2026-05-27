@@ -456,21 +456,90 @@ impl<'a> CGen<'a> {
 
     fn gen_print(&mut self, args: &[ExprId], body: &Body) {
         self.output.push_str("printf(");
-        if let Some(format_str_idx) = args.first() {
-            if let Expr::Literal(Literal::String(s)) = &body.exprs[*format_str_idx] {
-                // turn {} into %d (assuming ints) and add newline
-                let c_format = s.replace("{}", "%d");
-                self.output.push_str(&format!("\"{}\\n\"", c_format));
+
+        let Some(format_str_idx) = args.first() else {
+            self.output.push(')');
+            return;
+        };
+
+        // Non-literal format string: emit as-is, no `{}` substitution.
+        let Expr::Literal(Literal::String(s)) = &body.exprs[*format_str_idx] else {
+            self.gen_expr(*format_str_idx, body);
+            for arg in args.iter().skip(1) {
+                self.output.push_str(", ");
+                self.gen_expr(*arg, body);
+            }
+            self.output.push(')');
+            return;
+        };
+
+        // Substitute each `{}` with a per-arg format specifier driven by the
+        // value's HIR type. Args without a matching placeholder are still
+        // forwarded so libc surfaces an arity warning at C-compile time.
+        let value_args = &args[1..];
+        let mut value_iter = value_args.iter();
+        let mut rendered = String::with_capacity(s.len() + value_args.len() * 2);
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'}' {
+                let spec = value_iter
+                    .next()
+                    .map(|&a| self.format_spec_for(a, body))
+                    .unwrap_or("%d");
+                rendered.push_str(spec);
+                i += 2;
             } else {
-                self.gen_expr(*format_str_idx, body);
+                rendered.push(bytes[i] as char);
+                i += 1;
             }
         }
+        self.output.push_str(&format!("\"{}\\n\"", rendered));
 
-        for arg in args.iter().skip(1) {
+        for arg in value_args {
             self.output.push_str(", ");
             self.gen_expr(*arg, body);
         }
         self.output.push(')');
+    }
+
+    /// Pick a printf specifier for `arg` based on its HIR type. Falls back to
+    /// literal-kind inspection when no `expr_types` entry exists (literals
+    /// don't get one today).
+    fn format_spec_for(&self, arg: ExprId, body: &Body) -> &'static str {
+        if let Expr::Literal(lit) = &body.exprs[arg] {
+            return match lit {
+                Literal::Int(_) => "%d",
+                Literal::Float(_) => "%f",
+                Literal::String(_) => "%s",
+                Literal::Bool(_) => "%d",
+                Literal::Char(_) => "%c",
+            };
+        }
+        match self.get_expr_type(arg, body) {
+            Some(ty) => Self::spec_for_type(&ty),
+            None => "%d",
+        }
+    }
+
+    fn spec_for_type(ty: &TypeRef) -> &'static str {
+        match ty {
+            TypeRef::Path(name) => match name.as_str() {
+                "int32" => "%d",
+                // printf promotes float to double for variadics, so a single
+                // `%f` covers both surface types.
+                "float32" | "float64" => "%f",
+                "bool" => "%d",
+                "char" => "%c",
+                "string" => "%s",
+                // Unknown nominal type (likely a struct): no sensible printf
+                // representation, but we still emit *something* so codegen
+                // does not silently drop the placeholder.
+                _ => "%d",
+            },
+            TypeRef::Ref(_) | TypeRef::Ptr(_) => "%p",
+            TypeRef::Error => "%d",
+        }
     }
 }
 
@@ -634,6 +703,52 @@ main() {
         assert!(
             c_output.contains("update_vector(&vec)"),
             "expected `update_vector(&vec)` in output, got:\n{c_output}"
+        );
+    }
+
+    /// Each primitive arg in a `print(...)` should map to its correct printf
+    /// specifier. Previously every `{}` lowered to `%d`, so strings, floats,
+    /// chars, and pointers came out garbled.
+    #[test]
+    fn print_format_specifiers_match_primitive_types() {
+        let src = "\
+main() {
+    const int32 i = 7;
+    const float64 f = 3.14;
+    const bool b = true;
+    const char c = 'x';
+    print(\"i={} f={} b={} c={}\", i, f, b, c);
+    print(\"lit s={} lit i={} lit f={} lit b={} lit c={}\", \"hi\", 1, 2.5, false, 'q');
+}
+";
+        let c = emit(src);
+        assert!(
+            c.contains("\"i=%d f=%f b=%d c=%c\\n\""),
+            "expected per-type specifiers for typed locals, got:\n{c}"
+        );
+        assert!(
+            c.contains("\"lit s=%s lit i=%d lit f=%f lit b=%d lit c=%c\\n\""),
+            "expected literal-driven specifiers, got:\n{c}"
+        );
+    }
+
+    /// A `&T`-typed value should print with `%p` rather than the default
+    /// `%d`, otherwise the C compiler issues a format-mismatch warning.
+    #[test]
+    fn print_format_specifier_for_reference_is_pointer() {
+        let src = "\
+structure P { int32 x, };
+
+main() {
+    var P p = P { x: 1 };
+    var &P r = &p;
+    print(\"{}\", r);
+}
+";
+        let c = emit(src);
+        assert!(
+            c.contains("\"%p\\n\""),
+            "expected `%p` specifier for reference value, got:\n{c}"
         );
     }
 }

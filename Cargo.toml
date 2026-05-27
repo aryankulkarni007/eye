@@ -24,6 +24,7 @@ insta = "1"
 thin-vec = "0.2.18"
 smallvec = "1.15.1"
 la-arena = "0.3"
+clap = { version = "4", features = ["derive"] }
 # internal - keyed by short lib name, backed by `eye-*` packages
 token = { path = "crates/token", package = "eye-token" }
 lexer = { path = "crates/lexer", package = "eye-lexer" }
@@ -53,3 +54,4 @@ syntax.workspace = true
 smallvec.workspace = true
 hir.workspace = true
 codegen.workspace = true
+clap.workspace = true

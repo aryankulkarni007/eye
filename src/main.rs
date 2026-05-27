@@ -1,27 +1,54 @@
 use std::{
     fs::File,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
 };
 
 use ast::AstNode;
+use clap::Parser;
 use codegen::core::CGen;
 use hir::core::{HIR, lower_source_file};
 use lexer::{Interner, Lexer, SourceText, Symbol};
-use smallvec::SmallVec;
 use syntax::SyntaxToken;
 
+/// Command-line surface for the `eye` driver. Dump flags are off by default
+/// so a normal compile stays quiet; pass any subset to surface the matching
+/// IR for debugging.
+#[derive(Parser, Debug)]
+#[command(
+    name = "eye",
+    about = "Eye compiler driver (transpiles .eye -> C -> native via clang)"
+)]
+struct Cli {
+    /// Source file to compile. Must have a `.eye` extension.
+    input: PathBuf,
+
+    /// Print the lossless rowan CST before parsing diagnostics are checked.
+    #[arg(long)]
+    dump_cst: bool,
+
+    /// Print the typed AST as a structured summary.
+    #[arg(long)]
+    dump_ast: bool,
+
+    /// Print the interner contents (every identifier and string literal).
+    #[arg(long)]
+    dump_symbols: bool,
+
+    /// Print the fully-lowered HIR (items, bodies, expr arenas, types).
+    #[arg(long)]
+    dump_hir: bool,
+}
+
 /// a token's text, or a placeholder when the parse left the slot empty.
-#[allow(dead_code)]
 fn tok_text(t: Option<SyntaxToken>) -> String {
     t.map(|t| t.text().to_string())
         .unwrap_or_else(|| "<missing>".to_string())
 }
 
 /// one-line summary of an expression - recurses through calls.
-#[allow(dead_code)]
 fn describe_expr(expr: &ast::Expr) -> String {
     match expr {
         ast::Expr::Literal(l) => match l.literal_kind() {
@@ -93,7 +120,6 @@ fn describe_expr(expr: &ast::Expr) -> String {
 }
 
 /// Render an `ast::TypeRef` as the surface form it covers in the source.
-#[allow(dead_code)]
 fn describe_type_ref(t: &ast::TypeRef) -> String {
     match t {
         ast::TypeRef::IdentType(it) => tok_text(it.name()),
@@ -109,7 +135,6 @@ fn describe_type_ref(t: &ast::TypeRef) -> String {
 }
 
 /// Prints a statement under a function body.
-#[allow(dead_code)]
 fn dump_stmt(stmt: &ast::Stmt) {
     match stmt {
         ast::Stmt::LetStmt(l) => {
@@ -143,7 +168,6 @@ fn dump_stmt(stmt: &ast::Stmt) {
 
 /// walks the typed ast and prints a structured summary - a visible check
 /// that the typed layer reads the CST correctly.
-#[allow(dead_code)]
 fn dump_ast(file: &ast::SourceFile) {
     println!("\n--- AST ---");
     for item in file.items() {
@@ -181,7 +205,6 @@ fn dump_ast(file: &ast::SourceFile) {
 /// Prints the interned string table - every identifier and string literal,
 /// deduplicated, in intern order. Proof the lexer populated the [`Interner`]
 /// handed off in `Lexed`; HIR name resolution will re-intern against it.
-#[allow(dead_code)]
 fn dump_symbols(interner: &Interner) {
     println!("\n--- SYMBOLS ({}) ---", interner.len());
     for i in 0..interner.len() {
@@ -262,18 +285,11 @@ pub fn dump_hir(hir: &HIR) {
 }
 
 fn main() -> anyhow::Result<()> {
-    // array backed smallvec for <exec_name> <file_name>
-    let args: SmallVec<[String; 2]> = std::env::args().collect();
-
-    // check usage
-    if args.len() < 2 {
-        eprintln!("usage: {} <file.eye>", &args[0]);
-        std::process::exit(-1);
-    }
+    let cli = Cli::parse();
+    let input_path: &Path = cli.input.as_path();
 
     // Validate input extension so we never overwrite a non-eye source when
     // deriving the C output path below.
-    let input_path = Path::new(&args[1]);
     if input_path.extension().and_then(|e| e.to_str()) != Some("eye") {
         eprintln!(
             "error: expected a `.eye` source file, got `{}`",
@@ -297,10 +313,16 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
+    if cli.dump_symbols {
+        dump_symbols(&lexed.interner);
+    }
+
     let parse = parser::parse(&lexed.tokens, &source);
 
-    // Dump Untyped CST
-    // println!("{:#?}", parse.green);
+    if cli.dump_cst {
+        println!("\n--- CST ---");
+        println!("{:#?}", parse.green);
+    }
 
     // Error check before proceeding to code generation
     if !parse.errors.is_empty() {
@@ -312,18 +334,20 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    // dump ast and symbols
     let file_ast = ast::SourceFile::cast(parse.green.clone())
         .ok_or_else(|| anyhow::anyhow!("Root node is not a valid SourceFile"))?;
 
-    // dump_ast(&file_ast);
-    // dump_symbols(&lexed.interner);
+    if cli.dump_ast {
+        dump_ast(&file_ast);
+    }
 
     println!("compiling...");
     println!("lowering AST to HIR...");
     let hir = lower_source_file(file_ast);
 
-    // dump_hir(&hir);
+    if cli.dump_hir {
+        dump_hir(&hir);
+    }
 
     if !hir.diagnostics.is_empty() {
         eprintln!("\n{} hir diagnostic(s):", hir.diagnostics.len());

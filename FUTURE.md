@@ -1,137 +1,85 @@
-# Eye compiler roadmap
+# Eye - completed features
 
-Audit of next steps after v0.1. v0.1 ships the `main.eye` subset: structs, fns
-(no params/ret), typed `let`, struct literals (with shorthand desugar), field
-access, binops, calls, and a `print` builtin that lowers to `printf`. Parser is
-resilient, HIR is arena-allocated with a source map, codegen emits C compiled
-by clang.
+Tracks what the compiler can already do. Roadmap and scoping for the next
+version live elsewhere (PR descriptions, branch READMEs).
 
-Transpile pipeline (C backend via clang) stays through v0.3. Revisit only when
-separate compilation, GC/closures, or a clang-free dependency story forces a
-swap. The HIR/infer boundary above codegen is what keeps that option open.
+## Pipeline
 
-## v0.2 - cover all of `design.eye`
+- Lossless rowan CST -> typed AST -> arena HIR -> C transpile -> clang.
+- Source-mapped diagnostics at lexer, parser, and HIR layers.
+- Per-file output: `<file>.c` written next to source, native binary alongside.
+- Auto-format generated C through `clang-format` when available.
 
-Ordered by dependency. Each step builds on the prior.
+## Driver
 
-### 1. Fn params, return types, tail expression
+- `eye <file.eye>` builds and writes the binary.
+- Internal dumps gated behind clap flags: `--dump-cst`, `--dump-ast`,
+  `--dump-symbols`, `--dump-hir`.
 
-- parser: extend empty `param_list` to `( type_ref Ident (, ...)* )`. Add tail
-  expr to `block` (`stmt* expr?`); grammar.rs only reads stmts today.
-- ast: `Param`, `ParamList::params`, `FnDef::ret_type`, `Block::tail`. Edit
-  `eye.ungram` and regen.
-- hir: `Function.params` field exists but is never populated
-  (`core.rs:545`). Populate it. `body.tail` is always `None`
-  (`core.rs:571`). Lower the tail expression.
-- codegen: param emission already present (`core.rs:84`). Tail expr lowers to
-  `return <expr>;` when a return type is set.
+## Lexer
 
-Enables `add(int32 a, int32 b) -> int32 { a + b }`.
+- Logos-backed, byte-range tokens.
+- Interned identifiers and string literals (`Interner` / `Symbol`).
+- Line/column resolution for diagnostic spans.
+- Trivia preserved: whitespace, `--` line comments, `---` doc comments.
 
-### 2. Assignment
+## Parser
 
-- New `SyntaxKind::AssignExpr` (or `AssignStmt`). LHS restricted to lvalues:
-  Path, FieldExpr, Deref. Today `=` only appears inside `let_stmt`.
-- hir: `Expr::Assign { target, value }` or a new stmt variant. Mutability
-  check: locals already carry `mutable`; struct fields and references need
-  the same.
-- codegen: trivial `lhs = rhs`.
+- Pratt expression parser; error-resilient with synthesised holes.
+- Items: `structure`, `fn` (named via call-form), `enum` (waterfall `| A | B`).
+- Statements: `const`/`var` let with optional type, expression statements,
+  trailing tail expression in blocks.
+- Expressions: literals, paths, calls, field access, struct literals
+  (positional, named, shorthand, mixed), binops, prefix `-` / `!` / `*` / `&`,
+  `if`/`else`, `loop` / `break` / `continue`, assignment, block expressions.
+- Types: identifier path, `&T` reference, `T*` raw pointer.
 
-### 3. `if`/`else` expression
+## AST
 
-- Tokens `If`/`Else` already lexed. Add `IfExpr` SyntaxKind. Parser wires it
-  into `lhs()` at atom level. The worked example in
-  `docs/adding-features.md:197` is exactly this.
-- hir: `Expr::If { cond, then, else_ }`.
-- codegen: statement position emits `if (c) { ... } else { ... }`. Expression
-  position lowers to a temp + branch hoisted above the host statement (avoid
-  GCC statement-expressions for portability).
+- Generated from `eye.ungram` via `xtask`.
+- Typed wrappers over rowan green nodes; preserved trivia.
 
-### 4. Block expression with tail value
+## HIR
 
-- HIR already has `Expr::Block(Vec<StmtId>)`, but codegen prints
-  `BLOCK EXPRS DEFERRED` (`core.rs:211`). Add the tail-value path and share
-  the temp-hoist machinery with if-expr.
+- Arena-allocated structs, enums, fields, functions, locals, pats, exprs,
+  stmts, blocks (la-arena).
+- Item scope with duplicate-name diagnostics.
+- Lexical scope stack for locals; name resolution to
+  `Local` / `Fn` / `Struct` / `Enum` / `Unresolved`.
+- `expr_types` side table populated for struct literals, refs, derefs, locals
+  via let-type, fn params - enough to drive codegen decisions today.
+- Source map from HIR nodes back to syntax pointers for diagnostics.
 
-### 5. `loop` / `break` / `continue`
+## Codegen (C backend)
 
-- Tokens exist. Add `LoopExpr`, `BreakExpr`, `ContinueExpr` syntax kinds.
-- hir: `Expr::Loop { body }`, `Expr::Break(Option<ExprId>)`,
-  `Expr::Continue`. Labels deferred.
-- codegen: `for (;;) { ... }`. `break <value>` reuses the temp-hoist trick.
+- `int32`, `float32`, `float64`, `bool`, `char`, `string` map to fixed-width
+  C types; refs/pointers lower to `T*`.
+- Structs lower to `typedef struct { ... } Name;`.
+- Enums lower to `typedef enum { ... } Name;`.
+- Functions: params, return types, tail expression as implicit `return`.
+- Statements: `const`/`var` let, expression statements.
+- Expressions: literals, paths, calls (every arg emitted), struct literals
+  (compound literal form), field access with auto-deref to `->` on `&T`/`T*`
+  bases, binops, prefix unops, blocks with tail value, `if`/`else` (both
+  statement and ternary-expression forms), `loop` lowered to `while(true)`,
+  `break`, `continue`, `&x`, `*x`.
+- `print(fmt, args...)` builtin lowers to `printf` with type-directed format
+  specifiers: `%d` / `%f` / `%s` / `%c` / `%p` selected per arg from the HIR
+  type (or literal kind when the arg has no recorded type).
 
-### 6. References and pointers
+## Tests
 
-- token: `&` is not in `define_tokens!`. Add `#[token("&")] Amp`.
-- Type syntax: `&T` becomes a `RefType` node. `type_ref` today only accepts
-  `Ident` (`grammar.rs:99`); add a prefix `&` form.
-- Expressions: `&x` prefix and `*x` deref, or auto-deref on `.` (design.eye
-  uses `pt_ref.y = 30`, which implies auto-deref). Pick one and document it.
-- hir: `TypeRef::Ref(Box<TypeRef>)`, `Expr::Ref`, `Expr::Deref`.
-- codegen: `T*`, `&x`, `(*x)` or `x->field` depending on the chosen deref
-  rule.
+- Parser snapshot test plus targeted unit tests per construct.
+- HIR lowering tests for scoping, items, expressions, tail expressions,
+  references.
+- Codegen regression tests for call args, nested field access, references,
+  and printf format specifiers.
+- End-to-end build-and-run tests over the `eyesrc/` sample programs.
 
-### 7. Enums (waterfall syntax)
+## Working sample programs
 
-- token: `|` is not in `define_tokens!`. Add `#[token("|")] Pipe`.
-- Parse `enum N = | A | B | C ;` into `EnumDef` with `EnumVariant` children.
-- hir: `Enum { name, variants: Vec<VariantId> }`. Decide on flat namespace
-  vs `Enum::Variant` qualification. Match expressions are out of scope for
-  v0.2 since `design.eye` does not use them.
-- codegen: `typedef enum { N_A, N_B, ... } N;`.
-
-### 8. Doc comments (`---`)
-
-`Dcomment` is already lexed. Attach it as leading trivia on the following
-item in AST. No semantics yet.
-
-## Bugs to fix before v0.2 work
-
-- `codegen/src/core.rs:188-194`: call-arg emission has `if i > 0` guarding
-  both the separator and the `gen_expr`, so arg 0 is never emitted. The
-  `print` path works only because `gen_print` handles its arguments
-  separately. Any non-print call with arguments is broken today.
-- `codegen/src/core.rs:127`: inferred `let` falls back to `int32_t`. Fine
-  for v0.1, replaced by real inference in v0.3.
-- `hir/src/core.rs:14-15`: `collect_items` silently overwrites duplicate
-  names. Emit a diagnostic.
-- `hir/src/core.rs:419`: field-name extraction uses
-  `children().filter_map(NameRef).nth(1)`. Fragile against trivia position;
-  add a labelled accessor instead.
-
-## v0.3 - bidirectional type inference
-
-Lets users drop type annotations on `let`. Prereqs:
-
-1. `Ty` arena with ids, separate from the syntactic `TypeRef`. HIR keeps
-   `TypeRef`; a new `infer` pass produces `ArenaMap<ExprId, TyId>`.
-2. Builtin type table: `int32`, `bool`, `f64`, etc.
-3. Unification with inference variables (`?T`). A small Hindley-Milner
-   subset; the bidirectional layer adds the check-mode / synth-mode split.
-4. Lvalue and mutability checks ride on this pass.
-5. Codegen consumes `TyId`, not `TypeRef`. The `int32_t` default goes away.
-
-Algorithm sketch:
-
-- `synth(e) -> Ty` for literals, paths, calls of typed fns, binops.
-- `check(e, expected)` propagates expected types down through let with
-  annotation, fn argument, struct field, and return position.
-- Inference variables unify at join points. Ambiguous integer literals (a
-  bare `const x = 0`) default to `int32` at the end of the pass.
-
-Placement: a new `crates/infer` between `hir` and `codegen`. Codegen reads
-inferred types, never `TypeRef` directly.
-
-## Recommended v0.2 ordering
-
-1. Fix the codegen call-arg bug.
-2. Fn params, tail expr, return types.
-3. Assignment plus mutability check.
-4. `if`/`else` expression and block expression (share temp-hoist).
-5. `loop` / `break` / `continue`.
-6. References (add `&` token, ref types, decide deref rule).
-7. Enums (add `|` token).
-8. Duplicate-item diagnostic.
-
-Each step lands with: parser unit test, HIR test, a `.eye` sample that
-compiles and runs.
+- `eyesrc/main.eye` - struct, let, field access, print.
+- `eyesrc/design.eye` - loops, if, assignment, mutation through a ref.
+- `eyesrc/particle.eye` - reference parameter, field mutation via auto-deref.
+- `eyesrc/physics.eye` - nested structs, conditional expressions, mixed
+  primitive `print` formatting.
