@@ -120,6 +120,28 @@ fn print_eye_covers_every_format_specifier() {
     assert_eq!(lines[8], "literals   100 2.710000 Z lit 0");
 }
 
+/// v0.3 end-to-end: enum decls, a statement-position match (printed for
+/// effect) and two value-position matches (one exhaustive, one with a
+/// wildcard) returning into typed `let`s. Source lives in `eyesrc/v03.eye`
+/// so the file stays authoritative. Locks the externally visible v0.3
+/// behaviour.
+#[test]
+fn v03_eye_lowers_match_and_prints_expected_output() {
+    let source = include_str!("../eyesrc/v03.eye");
+    let (out, _) = run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "0\n1\nboxy\n4\n0\n",
+        "unexpected v0.3 stdout"
+    );
+}
+
 /// Driver should refuse non-`.eye` input rather than overwriting an
 /// arbitrary file with generated C.
 #[test]

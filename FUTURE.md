@@ -195,13 +195,27 @@ Authoritative source spec: `eyesrc/v03.eye`.
     lowering, scrutinee type pinning, missing-variant exhaustiveness,
     duplicate-arm, unreachable-after-wildcard, cross-enum pattern,
     unknown-variant, and non-enum scrutinee diagnostics.
-- [ ] M5 - match codegen hoist.
-  - Strategy A: scan body lowering to detect match-in-non-statement-position,
-    synthesise `Type _matchN;` decl + `switch` block at the nearest
-    enclosing statement, substitute temp at use site.
-  - Match-in-statement-position lowers directly to `switch` with no temp.
-- [ ] M6 - v0.3 end-to-end test.
-  - Expand `eyesrc/v03.eye` to exercise match returning a value into a
-    typed `let`.
-  - Add e2e test to `tests/e2e.rs` (mirror `print_eye_covers_every_format_specifier`
-    style: `include_str!` the fixture, assert on stdout).
+- [x] M5 - match codegen hoist.
+  - Strategy A: `hoist_matches` walks a statement's inline expression subtree
+    in post-order, and for each value-position match synthesises a
+    `Type _matchN;` decl + assigning `switch` at the nearest enclosing
+    statement, then substitutes `_matchN` at the use site. The walk stops at
+    block boundaries (`if`/`loop`/block bodies, match arms) so nested matches
+    hoist into their own scope.
+  - Match-in-statement-position lowers directly to a `switch` with no temp and
+    no trailing `;`. Wildcard arm -> `default:`; variant arm -> `case <name>:`.
+  - Temp type comes from the HIR-recorded first-arm-body type; absent (e.g. a
+    call-typed arm) falls back to `int32_t` with a visible comment, never
+    `void*`. Counter resets per function so names stay `_match0`, `_match1`.
+  - Codegen split by concern to match HIR: `core.rs` keeps the `CGen` aggregate
+    + `gen_all`; `core/{types,items,stmt,expr,print,matches,tests}.rs` hold the
+    method groups.
+  - Tests: five codegen unit tests pin the four layouts (statement-position,
+    value-position hoist + read order, wildcard -> default, two-matches
+    counter) plus the per-function counter reset.
+- [x] M6 - v0.3 end-to-end test.
+  - `eyesrc/v03.eye` exercises a statement-position match plus two
+    value-position matches (one exhaustive, one with a wildcard) returning into
+    typed `let`s.
+  - `tests/e2e.rs::v03_eye_lowers_match_and_prints_expected_output` `include_str!`s
+    the fixture and asserts stdout `0\n1\nboxy\n4\n0\n`.

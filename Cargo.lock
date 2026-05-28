@@ -227,6 +227,7 @@ dependencies = [
  "eye-lexer",
  "eye-parser",
  "insta",
+ "rustc-hash 2.1.2",
 ]
 
 [[package]]
