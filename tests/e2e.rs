@@ -88,6 +88,38 @@ main() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "5\n");
 }
 
+/// Exercises every primitive `print` format specifier plus reference-to-struct
+/// (`%p`). Source lives in `eyesrc/print.eye` so the file stays authoritative.
+#[test]
+fn print_eye_covers_every_format_specifier() {
+    let source = include_str!("../eyesrc/print.eye");
+    let (out, _) = run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+
+    assert_eq!(lines.len(), 9, "unexpected line count; full stdout:\n{stdout}");
+    assert_eq!(lines[0], "int32      i = 42");
+    assert_eq!(lines[1], "float32    f32 = 1.500000");
+    assert_eq!(lines[2], "float64    f64 = 3.141590");
+    assert_eq!(lines[3], "bool       t = 1  f = 0");
+    assert_eq!(lines[4], "char       c = A");
+    assert_eq!(lines[5], "string     s = hello");
+    // pointer address is non-deterministic; only assert the prefix + `0x` form.
+    assert!(
+        lines[6].starts_with("&Box       r = 0x"),
+        "expected pointer print, got: {}",
+        lines[6]
+    );
+    assert_eq!(lines[7], "mixed      i=42 f64=3.141590 c=A s=world bool=1");
+    assert_eq!(lines[8], "literals   100 2.710000 Z lit 0");
+}
+
 /// Driver should refuse non-`.eye` input rather than overwriting an
 /// arbitrary file with generated C.
 #[test]

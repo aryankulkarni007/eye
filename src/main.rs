@@ -116,6 +116,7 @@ fn describe_expr(expr: &ast::Expr) -> String {
         ast::Expr::ContinueExpr(_) => "<continue>".to_string(),
         ast::Expr::RefExpr(_) => "<ref>".to_string(),
         ast::Expr::DerefExpr(_) => "<deref>".to_string(),
+        ast::Expr::MatchExpr(_) => "<match>".to_string(),
     }
 }
 

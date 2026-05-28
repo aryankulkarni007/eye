@@ -38,6 +38,7 @@ syntax_kinds! {
     Int, Float, String, True, False, Char,
     Const, Var, Structure, Enum,
     If, Else, Loop, Break, Continue,
+    Match, Underscore,
     Oparen, Cparen, Obrace, Cbrace, Obrack, Cbrack, Comma, Semicolon, Colon,
     Assign,
     Plus, Minus, Star, Slash, And, Or, Eq, Neq, Lt, Gt, Leq, Geq,
@@ -56,6 +57,8 @@ syntax_kinds! {
     AssignExpr, IfExpr, LoopExpr, BreakExpr, ContinueExpr,
     RefExpr, DerefExpr,
     StructLit, StructLitFieldList, StructLitField,
+    MatchExpr, MatchArmList, MatchArm,
+    PathPat, BareIdentPat, WildcardPat,
     ErrorNode,
 }
 
@@ -101,6 +104,8 @@ impl From<TokenKind> for SyntaxKind {
             T::Loop => S::Loop,
             T::Break => S::Break,
             T::Continue => S::Continue,
+            T::Match => S::Match,
+            T::Underscore => S::Underscore,
             T::Oparen => S::Oparen,
             T::Cparen => S::Cparen,
             T::Obrace => S::Obrace,
@@ -210,6 +215,8 @@ macro_rules! T {
     [loop]      => { $crate::SyntaxKind::Loop };
     [break]     => { $crate::SyntaxKind::Break };
     [continue]  => { $crate::SyntaxKind::Continue };
+    [match]     => { $crate::SyntaxKind::Match };
+    [_]         => { $crate::SyntaxKind::Underscore };
 }
 
 #[cfg(test)]
@@ -265,6 +272,8 @@ mod tests {
         assert_eq!(T![loop], SyntaxKind::Loop);
         assert_eq!(T![break], SyntaxKind::Break);
         assert_eq!(T![continue], SyntaxKind::Continue);
+        assert_eq!(T![match], SyntaxKind::Match);
+        assert_eq!(T![_], SyntaxKind::Underscore);
     }
 
     /// `T!` resolves in pattern position too - grammar code matches on it.
@@ -294,6 +303,8 @@ mod tests {
         assert_eq!(SyntaxKind::from(TokenKind::Enum), SyntaxKind::Enum);
         assert_eq!(SyntaxKind::from(TokenKind::Arrow), SyntaxKind::Arrow);
         assert_eq!(SyntaxKind::from(TokenKind::Farrow), SyntaxKind::Farrow);
+        assert_eq!(SyntaxKind::from(TokenKind::Match), SyntaxKind::Match);
+        assert_eq!(SyntaxKind::from(TokenKind::Underscore), SyntaxKind::Underscore);
     }
 
     /// `u16` round-trip through the rowan language binding. Picks new v0.2
@@ -318,6 +329,12 @@ mod tests {
             SyntaxKind::ContinueExpr,
             SyntaxKind::RefExpr,
             SyntaxKind::DerefExpr,
+            SyntaxKind::MatchExpr,
+            SyntaxKind::MatchArmList,
+            SyntaxKind::MatchArm,
+            SyntaxKind::PathPat,
+            SyntaxKind::BareIdentPat,
+            SyntaxKind::WildcardPat,
             SyntaxKind::ErrorNode,
         ];
         for k in kinds {

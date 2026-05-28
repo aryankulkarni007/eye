@@ -113,6 +113,14 @@ define_tokens! {
     Break = "BREAK",
     #[token("continue")]
     Continue = "CONTINUE",
+    #[token("match")]
+    Match = "MATCH",
+
+    // a lone `_`. The ident regex would also match it - `priority = 3`
+    // breaks the tie in favour of `Underscore`. `_foo` still lexes as
+    // `Ident` because the regex match is strictly longer.
+    #[token("_", priority = 3)]
+    Underscore = "_",
 
     // delimiters
     #[token("(")]

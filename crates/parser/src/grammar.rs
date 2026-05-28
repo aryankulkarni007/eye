@@ -1,4 +1,5 @@
-//! The eye grammar - v0.2 covering `eyesrc/design.eye`.
+//! The eye grammar - v0.3 covering `eyesrc/design.eye` plus the v0.3
+//! `match` surface from `eyesrc/v03.eye`.
 //!
 //! ```text
 //! source_file  := item*
@@ -6,7 +7,8 @@
 //! struct_def   := 'structure' Ident field_list ';'
 //! field_list   := '{' (field ',')* '}'
 //! field        := type_ref Ident
-//! enum_def     := 'enum' Ident '=' ('|' Ident)* ';'
+//! enum_def     := 'enum' Ident '=' variant ('|' variant)* ';'
+//! variant      := '|'? Ident          // leading '|' optional on first variant
 //! fn_def       := Ident param_list ('->' type_ref)? block
 //! param_list   := '(' (param (',' param)*)? ')'
 //! param        := type_ref Ident
@@ -61,6 +63,7 @@ fn at_expr_start(p: &Parser) -> bool {
             | T![loop]
             | T![break]
             | T![continue]
+            | T![match]
     )
 }
 
@@ -117,12 +120,29 @@ fn enum_def(p: &mut Parser) {
     p.advance(); // 'enum'
     p.expect(SyntaxKind::Ident, "expected enum name");
     p.expect(T![=], "expected '=' after enum name");
+
+    // First variant. At least one variant required. Leading `|` is always
+    // optional - stylistic only, accepted inline or multi-line.
+    let v_m = p.open();
+    if p.at(T![|]) {
+        p.advance();
+    }
+    if p.at(SyntaxKind::Ident) {
+        p.advance(); // variant ident
+        v_m.complete(p, SyntaxKind::Variant);
+    } else {
+        v_m.abandon(p);
+        p.error("expected at least one variant");
+    }
+
+    // Subsequent variants: '|' mandatory as a separator.
     while p.at(T![|]) {
         let v_m = p.open();
         p.advance(); // '|'
-        p.expect(SyntaxKind::Ident, "expected variant name");
+        p.expect(SyntaxKind::Ident, "expected variant name after '|'");
         v_m.complete(p, SyntaxKind::Variant);
     }
+
     p.expect(T![;], "expected ';' after enum definition");
     m.complete(p, SyntaxKind::EnumDef);
 }
@@ -193,11 +213,11 @@ fn block(p: &mut Parser) {
             // ExprStmt marker is abandoned so the bare expr falls out as the
             // block's tail.
             let m_stmt = p.open();
-            // a leading `if`/`loop` makes this expression block-like, so it
-            // can stand as a statement without a trailing `;`. A bare `{` is
-            // not accepted by `lhs` as an expression start today; reserve the
-            // arm for a future block-as-expression form.
-            let is_block_like = matches!(p.nth0(), T![if] | T![loop]);
+            // a leading `if`/`loop`/`match` makes this expression block-like,
+            // so it can stand as a statement without a trailing `;`. A bare
+            // `{` is not accepted by `lhs` as an expression start today;
+            // reserve the arm for a future block-as-expression form.
+            let is_block_like = matches!(p.nth0(), T![if] | T![loop] | T![match]);
             expr(p);
 
             if p.eat(T![;]) {
@@ -347,6 +367,9 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
     if p.at(T![continue]) {
         return Some(continue_expr(p));
     }
+    if p.at(T![match]) {
+        return Some(match_expr(p));
+    }
 
     let mut lhs = atom(p)?;
     loop {
@@ -406,6 +429,95 @@ fn continue_expr(p: &mut Parser) -> CompletedMarker {
     let m = p.open();
     p.advance(); // 'continue'
     m.complete(p, SyntaxKind::ContinueExpr)
+}
+
+/// `match scrut { arm, arm, ... }`. Mirrors `if_expr` for the scrutinee: the
+/// `no_struct_lit` gate is set so `match sh { Circle -> 1 }` does not parse
+/// `sh { Circle -> 1 }` as a struct literal. The gate is cleared inside the
+/// arm block - arm body expressions are unrestricted.
+fn match_expr(p: &mut Parser) -> CompletedMarker {
+    let m = p.open();
+    p.advance(); // 'match'
+    let prev = p.set_no_struct_lit(true);
+    expr(p);
+    p.set_no_struct_lit(prev);
+    match_arm_list(p);
+    m.complete(p, SyntaxKind::MatchExpr)
+}
+
+fn match_arm_list(p: &mut Parser) {
+    let m = p.open();
+    p.expect(T!['{'], "expected '{' to open match arms");
+    // arm body expressions can contain struct literals freely
+    let prev = p.set_no_struct_lit(false);
+    while !p.at(T!['}']) && !p.at_eof() {
+        if !at_pat_start(p) {
+            p.error_and_advance("expected a match arm");
+            continue;
+        }
+        let had_comma = match_arm(p);
+        // `,` is the arm separator. It is mandatory between arms; only the
+        // final arm before `}` may omit it.
+        if !had_comma && !p.at(T!['}']) && !p.at_eof() {
+            p.error("expected ',' between match arms");
+        }
+    }
+    p.set_no_struct_lit(prev);
+    p.expect(T!['}'], "expected '}' to close match arms");
+    m.complete(p, SyntaxKind::MatchArmList);
+}
+
+/// Parse one arm. Returns `true` if a trailing `,` was consumed - the arm
+/// list uses that to enforce the "comma required between arms" rule.
+fn match_arm(p: &mut Parser) -> bool {
+    let m = p.open();
+    pat(p);
+    p.expect(T![->], "expected '->' after match pattern");
+    expr(p);
+    let had_comma = p.eat(T![,]);
+    m.complete(p, SyntaxKind::MatchArm);
+    had_comma
+}
+
+/// True if `p` is at a token that can begin a pattern.
+fn at_pat_start(p: &Parser) -> bool {
+    matches!(p.nth0(), SyntaxKind::Ident | T![_])
+}
+
+/// Patterns. Three forms in v0.3:
+///   - `_`                         -> `WildcardPat`
+///   - `Enum '.' Variant`          -> `PathPat` (qualified)
+///   - `Ident`                     -> `BareIdentPat`
+fn pat(p: &mut Parser) {
+    if p.at(T![_]) {
+        let m = p.open();
+        p.advance(); // '_'
+        m.complete(p, SyntaxKind::WildcardPat);
+        return;
+    }
+    if p.at(SyntaxKind::Ident) {
+        if p.nth(1) == T![.] {
+            let m = p.open();
+            // qualifier name ref
+            let nm = p.open();
+            p.advance(); // qualifier ident
+            nm.complete(p, SyntaxKind::NameRef);
+            p.advance(); // '.'
+            // variant name ref
+            let nm = p.open();
+            p.expect(SyntaxKind::Ident, "expected variant name after '.'");
+            nm.complete(p, SyntaxKind::NameRef);
+            m.complete(p, SyntaxKind::PathPat);
+        } else {
+            let m = p.open();
+            let nm = p.open();
+            p.advance(); // ident
+            nm.complete(p, SyntaxKind::NameRef);
+            m.complete(p, SyntaxKind::BareIdentPat);
+        }
+        return;
+    }
+    p.error_and_advance("expected a pattern");
 }
 
 fn atom(p: &mut Parser) -> Option<CompletedMarker> {

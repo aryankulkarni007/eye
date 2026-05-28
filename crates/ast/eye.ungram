@@ -25,7 +25,7 @@ Field = ty:TypeRef name:'ident' ','
 
 EnumDef = 'enum' name:'ident' '=' variants:Variant* ';'
 
-Variant = '|' name:'ident'
+Variant = '|'? name:'ident'
 
 FnDef = name:'ident' ParamList ('->' ret_type:TypeRef)? body:Block
 
@@ -65,6 +65,7 @@ Expr =
   | ContinueExpr
   | RefExpr
   | DerefExpr
+  | MatchExpr
 
 Literal = 'int' | 'float' | 'string' | 'true' | 'false' | 'char'
 
@@ -99,3 +100,17 @@ StructLit = NameRef field_list:StructLitFieldList
 StructLitFieldList = '{' fields:StructLitField* '}'
 
 StructLitField = name:'ident' value:Expr?
+
+MatchExpr = 'match' scrut:Expr arm_list:MatchArmList
+
+MatchArmList = '{' arms:MatchArm* '}'
+
+MatchArm = pat:Pat '->' body:Expr ','?
+
+Pat = PathPat | BareIdentPat | WildcardPat
+
+PathPat = qualifier:NameRef '.' name:NameRef
+
+BareIdentPat = name:NameRef
+
+WildcardPat = '_'

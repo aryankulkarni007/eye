@@ -221,7 +221,10 @@ impl<'a> CGen<'a> {
                 let pat_node = &body.pats[*pat];
                 let local_idx = match pat_node {
                     Pat::Bind(id) => *id,
-                    Pat::Missing => return, // skip if syntax is broken
+                    // syntactically impossible: only Bind comes from let-pat
+                    // lowering. Variant/Wildcard live in match arms; Missing
+                    // means broken syntax. Skip rather than emit junk.
+                    Pat::Missing | Pat::Variant { .. } | Pat::Wildcard => return,
                 };
                 let var_name = &body.locals[local_idx].name;
                 self.output.push_str(&format!("{} {}", type_str, var_name));
@@ -267,13 +270,14 @@ impl<'a> CGen<'a> {
                 Resolution::Fn(id) => self.output.push_str(&self.hir.functions[*id].name),
                 Resolution::Struct(id) => self.output.push_str(&self.hir.structs[*id].name),
                 Resolution::Unresolved(name) => self.output.push_str(name.as_str()),
-                Resolution::Enum(idx) => {
-                    let enum_def = &self.hir.enums[*idx];
-                    if let Some(first_variant) = enum_def.variants.first() {
-                        self.output.push_str(&first_variant.name);
-                    } else {
-                        self.output.push_str(&enum_def.name);
-                    }
+                Resolution::Variant { enum_id, idx } => {
+                    let variant = &self.hir.enums[*enum_id].variants[*idx as usize];
+                    self.output.push_str(&variant.name);
+                }
+                Resolution::Enum(_) => {
+                    // HIR lowering converts bare enum-name in expr position to
+                    // a diagnostic + Expr::Missing, so codegen never sees this.
+                    unreachable!("Resolution::Enum reached codegen; HIR should have rejected it");
                 }
             },
             Expr::StructLit { ty, fields } => {
@@ -450,6 +454,12 @@ impl<'a> CGen<'a> {
                 self.output.push('*');
                 self.gen_expr(*operand, body);
                 self.output.push(')');
+            }
+            Expr::Match { .. } => {
+                // M5 lowers match via Strategy A (statement-level hoist with a
+                // `_matchN` temp + `switch`). Until then, emit a placeholder so
+                // the build stays green and any accidental use is visible.
+                self.output.push_str("/* MATCH (M5) */");
             }
         }
     }

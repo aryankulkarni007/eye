@@ -369,6 +369,7 @@ pub enum Expr {
     ContinueExpr(ContinueExpr),
     RefExpr(RefExpr),
     DerefExpr(DerefExpr),
+    MatchExpr(MatchExpr),
 }
 impl AstNode for Expr {
     fn can_cast(kind: SyntaxKind) -> bool {
@@ -388,6 +389,7 @@ impl AstNode for Expr {
                 | SyntaxKind::ContinueExpr
                 | SyntaxKind::RefExpr
                 | SyntaxKind::DerefExpr
+                | SyntaxKind::MatchExpr
         )
     }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -406,6 +408,7 @@ impl AstNode for Expr {
             SyntaxKind::ContinueExpr => Expr::ContinueExpr(ContinueExpr { syntax }),
             SyntaxKind::RefExpr => Expr::RefExpr(RefExpr { syntax }),
             SyntaxKind::DerefExpr => Expr::DerefExpr(DerefExpr { syntax }),
+            SyntaxKind::MatchExpr => Expr::MatchExpr(MatchExpr { syntax }),
             _ => return None,
         };
         Some(res)
@@ -426,6 +429,7 @@ impl AstNode for Expr {
             Expr::ContinueExpr(it) => it.syntax(),
             Expr::RefExpr(it) => it.syntax(),
             Expr::DerefExpr(it) => it.syntax(),
+            Expr::MatchExpr(it) => it.syntax(),
         }
     }
 }
@@ -905,6 +909,33 @@ impl DerefExpr {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MatchExpr {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for MatchExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::MatchExpr
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::MatchExpr {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl MatchExpr {
+    pub fn scrut(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+    pub fn arm_list(&self) -> Option<MatchArmList> {
+        support::child(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ArgList {
     pub(crate) syntax: SyntaxNode,
 }
@@ -979,3 +1010,155 @@ impl StructLitField {
         support::child(&self.syntax)
     }
 }
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MatchArmList {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for MatchArmList {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::MatchArmList
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::MatchArmList {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl MatchArmList {
+    pub fn arms(&self) -> AstChildren<MatchArm> {
+        support::children(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MatchArm {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for MatchArm {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::MatchArm
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::MatchArm {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl MatchArm {
+    pub fn pat(&self) -> Option<Pat> {
+        support::child(&self.syntax)
+    }
+    pub fn body(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Pat {
+    PathPat(PathPat),
+    BareIdentPat(BareIdentPat),
+    WildcardPat(WildcardPat),
+}
+impl AstNode for Pat {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::PathPat | SyntaxKind::BareIdentPat | SyntaxKind::WildcardPat
+        )
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        let res = match syntax.kind() {
+            SyntaxKind::PathPat => Pat::PathPat(PathPat { syntax }),
+            SyntaxKind::BareIdentPat => Pat::BareIdentPat(BareIdentPat { syntax }),
+            SyntaxKind::WildcardPat => Pat::WildcardPat(WildcardPat { syntax }),
+            _ => return None,
+        };
+        Some(res)
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            Pat::PathPat(it) => it.syntax(),
+            Pat::BareIdentPat(it) => it.syntax(),
+            Pat::WildcardPat(it) => it.syntax(),
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PathPat {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for PathPat {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::PathPat
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::PathPat {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl PathPat {
+    pub fn qualifier(&self) -> Option<NameRef> {
+        support::children(&self.syntax).nth(0)
+    }
+    pub fn name(&self) -> Option<NameRef> {
+        support::children(&self.syntax).nth(1)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BareIdentPat {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for BareIdentPat {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::BareIdentPat
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::BareIdentPat {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl BareIdentPat {
+    pub fn name(&self) -> Option<NameRef> {
+        support::child(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WildcardPat {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for WildcardPat {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::WildcardPat
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::WildcardPat {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl WildcardPat {}

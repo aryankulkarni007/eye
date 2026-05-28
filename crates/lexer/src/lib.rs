@@ -503,6 +503,24 @@ mod tests {
         assert_eq!(kinds("breakage continuee elsewhere"), [Ident, Ident, Ident, Eof]);
     }
 
+    /// `match` is a reserved keyword (not an ident); bare `_` is its own
+    /// `Underscore` token, while `_foo` still lexes as a single `Ident`.
+    #[test]
+    fn match_keyword_and_underscore_tokens() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds("match x { _ -> 0 }"),
+            [Match, Ident, Obrace, Underscore, Arrow, Int, Cbrace, Eof]
+        );
+        // `matches` is just an identifier - keyword match is exact
+        assert_eq!(kinds("matches"), [Ident, Eof]);
+        // `_foo`/`foo_` are idents; bare `_` is the Underscore token
+        assert_eq!(
+            kinds("_ _foo foo_"),
+            [Underscore, Ident, Ident, Eof]
+        );
+    }
+
     /// `->` arrow as a return-type marker stays one token even when wedged
     /// between identifiers.
     #[test]

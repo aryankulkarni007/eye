@@ -652,6 +652,130 @@ main() {
         );
     }
 
+    // ---------- v0.3 match-expression coverage (M3) ----------
+
+    /// `match` over an enum scrutinee with bare-ident, qualified, and
+    /// wildcard arms. Exercises every Pat variant the grammar ships in M3.
+    #[test]
+    fn match_expr_with_every_pattern_form_parses_clean() {
+        let src = "\
+enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    const int32 r = match sh {\n        Circle -> 1,\n        Shape.Rectangle -> 2,\n        _ -> 0,\n    };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+
+        // verify Pat variants are all present in the CST
+        let dump = format!("{:#?}", parse.green);
+        assert!(dump.contains("MatchExpr"));
+        assert!(dump.contains("MatchArmList"));
+        assert!(dump.contains("MatchArm"));
+        assert!(dump.contains("BareIdentPat"));
+        assert!(dump.contains("PathPat"));
+        assert!(dump.contains("WildcardPat"));
+    }
+
+    /// The scrutinee of `match scrut { ... }` must not be parsed as a struct
+    /// literal, mirroring the `if cond { ... }` rule. Otherwise the arm block
+    /// gets absorbed as a struct-lit body.
+    #[test]
+    fn match_scrutinee_does_not_eat_arm_list_as_struct_lit() {
+        let src = "main() {\n    match sh {\n        _ -> 0,\n    };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let dump = format!("{:#?}", parse.green);
+        assert!(dump.contains("MatchExpr"));
+        // the only StructLit-shaped node in the tree must be absent: the
+        // arm list body lives in MatchArmList, not in a StructLit.
+        assert!(!dump.contains("StructLit"), "scrutinee parsed as a struct literal:\n{dump}");
+    }
+
+    /// `match` as the right-hand side of a `const` binding - exercises
+    /// match-as-expression in a typed let.
+    #[test]
+    fn match_expr_as_let_value_parses_clean() {
+        let src = "main() {\n    const int32 r = match x {\n        A -> 1,\n        _ -> 0,\n    };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// In statement position `match` is block-like - no trailing `;` is
+    /// required between it and the next statement.
+    #[test]
+    fn match_in_statement_position_needs_no_semicolon() {
+        let src = "main() {\n    match x {\n        _ -> 0,\n    }\n    counter = counter + 1;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// The trailing comma on the final arm is optional - both shapes parse.
+    #[test]
+    fn match_trailing_comma_on_last_arm_is_optional() {
+        let with_comma = "main() {\n    match x {\n        A -> 1,\n        B -> 2,\n    };\n}\n";
+        let without_comma = "main() {\n    match x {\n        A -> 1,\n        B -> 2\n    };\n}\n";
+        for src in [with_comma, without_comma] {
+            let parse = parse_src(src);
+            assert!(parse.errors.is_empty(), "{src:?} -> {:?}", parse.errors);
+            assert_eq!(parse.green.to_string(), src);
+        }
+    }
+
+    /// An empty arm list is structurally valid: the parser emits a
+    /// MatchExpr with an empty MatchArmList and no diagnostics. Exhaustiveness
+    /// (rejecting the empty form when the scrutinee has variants) is an HIR
+    /// concern (M4), not a parse concern.
+    #[test]
+    fn match_with_empty_arm_list_parses_without_diagnostic() {
+        let src = "main() {\n    match x { };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+        let dump = format!("{:#?}", parse.green);
+        assert!(dump.contains("MatchArmList"));
+        assert!(!dump.contains("MatchArm@"), "empty arm list should not produce a MatchArm node:\n{dump}");
+    }
+
+    /// Arm body expressions can be any expression, including struct literals -
+    /// the suppression gate is cleared on entry to the arm list.
+    #[test]
+    fn match_arm_body_can_be_a_struct_literal() {
+        let src = "main() {\n    const Point r = match x {\n        _ -> Point { x: 0, y: 0 },\n    };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `,` is mandatory between match arms; omitting it produces a
+    /// diagnostic. Recovery still parses subsequent arms.
+    #[test]
+    fn match_missing_comma_between_arms_is_diagnosed() {
+        let src = "main() {\n    match x {\n        A -> 1\n        B -> 2,\n    };\n}\n";
+        let parse = parse_src(src);
+        assert!(
+            parse.errors.iter().any(|e| e.msg.contains("','")),
+            "expected a missing-comma diagnostic; got {:?}",
+            parse.errors
+        );
+        // both arms still recover into the tree
+        let dump = format!("{:#?}", parse.green);
+        let arm_count = dump.matches("MatchArm@").count();
+        assert_eq!(arm_count, 2, "both arms must recover into the tree:\n{dump}");
+        // tree still round-trips to the source bytes
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// Missing `->` after a pattern is recovered: a diagnostic is recorded
+    /// and the parser still produces a tree that round-trips to the source.
+    #[test]
+    fn match_arm_missing_arrow_is_recovered() {
+        let src = "main() {\n    match x {\n        A 1,\n        _ -> 0,\n    };\n}\n";
+        let parse = parse_src(src);
+        assert!(!parse.errors.is_empty(), "expected a diagnostic for the missing '->'");
+        // recovery still preserves the input text byte-for-byte
+        assert_eq!(parse.green.to_string(), src);
+    }
+
     /// Full `eyesrc/design.eye` parses with zero diagnostics and round-trips
     /// byte-for-byte. This is the integration check the unit tests can miss.
     #[test]
