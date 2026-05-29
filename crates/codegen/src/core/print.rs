@@ -40,6 +40,12 @@ impl<'a> CGen<'a> {
                     .unwrap_or("%d");
                 rendered.push_str(spec);
                 i += 2;
+            } else if bytes[i] == b'%' {
+                // Escape a literal `%` so printf does not read it as the start
+                // of a conversion spec. The `{}` branch above emits its own
+                // single-`%` specs and is intentionally not routed here.
+                rendered.push_str("%%");
+                i += 1;
             } else {
                 rendered.push(bytes[i] as char);
                 i += 1;

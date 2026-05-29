@@ -13,11 +13,11 @@ arena-backed HIR, and a stateless code generator.
 
 | File                                             | Purpose                                                                                                     |
 | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| [`FUTURE.md`](docs/FUTURE.md)                    | **Status ledger** — what ships per version (v0.1–v0.4), limitations, oversights, v0.5 roadmap, future forks |
+| [`FUTURE.md`](docs/FUTURE.md)                    | **Status ledger** - what ships per version (v0.1-v0.5), limitations, oversights, v0.6 roadmap, future forks |
 | [`VISION.md`](docs/VISION.md)                    | Long-term language vision (kernel vs stdlib, supermacros) — not current implementation                      |
 | [`adding-features.md`](docs/adding-features.md)  | How to extend the pipeline (lexer → HIR → codegen)                                                          |
 | [`editor-setup.md`](docs/editor-setup.md)        | Configure `eye-lsp` in VS Code / Cursor                                                                     |
-| [`MATCH.md`](docs/ATCH.md)                       | Kernel-scope design note for `match` as discrete discriminant dispatch                                      |
+| [`MATCH.md`](docs/MATCH.md)                      | Kernel-scope design note for `match` as discrete discriminant dispatch                                      |
 | [`LSP.md`](docs/LSP.md)                          | Capability audit for the current `eye-lsp` server                                                           |
 | [`M5.md`](docs/M5.md)                            | Historical design brief for v0.3 match codegen hoist                                                        |
 | [`crates/ast/eye.ungram`](crates/ast/eye.ungram) | Grammar source; run `cargo run -p xtask -- codegen` after edits                                             |

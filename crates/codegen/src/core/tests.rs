@@ -213,6 +213,23 @@ main() {
     );
 }
 
+/// A literal `%` in the format string must be escaped to `%%` so printf does
+/// not read it as a conversion spec. The `{}`-driven specs stay single-`%`.
+#[test]
+fn print_escapes_literal_percent() {
+    let src = "\
+main() {
+    let int32 done = 50;
+    print(\"{}% done\", done);
+}
+";
+    let c = emit(src);
+    assert!(
+        c.contains("\"%d%% done\\n\""),
+        "expected literal `%` escaped to `%%` with single-`%` spec, got:\n{c}"
+    );
+}
+
 /// v0.4 sized/unsigned integer types lower to their `<stdint.h>` C types and
 /// pick the right printf specifier: `%d` for signed widths up to 32, `%lld`
 /// for `int64`, `%u` for unsigned widths up to 32, `%llu` for `uint64`.

@@ -40,7 +40,7 @@ impl<'a> CGen<'a> {
                 match ty {
                     Some(t) => emit!(self, "{}", CDeclarator::new(t, &var_name)),
                     // FIXME: change once we have type inference
-                    None => emit!(self, "/* EXPLICT TYPE MISSING */ {}", var_name),
+                    None => emit!(self, "/* EXPLICIT TYPE MISSING */ {}", var_name),
                 }
 
                 if let Some(expr_idx) = init {

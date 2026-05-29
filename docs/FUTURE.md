@@ -46,7 +46,7 @@ Build: `cargo build -p eye-lsp`. Debug: `EYE_LSP_LOG=1`.
 | Items | `structure`, `fn` (call-form name), fields | Single file; flat `ItemScope` | — |
 | Lets | `let` / `mut`, optional type, struct literal shorthand | **No type inference** — untyped `let` leaves `ty: None`; codegen emits `/* EXPLICT TYPE MISSING */` until v0.5 | No HIR test for untyped `let` + enum variant |
 | Control flow | `if` / `else`, `loop` / `break` / `continue` | `break` / `continue` store no optional value | — |
-| Expressions | literals, paths, calls, fields, binops, blocks, tail expr | Call results have no `expr_types` entry | — |
+| Expressions | literals, paths, calls, fields, binops, blocks, tail expr | ~~Call results have no `expr_types` entry~~ resolved in v0.5 (call return types recorded) | — |
 | `print` | Builtin → `printf`, format from HIR type or literal | Builtin only | — |
 | Driver | `eye <file.eye>`, dump flags | Hard stop on HIR diagnostics | — |
 
@@ -93,37 +93,78 @@ not sum types, `for`, or class syntax.
 **Samples:** `eyesrc/v04.eye`, `ffi.eye`, `arrays.eye`  
 **E2E:** `v04_eye_lowers_primitives_and_casts`, `cast_expr_compiles_and_truncates`, `sized_integer_types_compile_and_print`, `ffi_eye_links_libc_and_lowers_union`, `arrays_eye_lowers_fixed_arrays_and_indexing`
 
+### v0.5 - typing hygiene
+
+No new surface syntax. Hardened value typing so ill-typed C can no longer slip
+through silently, and brought the doc set in line with the implementation. Type
+inference for untyped `let` was scoped here but is on hiatus (see below).
+
+| Area | Shipped | Limitations |
+|------|---------|-------------|
+| Call types | Call return types recorded in `expr_types` (user `fn` + `extern`); field access on call results typed | none |
+| Match temp | Value-position match hoist temp uses the real recorded type | `int32` fallback only when no arm carries a type |
+| Value-position match | One result type enforced in every value position (`let`, fn-arg, operand, return tail); arm-mismatch + function return-type diagnostics; value-discarded tail stays a bare `switch` | Match nested in a conditional sub-expression still emits `/* UNHOISTED MATCH */` |
+| Operators | Comparison / logical ops (`== != < > <= >= && \|\|`) typed `bool` instead of LHS type | none |
+| Codegen | `EXPLICT` placeholder typo fixed to `EXPLICIT`; `print` escapes a literal `%` to `%%` | Untyped `let` still emits the placeholder while inference is on hiatus |
+
+**Sample:** `eyesrc/match.eye` (value-position + return-tail match)  
+**Codegen tests:** `print_escapes_literal_percent`, return-tail hoist, `int64` override
+
 ---
 
 ## Cross-cutting limitations
 
-These apply across the versions above and motivate v0.5.
+These apply across the versions above. Typing hygiene was the v0.5 theme; the
+remaining inference gap is on hiatus.
 
 | Topic | State |
 |-------|--------|
-| Type inference | No inference for untyped `let`; annotate types or wait for v0.5 |
-| Call types | `expr_types` does not record call return types (affects match hoist temps) |
+| Type inference | No inference for untyped `let`; annotate types. Inference is on hiatus until the language is stable (was scoped v0.5, not implemented) |
+| Call types | Call return types recorded in `expr_types` (user `fn` + `extern`); match hoist temps and field access on call results now typed |
 | HIR types | `TypeRef::Path(name)` only; no `StructId` on types until codegen |
 | Semantics | Checks live in lowering, not a separate typecheck pass |
 | Scope | One source file per compile; duplicate names → diagnostic and shadow |
-| Match | See v0.3 row; sum types belong in stdlib per vision, not kernel syntax yet |
+| Match | See v0.3 row; v0.5 added value-position result-type + return-type enforcement (enum slice). Sum types belong in stdlib per vision, not kernel syntax yet |
 
 ---
 
-## Roadmap — v0.5 (active)
+## Roadmap — v0.5 (shipped)
 
-**Theme:** typing hygiene and documentation accuracy — no new surface syntax.
+**Theme:** typing hygiene and documentation accuracy - no new surface syntax.
 
-| ID | Deliverable |
-|----|-------------|
-| D1 | This doc set accurate (FUTURE, adding-features, README, M5 banner) |
-| T1 | `let` inference from initializer when type is omitted |
-| T2 | Call return types — user `fn` from `Function::ret`, `extern` from signature |
-| T3 | Match hoist temp uses real type; `int32` fallback only when unavoidable |
-| T4 | Codegen: fix `EXPLICT` → `EXPLICIT`; drop placeholder for inferred lets |
-| T5 | Tests: untyped `let` + variant; typed match temp; optional `eyesrc` fixture |
+| ID | Deliverable | Status |
+|----|-------------|--------|
+| D1 | This doc set accurate (FUTURE, adding-features, README, M5 banner) | Done |
+| T2 | Call return types - user `fn` from `Function::ret`, `extern` from signature | Done |
+| T3 | Match hoist temp uses real type; `int32` fallback only when unavoidable | Done; residual `int32` fallback only when no arm carries a type |
+| T4 | Codegen: fix `EXPLICT` → `EXPLICIT`; drop placeholder for inferred lets | Typo fixed; placeholder retained (inference on hiatus) |
+| T6 | Value-position match one-result-type: arm-mismatch + function return-type diagnostics, enforced in every value position (`let`, fn-arg, operand, return tail); value-discarded tail stays a bare `switch` | Done (enum slice) |
+| T7 | Comparison / logical operators (`== != < > <= >= && \|\|`) typed `bool` instead of LHS type | Done |
+| T1 | `let` inference from initializer when type is omitted | **On hiatus** - not until the language is stable |
 
-**Out of scope for v0.5:** modules, payload enums, `for` / `while` syntax, supermacros.
+T1 (and its dependent inference tests / placeholder removal) were scoped to v0.5
+but are deliberately deferred until the kernel surface stops moving. Shipping
+v0.5 without them was a ratified call, not an oversight.
+
+## Roadmap — v0.6 (active)
+
+**Theme:** completeness of the little things - the binary, bitwise, and unary
+operators a systems language is expected to have. No new constructs, no kernel
+hinges; pure substrate filling on the existing Pratt parser and C passthrough.
+
+| ID | Deliverable | Status |
+|----|-------------|--------|
+| O1 | Modulo `%` (int only; floats need `fmod`, out of scope) | Not started |
+| O2 | Bitwise-not `~` and logical-not `!` prefix operators (`!` types `bool`) | Not started |
+| O3 | Bitwise binary `& \| ^ << >>` - `&`/`\|` infix disambiguated from prefix-ref and enum separator by Pratt position | Not started |
+| O4 | Compound assignment `+=` and `-=` only, lowered straight to native C operators (no desugar) | Not started |
+
+**Decided exclusions:** `++` / `--` are not in the language (`--` also collides
+with the line-comment lexer). Compound assignment beyond `+=` / `-=` is out of
+scope for v0.6. Type inference stays on hiatus.
+
+**Out of scope for v0.6:** modules, payload enums, `for` / `while` syntax,
+supermacros, type inference.
 
 ---
 
@@ -165,7 +206,7 @@ Defer until decided: payload enums, guards, or-patterns, match bindings.
 
 Supermacros, privilege rings, stable AST API for extensions — vision only.
 
-**Suggested sequence:** finish v0.5 → Fork A → decide Fork B before payload-enum or match-syntax work.
+**Suggested sequence:** v0.5 shipped → v0.6 operator completeness (active) → then a fork. Decide Fork B (match extensibility hinge) before any payload-enum or match-syntax work.
 
 ---
 
@@ -187,13 +228,15 @@ Supermacros, privilege rings, stable AST API for extensions — vision only.
 
 | Layer | Location | Notes |
 |-------|----------|-------|
-| Parser | `crates/parser` snapshots + unit tests | CST round-trip |
-| HIR | `crates/hir/src/core/tests.rs` | 21+ lowering tests |
-| Codegen | `crates/codegen/src/core/tests.rs` | match hoist, arrays, print |
-| LSP | `crates/lsp` lib tests | Semantic tokens, CST roles, document store, parser diags |
-| E2E | `tests/e2e.rs` | 10 driver build-and-run tests |
+| Parser | `crates/parser` snapshots + unit tests | CST round-trip; 41 tests |
+| HIR | `crates/hir/src/core/tests.rs` | 35 lowering tests |
+| Codegen | `crates/codegen/src/core/tests.rs` | match hoist, arrays, print, `%` escape; 22 tests |
+| AST | `crates/ast` lib tests | Generated-node accessors; 8 tests |
+| Syntax | `crates/syntax` lib tests | `SyntaxKind` / rowan roles; 7 tests |
+| LSP | `crates/lsp` lib tests | Semantic tokens, CST roles, document store, parser diags; 7 tests |
+| E2E | `tests/e2e.rs` | 11 driver build-and-run tests |
 
-**Documented gaps:** untyped `let` + enum variant; match-in-ternary; call-typed match arm body.
+**Documented gaps:** untyped `let` + enum variant (inference on hiatus, T1); match-in-ternary hoist.
 
 ---
 
