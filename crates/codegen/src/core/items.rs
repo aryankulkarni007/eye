@@ -3,7 +3,7 @@
 
 use super::CGen;
 use super::types::CType;
-use hir::core::{Body, Enum, Function, Struct, Union};
+use hir::core::{Body, Enum, Expr, Function, Struct, Union};
 
 impl<'a> CGen<'a> {
     pub(super) fn gen_struct(&mut self, struct_def: &Struct) {
@@ -85,12 +85,27 @@ impl<'a> CGen<'a> {
             self.gen_body(body);
 
             if let Some(tail_expr_idx) = body.tail {
-                self.push_indent();
-                if r#fn.name != "main" && r#fn.ret.is_some() {
+                let returns_value = r#fn.name != "main" && r#fn.ret.is_some();
+                if returns_value {
+                    // The tail is the implicit return value. A value-position
+                    // match must be hoisted into its `_matchN` temp before the
+                    // `return`, same as a `let` initializer, so the return reads
+                    // the temp instead of an unhoisted match.
+                    self.hoist_matches(tail_expr_idx, body);
+                    self.push_indent();
                     self.output.push_str("return ");
+                    self.gen_expr(tail_expr_idx, body);
+                    self.output.push_str(";\n");
+                } else if let Expr::Match { scrut, .. } = &body.exprs[tail_expr_idx] {
+                    // Tail value is discarded (`main` / void fn): the match runs
+                    // for effect, so emit a bare statement-position `switch`.
+                    self.hoist_matches(*scrut, body);
+                    self.gen_match(tail_expr_idx, body, None);
+                } else {
+                    self.push_indent();
+                    self.gen_expr(tail_expr_idx, body);
+                    self.output.push_str(";\n");
                 }
-                self.gen_expr(tail_expr_idx, body);
-                self.output.push_str(";\n");
             }
         }
 

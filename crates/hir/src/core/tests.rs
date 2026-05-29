@@ -645,6 +645,248 @@ main() {
     );
 }
 
+// ---- value-position match result type (MATCH.md steps 1-5) ----
+
+#[test]
+fn match_value_position_heterogeneous_arms_diagnosed() {
+    // First arm is int32, a later arm is a string: the value-position match
+    // has no single result type, so the mismatching arm is diagnosed.
+    let src = format!(
+        "{}main() {{\n    let Shape sh = Circle;\n    \
+         let int32 n = match sh {{\n        \
+         Circle -> 1,\n        Rectangle -> \"bad\",\n        Triangle -> 3,\n    }};\n    \
+         print(\"{{}}\", n);\n}}\n",
+        SHAPE_DECL
+    );
+    let hir = lower(&src);
+    assert!(
+        hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("match arm type mismatch")
+                && d.msg.contains("expected int32")
+                && d.msg.contains("produces string")),
+        "expected arm-type-mismatch diag, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+#[test]
+fn match_value_position_call_arm_type_mismatch_diagnosed() {
+    // Regression for the review finding: a `Point`-returning call in an arm of
+    // an int-typed match used to silently emit ill-typed C. Now diagnosed.
+    let src = "\
+structure Point { int32 x, int32 y, };
+enum Color = Red | Green | Blue ;
+unit() -> Point { Point { x: 1, y: 1 } }
+pick() -> Color { Green }
+main() {
+    let int32 n = match pick() {
+        Red -> 1,
+        Green -> unit(),
+        Blue -> 3,
+    };
+    print(\"{}\", n);
+}
+";
+    let hir = lower(src);
+    assert!(
+        hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("match arm type mismatch")
+                && d.msg.contains("produces Point")),
+        "expected Point arm mismatch diag, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+#[test]
+fn match_wide_int_let_records_binding_type_without_false_positive() {
+    // A wider explicit binding (int64) over int-literal arms (typed int32):
+    // integer leniency means no mismatch diag, and the explicit type is
+    // re-recorded as the match type so codegen declares an `int64_t` temp.
+    let src = format!(
+        "{}main() {{\n    let Shape sh = Circle;\n    \
+         let int64 n = match sh {{\n        \
+         Circle -> 1,\n        Rectangle -> 2,\n        Triangle -> 3,\n    }};\n    \
+         print(\"{{}}\", n);\n}}\n",
+        SHAPE_DECL
+    );
+    let hir = lower(&src);
+    assert!(
+        !hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("match arm type mismatch")),
+        "integer widening must not false-positive: {:?}",
+        hir.diagnostics
+    );
+    let (body, match_id, _, _) = first_match(&hir);
+    match body.expr_types.get(match_id) {
+        Some(TypeRef::Path(n)) => assert_eq!(n.as_str(), "int64"),
+        other => panic!("explicit binding type not recorded on match: {other:?}"),
+    }
+}
+
+#[test]
+fn statement_position_match_heterogeneous_arms_not_diagnosed() {
+    // Statement-position match has no result type requirement (MATCH.md), so
+    // differing arm-body types are not a mismatch - only let-bound matches are
+    // checked.
+    let src = format!(
+        "{}main() {{\n    let Shape sh = Circle;\n    \
+         match sh {{\n        \
+         Circle -> 1,\n        Rectangle -> \"bad\",\n        Triangle -> 3,\n    }}\n    \
+         print(\"done\");\n}}\n",
+        SHAPE_DECL
+    );
+    let hir = lower(&src);
+    assert!(
+        !hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("match arm type mismatch")),
+        "statement-position match must not be result-type checked: {:?}",
+        hir.diagnostics
+    );
+}
+
+#[test]
+fn untyped_let_homogeneous_match_arms_are_clean() {
+    // No explicit binding type: result type falls back to the first known arm
+    // (int32); homogeneous arms produce no mismatch.
+    let src = format!(
+        "{}main() {{\n    let Shape sh = Circle;\n    \
+         let n = match sh {{\n        \
+         Circle -> 1,\n        Rectangle -> 2,\n        Triangle -> 3,\n    }};\n    \
+         print(\"{{}}\", n);\n}}\n",
+        SHAPE_DECL
+    );
+    let hir = lower(&src);
+    assert!(
+        !hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("match arm type mismatch")),
+        "homogeneous untyped match must be clean: {:?}",
+        hir.diagnostics
+    );
+}
+
+#[test]
+fn fn_arg_value_position_match_heterogeneous_arms_diagnosed() {
+    // A match in a non-`let` value position (function-call argument) is still
+    // result-type checked: heterogeneous arms used to silently coerce in C.
+    let src = "\
+enum Color = Red | Green | Blue ;
+take(int32 n) -> int32 { n }
+pick() -> Color { Green }
+main() {
+    let int32 a = take(match pick() { Red -> 1, Green -> pick(), Blue -> 3 });
+    print(\"{}\", a);
+}
+";
+    let hir = lower(src);
+    assert!(
+        hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("match arm type mismatch") && d.msg.contains("produces Color")),
+        "fn-arg value-position match must be arm-checked, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+#[test]
+fn return_tail_match_heterogeneous_arms_diagnosed() {
+    // A match as a function's implicit-return tail is value-position; the
+    // declared return type is the result type, so a mismatching arm is caught.
+    let src = "\
+enum Color = Red | Green | Blue ;
+pick() -> Color { Green }
+sides(Color c) -> int32 {
+    match c {
+        Red -> 1,
+        Green -> pick(),
+        Blue -> 3,
+    }
+}
+main() { print(\"{}\", sides(Red)); }
+";
+    let hir = lower(src);
+    assert!(
+        hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("match arm type mismatch")
+                && d.msg.contains("expected int32")
+                && d.msg.contains("produces Color")),
+        "return-tail match arm must be checked against the return type, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+#[test]
+fn void_tail_match_heterogeneous_arms_not_diagnosed() {
+    // A match that is the tail of a body whose value is discarded (no declared
+    // return) runs for effect like a statement-position match - no result type,
+    // so differing arm types are not a mismatch.
+    let src = "\
+enum Color = Red | Green | Blue ;
+ic() -> int32 { 1 }
+cc() -> Color { Red }
+main() {
+    match cc() {
+        Red -> ic(),
+        Green -> cc(),
+        Blue -> ic(),
+    }
+}
+";
+    let hir = lower(src);
+    assert!(
+        !hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("match arm type mismatch")),
+        "value-discarded tail match must not be result-type checked, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+#[test]
+fn return_type_mismatch_non_match_tail_diagnosed() {
+    // The general tail-vs-declared-return-type check: a function returning
+    // int32 whose tail produces an enum value is diagnosed.
+    let src = "\
+enum Color = Red | Green | Blue ;
+bad() -> int32 { Red }
+main() { print(\"{}\", bad()); }
+";
+    let hir = lower(src);
+    assert!(
+        hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("return type mismatch")
+                && d.msg.contains("returns int32")
+                && d.msg.contains("produces Color")),
+        "expected return-type-mismatch diag, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+#[test]
+fn bool_returning_comparison_tail_is_clean() {
+    // Comparison operators are typed `bool`, so a `-> bool` function whose tail
+    // is a comparison must NOT be flagged as a return-type mismatch. Guards the
+    // false positive that motivated typing comparison results as bool.
+    let src = "\
+gt(int32 a, int32 b) -> bool { a > b }
+main() { print(\"{}\", gt(3, 1)); }
+";
+    let hir = lower(src);
+    assert!(
+        !hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("return type mismatch")),
+        "comparison tail must type as bool and not mismatch a bool return, got: {:?}",
+        hir.diagnostics
+    );
+}
+
 /// Manual dump - run with `cargo test -p eye-hir dump -- --nocapture`.
 #[test]
 fn dump_main_eye() {

@@ -37,6 +37,15 @@ pub(super) fn lower_fn_body(hir: &mut HIR, fn_id: FnId, fn_ast: &ast::FnDef) -> 
         ctx.body.tail = lowered_block.tail;
         ctx.scopes.pop();
     }
+
+    // Post-lowering type checks (body fully built). Return-type enforcement
+    // runs first: it re-records the declared return type onto a value-position
+    // tail match, which the per-arm consistency pass then reads as the result
+    // type.
+    let ret = hir.functions[fn_id].ret.clone();
+    ctx.enforce_fn_return_type(ret.as_ref());
+    ctx.check_value_position_match_arms(ret.is_none());
+
     let (body, diagnostics) = ctx.finish();
     hir.diagnostics.extend(diagnostics);
     hir.bodies.alloc(body)

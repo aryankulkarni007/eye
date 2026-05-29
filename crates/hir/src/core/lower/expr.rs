@@ -139,8 +139,19 @@ impl<'a> LoweringCtx<'a> {
                 };
                 let lhs = self.lower_required_expr(b.lhs(), ptr);
                 let rhs = self.lower_required_expr(b.rhs(), ptr);
-                // Infer type from the left operand (simplified).
-                expr_type = self.body.expr_types.get(lhs).cloned();
+                // Comparison and logical operators produce `bool`; arithmetic
+                // operators take the left operand's type (a simplification until
+                // full inference exists).
+                use ast::BinOp;
+                expr_type = match op {
+                    BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Leq
+                    | BinOp::Geq | BinOp::And | BinOp::Or => {
+                        Some(TypeRef::Path(Text::from("bool")))
+                    }
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                        self.body.expr_types.get(lhs).cloned()
+                    }
+                };
                 Expr::Binary { op, lhs, rhs }
             }
             ast::Expr::PrefixExpr(p) => {

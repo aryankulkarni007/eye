@@ -539,6 +539,39 @@ main() {
     );
 }
 
+/// An explicit binding type drives the hoist-temp declaration: a wider
+/// `int64` binding over int-literal arms (typed `int32`) declares an
+/// `int64_t` temp, not `int32_t`. Confirms the HIR result-type override
+/// reaches codegen.
+#[test]
+fn value_position_match_uses_binding_type_for_temp() {
+    let src = "\
+enum Color = Red | Green;
+
+main() {
+    let Color c = Red;
+    let int64 n = match c {
+        Red -> 1,
+        Green -> 2,
+    };
+    print(\"{}\", n);
+}
+";
+    let c = emit(src);
+    assert!(
+        c.contains("int64_t _match0;"),
+        "expected `int64_t` temp from the binding type, got:\n{c}"
+    );
+    assert!(
+        !c.contains("int32_t _match0;"),
+        "temp must not fall back to the first arm's int32, got:\n{c}"
+    );
+    assert!(
+        c.contains("const int64_t n = _match0;"),
+        "expected `let` to read the temp, got:\n{c}"
+    );
+}
+
 /// A wildcard arm lowers to `default:`; the explicit variant becomes a
 /// `case`, and the variants the wildcard subsumes do not get their own
 /// `case` labels.
@@ -633,5 +666,73 @@ main() {
     assert!(
         !c.contains("_match1"),
         "counter must reset per function, so `_match1` must not appear, got:\n{c}"
+    );
+}
+
+/// A value-position match as a function's implicit-return tail must be hoisted
+/// into a temp and then returned (`return _match0;`), not emitted as an
+/// unhoisted placeholder. Regression for the `/* UNHOISTED MATCH */` bug.
+#[test]
+fn return_tail_match_hoists_and_returns_temp() {
+    let src = "\
+enum Color = Red | Green;
+
+sides(Color c) -> int32 {
+    match c {
+        Red -> 10,
+        Green -> 20,
+    }
+}
+
+main() {
+    print(\"{}\", sides(Red));
+}
+";
+    let c = emit(src);
+    assert!(
+        !c.contains("UNHOISTED"),
+        "return-tail match must be hoisted, got:\n{c}"
+    );
+    assert!(
+        c.contains("int32_t _match0;"),
+        "expected hoisted temp for the return-tail match, got:\n{c}"
+    );
+    assert!(
+        c.contains("return _match0;"),
+        "expected the hoisted temp to be returned, got:\n{c}"
+    );
+    let decl = c.find("int32_t _match0;").unwrap();
+    let ret = c.find("return _match0;").unwrap();
+    assert!(decl < ret, "temp must be declared before the return, got:\n{c}");
+}
+
+/// The declared return type drives the return-tail match's hoist temp: an
+/// `int64` return over int-literal arms (typed `int32`) declares `int64_t`,
+/// confirming `enforce_fn_return_type` re-records the return type onto the
+/// match and that reaches codegen.
+#[test]
+fn return_tail_match_uses_return_type_for_temp() {
+    let src = "\
+enum Color = Red | Green;
+
+big(Color c) -> int64 {
+    match c {
+        Red -> 1,
+        Green -> 2,
+    }
+}
+
+main() {
+    print(\"{}\", big(Red));
+}
+";
+    let c = emit(src);
+    assert!(
+        c.contains("int64_t _match0;"),
+        "expected `int64_t` temp from the return type, got:\n{c}"
+    );
+    assert!(
+        !c.contains("int32_t _match0;"),
+        "temp must not fall back to the first arm's int32, got:\n{c}"
     );
 }
