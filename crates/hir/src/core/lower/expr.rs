@@ -7,8 +7,34 @@ use thin_vec::ThinVec;
 use super::LoweringCtx;
 use super::types::{literal_type, lower_literal, lower_type_ref};
 use crate::core::{
-    Block, EnumId, Expr, ExprId, MatchArm, Pat, Resolution, StructLitField, Text, TypeRef,
+    Block, ConstError, EnumId, Expr, ExprId, Literal, MatchArm, Pat, PatternError, Resolution,
+    ResolveError, StructLitField, Text, TypeError, TypeRef,
 };
+
+/// The source spelling of a binary operator, for diagnostics.
+fn bin_op_str(op: ast::BinOp) -> &'static str {
+    use ast::BinOp::*;
+    match op {
+        Add => "+",
+        Sub => "-",
+        Mul => "*",
+        Div => "/",
+        Rem => "%",
+        Eq => "==",
+        Neq => "!=",
+        Lt => "<",
+        Gt => ">",
+        Leq => "<=",
+        Geq => ">=",
+        And => "&&",
+        Or => "||",
+        BitAnd => "&",
+        BitOr => "|",
+        BitXor => "^",
+        Shl => "<<",
+        Shr => ">>",
+    }
+}
 
 impl<'a> LoweringCtx<'a> {
     pub(super) fn lower_expr(&mut self, expr: &ast::Expr) -> ExprId {
@@ -28,7 +54,7 @@ impl<'a> LoweringCtx<'a> {
                 // `Shape.Circle` short-circuits before reaching here via the
                 // FieldExpr arm, so an Enum resolution here is misuse.
                 if matches!(resolution, Resolution::Enum(_)) {
-                    self.diag(ptr, format!("`{name}` is an enum type, not a value"));
+                    self.emit(ptr, ResolveError::EnumNameAsValue { name: name.clone() });
                     return self.missing_expr(ptr);
                 }
                 // look up the type of the resolved entity.
@@ -43,12 +69,51 @@ impl<'a> LoweringCtx<'a> {
             }
             ast::Expr::CallExpr(c) => {
                 let callee = self.lower_required_expr(c.callee(), ptr);
-                let args = c
+                let args: ThinVec<ExprId> = c
                     .arg_list()
                     .map(|al| al.args().map(|a| self.lower_expr(&a)).collect())
                     .unwrap_or_default();
+                // `len(arr)` kernel intrinsic: folds to a compile-time `usize`
+                // equal to the argument's static array length. Recognized by
+                // name like `print`, so a user-defined `len` shadows it. Length
+                // is type-level, so this returns a literal and the argument is
+                // not evaluated. The `.len()` method form awaits a real backend.
+                if let Expr::Path(Resolution::Unresolved(name)) = &self.body.exprs[callee]
+                    && name == "len"
+                {
+                    return self.lower_len_intrinsic(&args, ptr);
+                }
+                if let Expr::Path(Resolution::Unresolved(name)) = &self.body.exprs[callee]
+                    && name == "print"
+                {
+                    self.check_print_args(&args, ptr);
+                }
                 if let Expr::Path(Resolution::Fn(fn_id)) = &self.body.exprs[callee] {
-                    expr_type = self.hir.functions[*fn_id].ret.clone();
+                    let fn_id = *fn_id;
+                    expr_type = self.hir.functions[fn_id].ret.clone();
+                    // Coerce array-literal arguments to the declared param's
+                    // array type (its element type), same as a `let`/return.
+                    // Length-guarded so an arity mismatch is not masked.
+                    let param_tys: Vec<TypeRef> = self.hir.functions[fn_id]
+                        .params
+                        .iter()
+                        .map(|p| p.ty.clone())
+                        .collect();
+                    for (arg, pty) in args.iter().zip(param_tys.iter()) {
+                        let TypeRef::Array { len: plen, .. } = pty else {
+                            continue;
+                        };
+                        if !matches!(self.body.exprs[*arg], Expr::ArrayLit(_)) {
+                            continue;
+                        }
+                        let alen = match self.body.expr_types.get(*arg) {
+                            Some(TypeRef::Array { len, .. }) => *len,
+                            _ => continue,
+                        };
+                        if alen == *plen {
+                            self.body.expr_types.insert(*arg, pty.clone());
+                        }
+                    }
                 }
                 Expr::Call { callee, args }
             }
@@ -68,17 +133,43 @@ impl<'a> LoweringCtx<'a> {
             ast::Expr::IndexExpr(ie) => {
                 let base = self.lower_required_expr(ie.base(), ptr);
                 let index = self.lower_required_expr(ie.index(), ptr);
-                // Element type is the base's element/pointee type, when known.
-                expr_type = self
-                    .body
-                    .expr_types
-                    .get(base)
-                    .cloned()
-                    .and_then(|t| match t {
-                        TypeRef::Array { elem, .. } => Some(*elem),
-                        TypeRef::Ptr(inner) | TypeRef::Ref(inner) => Some(*inner),
+                let base_ty = self.body.expr_types.get(base).cloned();
+                // A4: a literal index past a known fixed length is a hard error.
+                // C would only warn. Dynamic indices stay unchecked (runtime
+                // safety is deferred). Peel one ref/ptr so `r[i]` on `&[T; N]`
+                // is checked too.
+                let arr_len = match &base_ty {
+                    Some(TypeRef::Array { len, .. }) => Some(*len),
+                    Some(TypeRef::Ref(inner) | TypeRef::Ptr(inner)) => match inner.as_ref() {
+                        TypeRef::Array { len, .. } => Some(*len),
                         _ => None,
-                    });
+                    },
+                    _ => None,
+                };
+                if let Some(len) = arr_len {
+                    if let Some(v) = self.const_uint_index(index) {
+                        if v >= len as u128 {
+                            self.emit(ptr, ConstError::IndexOutOfBounds { index: v, len });
+                        }
+                    } else if let Expr::Unary {
+                        op: ast::UnaryOp::Neg,
+                        operand,
+                    } = &self.body.exprs[index]
+                    {
+                        // A negative literal lowers to `-(int)`; out of bounds
+                        // for any length.
+                        if matches!(&self.body.exprs[*operand], Expr::Literal(Literal::Int(v)) if *v > 0)
+                        {
+                            self.emit(ptr, ConstError::NegativeIndex);
+                        }
+                    }
+                }
+                // Element type is the base's element/pointee type, when known.
+                expr_type = base_ty.and_then(|t| match t {
+                    TypeRef::Array { elem, .. } => Some(*elem),
+                    TypeRef::Ptr(inner) | TypeRef::Ref(inner) => Some(*inner),
+                    _ => None,
+                });
                 Expr::Index { base, index }
             }
             ast::Expr::StructLit(sl) => {
@@ -88,9 +179,14 @@ impl<'a> LoweringCtx<'a> {
                 };
                 expr_type = Some(ty.clone());
                 let mut fields = ThinVec::new();
+                // A positional initializer (`Point { 1, 2 }`) carries no field
+                // name, so the exhaustiveness check below can't match by name -
+                // it is suppressed when any positional field is present.
+                let mut saw_positional = false;
                 if let Some(fl) = sl.field_list() {
                     for f in fl.fields() {
                         let Some(fname_token) = f.name() else {
+                            saw_positional = true;
                             continue;
                         };
                         let fname = Self::text(Some(fname_token));
@@ -123,13 +219,56 @@ impl<'a> LoweringCtx<'a> {
                     && self.hir.items.unions.contains_key(name)
                     && fields.len() != 1
                 {
-                    self.diag(
+                    self.emit(
                         SyntaxNodePtr::new(sl.syntax()),
-                        format!(
-                            "union literal `{name}` must set exactly one field, found {}",
-                            fields.len()
-                        ),
+                        TypeError::UnionLiteralFieldCount {
+                            name: name.clone(),
+                            found: fields.len(),
+                        },
                     );
+                }
+                // F3 / S1: a struct literal must name every declared field
+                // exactly once - missing fields leave silent garbage in C,
+                // unknown fields are typos. Skipped for positional literals
+                // (no names to match) and unions (handled above).
+                if !saw_positional
+                    && let TypeRef::Path(name) = &ty
+                    && let Some(&sid) = self.hir.items.structs.get(name)
+                {
+                    let declared: Vec<Text> = self.hir.structs[sid]
+                        .fields
+                        .iter()
+                        .map(|&fid| self.hir.fields[fid].name.clone())
+                        .collect();
+                    let sl_ptr = SyntaxNodePtr::new(sl.syntax());
+                    let missing: Vec<Text> = declared
+                        .iter()
+                        .filter(|d| !fields.iter().any(|f| &f.name == *d))
+                        .cloned()
+                        .collect();
+                    if !missing.is_empty() {
+                        self.emit(
+                            sl_ptr,
+                            TypeError::StructLitMissingFields {
+                                name: name.clone(),
+                                fields: missing,
+                            },
+                        );
+                    }
+                    let unknown: Vec<Text> = fields
+                        .iter()
+                        .map(|f| f.name.clone())
+                        .filter(|fname| !declared.iter().any(|d| d == fname))
+                        .collect();
+                    if !unknown.is_empty() {
+                        self.emit(
+                            sl_ptr,
+                            TypeError::StructLitUnknownFields {
+                                name: name.clone(),
+                                fields: unknown,
+                            },
+                        );
+                    }
                 }
                 Expr::StructLit { ty, fields }
             }
@@ -139,18 +278,40 @@ impl<'a> LoweringCtx<'a> {
                 };
                 let lhs = self.lower_required_expr(b.lhs(), ptr);
                 let rhs = self.lower_required_expr(b.rhs(), ptr);
+                // A whole array is a struct in the C backend; any binary operator
+                // on it emits invalid C. Reject it here (a reference compares as
+                // a pointer, so only value arrays are caught).
+                let on_array = matches!(self.body.expr_types.get(lhs), Some(TypeRef::Array { .. }))
+                    || matches!(self.body.expr_types.get(rhs), Some(TypeRef::Array { .. }));
+                if on_array {
+                    self.emit(ptr, TypeError::OpOnArray { op: bin_op_str(op) });
+                    return self.missing_expr(ptr);
+                }
                 // Comparison and logical operators produce `bool`; arithmetic
                 // operators take the left operand's type (a simplification until
                 // full inference exists).
                 use ast::BinOp;
                 expr_type = match op {
-                    BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::Leq
-                    | BinOp::Geq | BinOp::And | BinOp::Or => {
-                        Some(TypeRef::Path(Text::from("bool")))
-                    }
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                        self.body.expr_types.get(lhs).cloned()
-                    }
+                    BinOp::Eq
+                    | BinOp::Neq
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::Leq
+                    | BinOp::Geq
+                    | BinOp::And
+                    | BinOp::Or => Some(TypeRef::Path(Text::from("bool"))),
+                    // Arithmetic, modulo, and bitwise all take the left
+                    // operand's type (a simplification until full inference).
+                    BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Rem
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+                    | BinOp::Shl
+                    | BinOp::Shr => self.body.expr_types.get(lhs).cloned(),
                 };
                 Expr::Binary { op, lhs, rhs }
             }
@@ -159,7 +320,13 @@ impl<'a> LoweringCtx<'a> {
                     return self.missing_expr(ptr);
                 };
                 let operand = self.lower_required_expr(p.operand(), ptr);
-                expr_type = self.body.expr_types.get(operand).cloned();
+                // `!` is logical-not: always `bool`. `-`/`~` preserve the
+                // operand's type.
+                use ast::UnaryOp;
+                expr_type = match op {
+                    UnaryOp::Not => Some(TypeRef::Path(Text::from("bool"))),
+                    UnaryOp::Neg | UnaryOp::BitNot => self.body.expr_types.get(operand).cloned(),
+                };
                 Expr::Unary { op, operand }
             }
             ast::Expr::FieldExpr(fe) => {
@@ -189,7 +356,13 @@ impl<'a> LoweringCtx<'a> {
                             self.body.expr_types.insert(id, ty);
                             return id;
                         } else {
-                            self.diag(ptr, format!("enum `{base_name}` has no variant `{name}`"));
+                            self.emit(
+                                ptr,
+                                ResolveError::NoSuchVariant {
+                                    enum_name: base_name.clone(),
+                                    variant: name.clone(),
+                                },
+                            );
                             return self.missing_expr(ptr);
                         }
                     }
@@ -202,18 +375,30 @@ impl<'a> LoweringCtx<'a> {
                     .get(base)
                     .cloned()
                     .unwrap_or(TypeRef::Error);
+                // `.len` on an array is reserved for a future `.len()` method
+                // (needs a real backend). Today length is read with the
+                // `len(x)` intrinsic; steer there instead of emitting a field
+                // access against the wrapper's nonexistent `len` member. One
+                // ref/ptr is peeled so the steer fires through `&[T; N]` too.
+                if name == "len" && Self::peeled_array_len(&base_ty).is_some() {
+                    self.emit(ptr, TypeError::LenFieldOnArray);
+                    return self.missing_expr(ptr);
+                }
                 expr_type = Some(self.lookup_field_type(&base_ty, &name));
                 Expr::Field { base, name }
             }
             ast::Expr::AssignExpr(a) => {
+                let op = a.op().unwrap_or(ast::AssignOp::Assign);
                 let lhs = self.lower_required_expr(a.lhs(), ptr);
                 let rhs = self.lower_required_expr(a.rhs(), ptr);
                 // Assignment type is the type of the RHS.
                 expr_type = self.body.expr_types.get(rhs).cloned();
-                Expr::Assign { lhs, rhs }
+                Expr::Assign { op, lhs, rhs }
             }
             ast::Expr::IfExpr(i) => {
                 let cond = self.lower_required_expr(i.condition(), ptr);
+                // F2 (`if x = 5` is C's assignment-in-condition footgun) is
+                // rejected in the parser now (GrammarError::AssignInIfCondition).
 
                 let then_block =
                     i.then_branch()
@@ -263,6 +448,14 @@ impl<'a> LoweringCtx<'a> {
                 expr_type = Some(TypeRef::Ref(Box::new(inner_ty)));
                 Expr::Ref { operand }
             }
+            ast::Expr::ParenExpr(pe) => {
+                // A group is a pure precedence override - lower it to its inner
+                // expression directly so no ParenExpr survives into HIR/codegen.
+                return match pe.expr() {
+                    Some(inner) => self.lower_expr(&inner),
+                    None => self.missing_expr(ptr),
+                };
+            }
             ast::Expr::MatchExpr(me) => self.lower_match_expr(me, ptr, &mut expr_type),
             ast::Expr::DerefExpr(d) => {
                 let operand = self.lower_required_expr(d.expr(), ptr);
@@ -299,6 +492,119 @@ impl<'a> LoweringCtx<'a> {
         id
     }
 
+    /// A statically-known non-negative index: a bare integer literal, or one
+    /// behind a cast - notably the `(usize)N` a `len(x)` fold lowers to, so
+    /// `a[len(a)]` is still caught as a static out-of-bounds. `None` if the
+    /// index is not a compile-time constant.
+    fn const_uint_index(&self, idx: ExprId) -> Option<u128> {
+        match &self.body.exprs[idx] {
+            Expr::Literal(Literal::Int(v)) => Some(*v),
+            Expr::Cast { operand, .. } => match &self.body.exprs[*operand] {
+                Expr::Literal(Literal::Int(v)) => Some(*v),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A place expression: one that names existing storage rather than
+    /// computing a fresh value (a variable, field, index, or deref). Used to
+    /// gate `len`, which reads a length from the type without evaluating the
+    /// operand - restricting it to a place keeps a side-effecting expression
+    /// like `len(f())` from being silently discarded. Note a place can still
+    /// contain a call in an index position (`len(arr[f()])`), which this does
+    /// not reject; that residual matches C's `sizeof` and is documented.
+    fn is_place_expr(expr: &Expr) -> bool {
+        matches!(
+            expr,
+            Expr::Path(Resolution::Local(_))
+                | Expr::Field { .. }
+                | Expr::Index { .. }
+                | Expr::Deref { .. }
+        )
+    }
+
+    /// The static length of an array type, peeling one `&`/`*` so a reference
+    /// or pointer to an array reports the same length as the array itself.
+    /// `None` for any non-array type.
+    fn peeled_array_len(ty: &TypeRef) -> Option<u64> {
+        match ty {
+            TypeRef::Array { len, .. } => Some(*len),
+            TypeRef::Ref(inner) | TypeRef::Ptr(inner) => match inner.as_ref() {
+                TypeRef::Array { len, .. } => Some(*len),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Lower the `len(arr)` intrinsic to a compile-time `usize` literal equal to
+    /// the argument's static array length. Accepts `[T; N]` and `&[T; N]` (one
+    /// ref/ptr is peeled). Wrong arity or a non-array argument is a diagnostic;
+    /// the result is then a `0` placeholder, still typed `usize`, so downstream
+    /// type information stays intact.
+    /// `print` is a primitive-only intrinsic (not a trait or macro yet): it has
+    /// no format for a compound value. Reject array/struct/union arguments.
+    fn check_print_args(&mut self, args: &[ExprId], ptr: SyntaxNodePtr) {
+        for &arg in args.iter().skip(1) {
+            let kind = match self.body.expr_types.get(arg) {
+                Some(TypeRef::Array { .. }) => Some("an array"),
+                Some(TypeRef::Path(name)) if self.hir.items.structs.contains_key(name) => {
+                    Some("a struct")
+                }
+                Some(TypeRef::Path(name)) if self.hir.items.unions.contains_key(name) => {
+                    Some("a union")
+                }
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                self.emit(self.expr_ptr(arg, ptr), TypeError::PrintCannotFormat { kind });
+            }
+        }
+    }
+
+    fn lower_len_intrinsic(&mut self, args: &[ExprId], ptr: SyntaxNodePtr) -> ExprId {
+        let len = if args.len() != 1 {
+            self.emit(ptr, TypeError::LenArity { found: args.len() });
+            0
+        } else if !Self::is_place_expr(&self.body.exprs[args[0]]) {
+            // `len` reads the length from the operand's static type and never
+            // evaluates the operand - just like C's `sizeof`. So `len(f())`
+            // would silently discard the call. Restrict the operand to a place
+            // (variable, field, index, or deref), where nothing is computed, so
+            // that footgun cannot arise. Go's `len` has the same shape.
+            self.emit(self.expr_ptr(args[0], ptr), TypeError::LenNotAPlace);
+            0
+        } else {
+            let arg_ty = self
+                .body
+                .expr_types
+                .get(args[0])
+                .cloned()
+                .unwrap_or(TypeRef::Error);
+            match Self::peeled_array_len(&arg_ty) {
+                Some(len) => len,
+                None => {
+                    self.emit(self.expr_ptr(args[0], ptr), TypeError::LenNotArray);
+                    0
+                }
+            }
+        };
+        // Emit as `(usize)N` so the C literal carries `size_t` type. Printed with
+        // `%zu` a bare `int` literal would be a varargs type mismatch (UB on LP64).
+        let lit = self.alloc_expr(Expr::Literal(Literal::Int(len as u128)), ptr);
+        let usize_ty = TypeRef::Path(Text::from("usize"));
+        let id = self.alloc_expr(
+            Expr::Cast {
+                operand: lit,
+                ty: usize_ty.clone(),
+            },
+            ptr,
+        );
+        self.body.expr_types.insert(id, usize_ty);
+        id
+    }
+
     fn lower_match_expr(
         &mut self,
         me: &ast::MatchExpr,
@@ -316,7 +622,7 @@ impl<'a> LoweringCtx<'a> {
             _ => None,
         };
         if scrut_enum.is_none() {
-            self.diag(ptr, "match scrutinee type is not a known enum".to_string());
+            self.emit(self.expr_ptr(scrut, ptr), TypeError::MatchScrutineeNotEnum);
         }
 
         let mut arms: ThinVec<MatchArm> = ThinVec::new();
@@ -336,10 +642,7 @@ impl<'a> LoweringCtx<'a> {
                     None => self.alloc_pat(Pat::Missing, arm_ptr),
                 };
                 if after_wildcard {
-                    self.diag(
-                        arm_ptr,
-                        "unreachable match arm after `_` wildcard".to_string(),
-                    );
+                    self.emit(arm_ptr, PatternError::UnreachableAfterWildcard);
                 }
                 match &self.body.pats[pat_id] {
                     Pat::Wildcard => saw_wildcard = true,
@@ -350,10 +653,7 @@ impl<'a> LoweringCtx<'a> {
                                 let vname = scrut_enum
                                     .map(|eid| self.hir.enums[eid].variants[i].name.clone())
                                     .unwrap_or_default();
-                                self.diag(
-                                    arm_ptr,
-                                    format!("duplicate match arm for variant `{vname}`"),
-                                );
+                                self.emit(arm_ptr, PatternError::DuplicateArm { variant: vname });
                             }
                             *slot = true;
                         }
@@ -375,27 +675,16 @@ impl<'a> LoweringCtx<'a> {
         // catches the rest. Skipped when scrutinee isn't a known enum
         // (the upstream diag already told the user).
         if !saw_wildcard && let Some(eid) = scrut_enum {
-            let missing: Vec<String> = self.hir.enums[eid]
+            let missing: Vec<Text> = self.hir.enums[eid]
                 .variants
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| !covered[*i])
-                .map(|(_, v)| v.name.to_string())
+                .map(|(_, v)| v.name.clone())
                 .collect();
             if !missing.is_empty() {
                 let enum_name = self.hir.enums[eid].name.clone();
-                self.diag(
-                    ptr,
-                    format!(
-                        "non-exhaustive match on enum `{}`: missing {}",
-                        enum_name,
-                        missing
-                            .iter()
-                            .map(|n| format!("`{n}`"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                );
+                self.emit(ptr, PatternError::NonExhaustive { enum_name, missing });
             }
         }
 

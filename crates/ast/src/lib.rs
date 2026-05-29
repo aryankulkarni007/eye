@@ -167,6 +167,7 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    Rem,
     And,
     Or,
     Eq,
@@ -175,6 +176,11 @@ pub enum BinOp {
     Gt,
     Leq,
     Geq,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl BinOp {
@@ -185,6 +191,7 @@ impl BinOp {
             T![-] => BinOp::Sub,
             T![*] => BinOp::Mul,
             T![/] => BinOp::Div,
+            T![%] => BinOp::Rem,
             T![&&] => BinOp::And,
             T![||] => BinOp::Or,
             T![==] => BinOp::Eq,
@@ -193,6 +200,11 @@ impl BinOp {
             T![>] => BinOp::Gt,
             T![<=] => BinOp::Leq,
             T![>=] => BinOp::Geq,
+            T![&] => BinOp::BitAnd,
+            T![|] => BinOp::BitOr,
+            T![^] => BinOp::BitXor,
+            T![<<] => BinOp::Shl,
+            T![>>] => BinOp::Shr,
             _ => return None,
         })
     }
@@ -207,6 +219,7 @@ impl fmt::Display for BinOp {
             BinOp::Sub => "-",
             BinOp::Mul => "*",
             BinOp::Div => "/",
+            BinOp::Rem => "%",
             BinOp::And => "&&",
             BinOp::Or => "||",
             BinOp::Eq => "==",
@@ -215,6 +228,11 @@ impl fmt::Display for BinOp {
             BinOp::Gt => ">",
             BinOp::Leq => "<=",
             BinOp::Geq => ">=",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
         };
         write!(f, "{}", op_str)
     }
@@ -235,25 +253,85 @@ impl BinExpr {
     }
 }
 
-/// A prefix-unary operator. The v0.1 subset has only arithmetic negation.
+/// A prefix-unary operator: `-` negate, `~` bitwise-complement, `!` logical-not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     Neg,
+    Not,
+    BitNot,
+}
+
+impl UnaryOp {
+    /// The prefix operator a token kind denotes, or `None` otherwise.
+    fn from_kind(kind: SyntaxKind) -> Option<UnaryOp> {
+        Some(match kind {
+            T![-] => UnaryOp::Neg,
+            T![!] => UnaryOp::Not,
+            T![~] => UnaryOp::BitNot,
+            _ => return None,
+        })
+    }
 }
 
 impl fmt::Display for UnaryOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let op_str = match self {
             UnaryOp::Neg => "-",
+            UnaryOp::Not => "!",
+            UnaryOp::BitNot => "~",
         };
         write!(f, "{}", op_str)
     }
 }
 
 impl PrefixExpr {
-    /// The operator. Only `-` (negation) exists in the v0.1 subset.
+    /// The operator - whichever prefix token leads the expression.
     pub fn op(&self) -> Option<UnaryOp> {
-        support::token(self.syntax(), T![-]).map(|_| UnaryOp::Neg)
+        self.syntax()
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find_map(|t| UnaryOp::from_kind(t.kind()))
+    }
+}
+
+/// An assignment operator: plain `=` or compound `+=` / `-=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AssignOp {
+    Assign,
+    AddAssign,
+    SubAssign,
+}
+
+impl AssignOp {
+    /// The assignment operator a token kind denotes, or `None` otherwise.
+    fn from_kind(kind: SyntaxKind) -> Option<AssignOp> {
+        Some(match kind {
+            T![=] => AssignOp::Assign,
+            T![+=] => AssignOp::AddAssign,
+            T![-=] => AssignOp::SubAssign,
+            _ => return None,
+        })
+    }
+}
+
+impl fmt::Display for AssignOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let op_str = match self {
+            AssignOp::Assign => "=",
+            AssignOp::AddAssign => "+=",
+            AssignOp::SubAssign => "-=",
+        };
+        write!(f, "{}", op_str)
+    }
+}
+
+impl AssignExpr {
+    /// The assignment operator - the direct child token between the operands.
+    pub fn op(&self) -> Option<AssignOp> {
+        self.syntax()
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find_map(|t| AssignOp::from_kind(t.kind()))
     }
 }
 
@@ -392,6 +470,36 @@ main() {
             panic!("right of '+' is the '*' binop - '*' binds tighter");
         };
         assert_eq!(mul.op(), Some(BinOp::Mul));
+    }
+
+    #[test]
+    fn bitwise_binds_above_equality() {
+        // No-footgun precedence (Rust-style): `a & b == c` parses as
+        // `(a & b) == c`, never C's `a & (b == c)`.
+        let Expr::BinExpr(top) = first_let_value("main() {\n    let r = a & b == c;\n}\n") else {
+            panic!("top expr is a binop");
+        };
+        assert_eq!(top.op(), Some(BinOp::Eq));
+        let Some(Expr::BinExpr(lhs)) = top.lhs() else {
+            panic!("left of `==` is the `&` binop - bitand binds tighter");
+        };
+        assert_eq!(lhs.op(), Some(BinOp::BitAnd));
+    }
+
+    #[test]
+    fn paren_group_overrides_precedence() {
+        // `a * (b + c)` - the group forces the add underneath the multiply.
+        let Expr::BinExpr(top) = first_let_value("main() {\n    let r = a * (b + c);\n}\n") else {
+            panic!("top expr is the `*` binop");
+        };
+        assert_eq!(top.op(), Some(BinOp::Mul));
+        let Some(Expr::ParenExpr(group)) = top.rhs() else {
+            panic!("right of `*` is the parenthesized group");
+        };
+        let Some(Expr::BinExpr(inner)) = group.expr() else {
+            panic!("the group wraps the `+` binop");
+        };
+        assert_eq!(inner.op(), Some(BinOp::Add));
     }
 
     #[test]

@@ -45,6 +45,7 @@ pub(super) fn lower_fn_body(hir: &mut HIR, fn_id: FnId, fn_ast: &ast::FnDef) -> 
     let ret = hir.functions[fn_id].ret.clone();
     ctx.enforce_fn_return_type(ret.as_ref());
     ctx.check_value_position_match_arms(ret.is_none());
+    ctx.check_unhoisted_matches();
 
     let (body, diagnostics) = ctx.finish();
     hir.diagnostics.extend(diagnostics);

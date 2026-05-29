@@ -34,6 +34,8 @@ mod scopes;
 mod stmt;
 mod types;
 
+use diagnostics::Sink;
+
 use super::*;
 
 pub use scopes::Scopes;
@@ -44,7 +46,7 @@ pub struct LoweringCtx<'a> {
     pub(super) hir: &'a HIR,
     pub(super) body: Body,
     pub(super) scopes: Scopes,
-    pub(super) diagnostics: Vec<HirDiagnostic>,
+    pub(super) diagnostics: Sink<HirError>,
 }
 
 // ---- entry point ----

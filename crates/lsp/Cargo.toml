@@ -21,6 +21,7 @@ syntax.workspace = true
 parser.workspace = true
 ast.workspace = true
 token.workspace = true
+diagnostics.workspace = true
 text-size.workspace = true
 
 [dev-dependencies]

@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/token",
+    "crates/diagnostics",
     "crates/lexer",
     "crates/syntax",
     "crates/parser",
@@ -34,9 +35,12 @@ insta = "1"
 thin-vec = "0.2.18"
 smallvec = "1.15.1"
 la-arena = "0.3"
+thiserror = "2"
+ariadne = "0.5"
 clap = { version = "4", features = ["derive"] }
 # internal - keyed by short lib name, backed by `eye-*` packages
 token = { path = "crates/token", package = "eye-token" }
+diagnostics = { path = "crates/diagnostics", package = "eye-diagnostics" }
 lexer = { path = "crates/lexer", package = "eye-lexer" }
 syntax = { path = "crates/syntax", package = "eye-syntax" }
 parser = { path = "crates/parser", package = "eye-parser" }
@@ -65,4 +69,6 @@ syntax.workspace = true
 smallvec.workspace = true
 hir.workspace = true
 codegen.workspace = true
+diagnostics.workspace = true
+ariadne.workspace = true
 clap.workspace = true

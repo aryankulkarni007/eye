@@ -1,3 +1,4 @@
+use diagnostics::Diagnostic;
 use hir::core::HIR;
 
 /// Dump the full HIR to stderr for debugging.
@@ -66,7 +67,7 @@ pub fn dump_hir(hir: &HIR) {
         eprintln!("    body.tail:  {:?}", body.tail);
     }
     eprintln!("--- Diagnostics ({}) ---", hir.diagnostics.len());
-    for d in &hir.diagnostics {
-        eprintln!("  {}: {:?}", d.msg, d.ptr);
+    for (span, err) in hir.diagnostics.entries() {
+        eprintln!("  [{}] {}: {:?}", err.code(), err, span);
     }
 }

@@ -40,8 +40,9 @@ syntax_kinds! {
     If, Else, Loop, Break, Continue,
     Match, Underscore, As,
     Oparen, Cparen, Obrace, Cbrace, Obrack, Cbrack, Comma, Semicolon, Colon,
-    Assign,
-    Plus, Minus, Star, Slash, And, Or, Eq, Neq, Lt, Gt, Leq, Geq,
+    Assign, PlusEq, MinusEq,
+    Plus, Minus, Star, Slash, Percent, And, Or, Eq, Neq, Lt, Gt, Leq, Geq,
+    Tilde, Caret, Shl, Shr, Bang,
     Arrow, Farrow, Dot, Amp, Pipe,
     Wspace, Lcomment, Bcomment, Dcomment, Newline,
 
@@ -58,7 +59,7 @@ syntax_kinds! {
     ArrayLit, IndexExpr,
     BinExpr, PrefixExpr, FieldExpr,
     AssignExpr, IfExpr, LoopExpr, BreakExpr, ContinueExpr,
-    RefExpr, DerefExpr, CastExpr,
+    RefExpr, DerefExpr, CastExpr, ParenExpr,
     StructLit, StructLitFieldList, StructLitField,
     MatchExpr, MatchArmList, MatchArm,
     PathPat, BareIdentPat, WildcardPat,
@@ -122,10 +123,18 @@ impl From<TokenKind> for SyntaxKind {
             T::Semicolon => S::Semicolon,
             T::Colon => S::Colon,
             T::Assign => S::Assign,
+            T::PlusEq => S::PlusEq,
+            T::MinusEq => S::MinusEq,
             T::Plus => S::Plus,
             T::Minus => S::Minus,
             T::Star => S::Star,
             T::Slash => S::Slash,
+            T::Percent => S::Percent,
+            T::Tilde => S::Tilde,
+            T::Caret => S::Caret,
+            T::Shl => S::Shl,
+            T::Shr => S::Shr,
+            T::Bang => S::Bang,
             T::And => S::And,
             T::Or => S::Or,
             T::Eq => S::Eq,
@@ -171,6 +180,27 @@ pub type SyntaxToken = rowan::SyntaxToken<EyeLang>;
 pub type SyntaxNodeChildren = rowan::SyntaxNodeChildren<EyeLang>;
 pub type SyntaxNodePtr = rowan::ast::SyntaxNodePtr<EyeLang>;
 
+/// A node's source range with leading and trailing trivia stripped, so a
+/// diagnostic underlines exactly the meaningful tokens rather than the
+/// surrounding whitespace, newlines, and comments the lossless tree attaches
+/// to a node's edges. Tokens are visited in source order; the span runs from
+/// the first non-trivia token's start to the last non-trivia token's end. A
+/// node with no non-trivia tokens falls back to its full range.
+pub fn trimmed_text_range(node: &SyntaxNode) -> rowan::TextRange {
+    let mut tokens = node
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| !t.kind().is_trivia());
+    let Some(first) = tokens.next() else {
+        return node.text_range();
+    };
+    let end = tokens
+        .last()
+        .map(|t| t.text_range().end())
+        .unwrap_or_else(|| first.text_range().end());
+    rowan::TextRange::new(first.text_range().start(), end)
+}
+
 /// Maps eye surface syntax - punctuation and keywords - to [`SyntaxKind`],
 /// so grammar code reads as `p.at(T![;])` instead of naming enum variants.
 /// Every punctuation/keyword token in [`TokenKind`] has an arm here; expands
@@ -200,8 +230,20 @@ macro_rules! T {
     [-]     => { $crate::SyntaxKind::Minus };
     [*]     => { $crate::SyntaxKind::Star };
     [/]     => { $crate::SyntaxKind::Slash };
+    [%]     => { $crate::SyntaxKind::Percent };
     [&&]    => { $crate::SyntaxKind::And };
     [||]    => { $crate::SyntaxKind::Or };
+
+    // ---- bitwise / prefix-unary ----
+    [~]     => { $crate::SyntaxKind::Tilde };
+    [^]     => { $crate::SyntaxKind::Caret };
+    [<<]    => { $crate::SyntaxKind::Shl };
+    [>>]    => { $crate::SyntaxKind::Shr };
+    [!]     => { $crate::SyntaxKind::Bang };
+
+    // ---- compound assignment ----
+    [+=]    => { $crate::SyntaxKind::PlusEq };
+    [-=]    => { $crate::SyntaxKind::MinusEq };
 
     // ---- comparison ----
     [==]    => { $crate::SyntaxKind::Eq };

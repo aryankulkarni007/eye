@@ -11,9 +11,9 @@
 //! headroom that typical input never reallocates; past that it grows only by
 //! amortized doubling. The real guarantee is per-item: [`Event`] is `Copy` POD
 //! - no `String`/`Box`/`Vec` inside any variant, so no event ever allocates.
-//!   Diagnostic messages live out-of-band in a sibling [`Vec<ParseDiagnostic>`] and
-//!   are `&'static str`; events carry only a [`DiagnosticIdx`]. [`Marker`] open,
-//!   complete and abandon all mutate the buffer in place.
+//!   Typed diagnostics live out-of-band in a sibling [`Sink<ParseError>`];
+//!   events carry only a [`DiagnosticIdx`]. [`Marker`] open, complete and
+//!   abandon all mutate the buffer in place.
 
 use std::cell::Cell;
 use std::num::NonZeroU32;
@@ -21,17 +21,20 @@ use std::num::NonZeroU32;
 use drop_bomb::DropBomb;
 use rowan::{GreenNodeBuilder, Language};
 use smallvec::SmallVec;
-use thin_vec::ThinVec;
 
 use text_size::TextRange;
 
+use diagnostics::Sink;
 use lexer::SourceText;
 use syntax::{EyeLang, SyntaxKind, SyntaxNode};
 use token::Token;
 
+mod errors;
 mod grammar;
 
-/// Index into the sibling [`Vec<ParseDiagnostic>`]. Keeps [`Event`] POD.
+pub use errors::{GrammarError, ParseError, SyntaxError};
+
+/// Index into the sibling [`Sink<ParseError>`]. Keeps [`Event`] POD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiagnosticIdx(u32);
 
@@ -57,18 +60,10 @@ enum Event {
     Tombstone,
 }
 
-/// A parser diagnostic. `msg` is `&'static str` so [`ParseDiagnostic`] never
-/// allocates.
-#[derive(Debug, Clone)]
-pub struct ParseDiagnostic {
-    pub msg: &'static str,
-    pub range: TextRange,
-}
-
 /// The finished parse: a lossless CST plus every diagnostic.
 pub struct Parse {
     pub green: SyntaxNode,
-    pub diagnostics: ThinVec<ParseDiagnostic>,
+    pub diagnostics: Sink<ParseError>,
 }
 
 /// How many lookahead probes the parser may make without consuming a token
@@ -82,7 +77,7 @@ pub struct Parser<'t> {
     /// Raw index of the next non-trivia token (the parser's logical cursor).
     pos: usize,
     events: Vec<Event>,
-    diagnostics: ThinVec<ParseDiagnostic>,
+    diagnostics: Sink<ParseError>,
     /// Reset on every [`advance`](Parser::advance); decremented on every
     /// lookahead. Hitting zero means the grammar is spinning.
     fuel: Cell<u32>,
@@ -103,7 +98,7 @@ impl<'t> Parser<'t> {
             // (Advance per token, Open + Close per node); 2x is generous
             // headroom so typical input fills this without reallocating
             events: Vec::with_capacity(tokens.len() * 2),
-            diagnostics: ThinVec::new(),
+            diagnostics: Sink::new(),
             fuel: Cell::new(FUEL),
             no_struct_lit: Cell::new(false),
         };
@@ -186,28 +181,32 @@ impl<'t> Parser<'t> {
     }
 
     /// Consume `kind`, or record a diagnostic without consuming anything.
-    pub fn expect(&mut self, kind: SyntaxKind, msg: &'static str) {
+    pub fn expect(&mut self, kind: SyntaxKind, err: impl Into<ParseError>) {
         if !self.eat(kind) {
-            self.error(msg);
+            self.error(err);
         }
     }
 
     /// Record a diagnostic anchored at the cursor. Emits an [`Event::Diagnostic`]
     /// but does not move the cursor.
-    pub fn error(&mut self, msg: &'static str) {
+    pub fn error(&mut self, err: impl Into<ParseError>) {
+        self.error_at(self.cursor_range(), err);
+    }
+
+    /// Record a diagnostic anchored at a specific range - used when the relevant
+    /// span is a node already consumed (e.g. an assignment in an `if`
+    /// condition), not the current cursor.
+    pub fn error_at(&mut self, range: TextRange, err: impl Into<ParseError>) {
         let idx = DiagnosticIdx(self.diagnostics.len() as u32);
-        self.diagnostics.push(ParseDiagnostic {
-            msg,
-            range: self.cursor_range(),
-        });
+        self.diagnostics.emit(range, err.into());
         self.events.push(Event::Diagnostic(idx));
     }
 
     /// Recovery: wrap the unexpected current token in an `ErrorNode` and
-    /// record `msg`. Always makes progress.
-    pub fn error_and_advance(&mut self, msg: &'static str) {
+    /// record `err`. Always makes progress.
+    pub fn error_and_advance(&mut self, err: impl Into<ParseError>) {
         let m = self.open();
-        self.error(msg);
+        self.error(err);
         self.advance();
         m.complete(self, SyntaxKind::ErrorNode);
     }
@@ -223,7 +222,7 @@ impl<'t> Parser<'t> {
         }
     }
 
-    fn finish(self) -> (Vec<Event>, ThinVec<ParseDiagnostic>) {
+    fn finish(self) -> (Vec<Event>, Sink<ParseError>) {
         (self.events, self.diagnostics)
     }
 
@@ -258,7 +257,7 @@ impl Marker {
             fwd_parent: None,
         };
         p.events.push(Event::Close);
-        CompletedMarker { idx }
+        CompletedMarker { idx, kind }
     }
 
     /// Discard the node. Any events emitted since `open()` become children of
@@ -279,9 +278,15 @@ impl Marker {
 #[derive(Clone, Copy)]
 pub struct CompletedMarker {
     idx: u32,
+    kind: SyntaxKind,
 }
 
 impl CompletedMarker {
+    /// The [`SyntaxKind`] this node was completed as.
+    pub(crate) fn kind(self) -> SyntaxKind {
+        self.kind
+    }
+
     /// Open a fresh node *before* this one and make this completed node its
     /// first child. This is how postfix/precedence forms wrap a node already
     /// emitted to the stream - without shifting the buffer.
@@ -458,6 +463,77 @@ main() {
         let parse = parse_src(src);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
+    }
+
+    #[test]
+    fn v06_operators_parse_clean_and_round_trip() {
+        // modulo, bitwise binary, prefix complement/not, compound assignment
+        let src = "main() {\n    mut int32 c = 1 % 2 & 3 | 4 ^ 5 << 6 >> 7;\n    \
+                   c += ~c;\n    c -= !c;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    #[test]
+    fn paren_group_parses_clean_and_round_trips() {
+        let src = "main() {\n    let int32 r = a * (b + c);\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// F1: comparison operators are non-associative. `a < b < c` is rejected
+    /// (it would silently be `(a < b) < c` = `bool < c` in C). The tree still
+    /// round-trips - the error is a diagnostic, not a parse bail.
+    #[test]
+    fn comparison_chaining_is_rejected() {
+        let src = "main() {\n    let bool r = a < b < c;\n}\n";
+        let parse = parse_src(src);
+        assert!(
+            parse
+                .diagnostics
+                .entries()
+                .iter()
+                .any(|(_, d)| matches!(d, ParseError::Grammar(GrammarError::ComparisonChain))),
+            "expected a non-associativity diagnostic, got: {:?}",
+            parse.diagnostics
+        );
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// A single comparison, and comparisons joined by `&&`, are fine.
+    #[test]
+    fn single_and_logically_joined_comparisons_are_clean() {
+        let src = "main() {\n    let bool r = a < b && c < d;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+    }
+
+    /// `if x = y { }` is the `=`/`==` footgun: an assignment in a condition is
+    /// rejected as a grammar error. Recovery still round-trips the source.
+    #[test]
+    fn assignment_in_if_condition_is_rejected() {
+        let src = "main() {\n    if x = y {\n    };\n}\n";
+        let parse = parse_src(src);
+        assert!(
+            parse
+                .diagnostics
+                .entries()
+                .iter()
+                .any(|(_, d)| matches!(d, ParseError::Grammar(GrammarError::AssignInIfCondition))),
+            "expected an assign-in-if-condition diagnostic, got: {:?}",
+            parse.diagnostics
+        );
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `==` in a condition is the intended compare and must stay clean.
+    #[test]
+    fn equality_in_if_condition_is_clean() {
+        let src = "main() {\n    if x == y {\n    };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
     }
 
     #[test]
@@ -665,18 +741,34 @@ main() {
         assert!(!s.contains("StructLit"), "got StructLit in:\n{s}");
     }
 
-    /// Boundary marker: nested-ref types (`&&Point`) and pointer-suffix types
-    /// (`Point*`) are not yet disambiguated in `let_stmt`'s type-form check.
-    /// This test pins the current behaviour so a future fix is easy to spot.
+    /// A ref-to-ref type is spelled with a space: `& &Point`. The let-binding
+    /// type heuristic sees the leading `&`, commits to a type, and `type_ref`
+    /// recurses to produce nested `RefType`s. Round-trips byte-for-byte.
     #[test]
-    fn double_ref_type_in_let_binding_currently_misparses() {
-        // `mut &&Point p = &q;` - the heuristic sees `&` + `&` and decides
-        // there is no type, so `&&Point` parses as a logical-and prefix
-        // and produces at least one diagnostic.
+    fn nested_ref_type_in_let_binding_parses_clean() {
+        let src = "main() {\n    mut & &Point p = & &q;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(parse.green.to_string(), src);
+        // the type annotation is a RefType wrapping another RefType
+        let s = format!("{:#?}", parse.green);
+        assert_eq!(
+            s.matches("RefType").count(),
+            2,
+            "expected two nested RefType nodes in:\n{s}"
+        );
+    }
+
+    /// `&&` lexes as a single logical-and token, so `&&Point` cannot denote a
+    /// ref-to-ref type - the type-form heuristic sees `&&` (not `&`), reads no
+    /// type, and the binding fails. This pins the lexing boundary: ref-to-ref
+    /// must be written `& &Point` (see `nested_ref_type_in_let_binding_parses_clean`).
+    #[test]
+    fn double_amp_is_logical_and_not_a_ref_to_ref_type() {
         let parse = parse_src("main() {\n    mut &&Point p = &q;\n}\n");
         assert!(
             !parse.diagnostics.is_empty(),
-            "nested-ref type-form should fail until the heuristic learns it"
+            "`&&Point` is logical-and, not a type; expected a diagnostic"
         );
     }
 
@@ -834,7 +926,10 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         let src = "main() {\n    match x {\n        A -> 1\n        B -> 2,\n    };\n}\n";
         let parse = parse_src(src);
         assert!(
-            parse.diagnostics.iter().any(|e| e.msg.contains("','")),
+            parse.diagnostics.entries().iter().any(|(_, e)| matches!(
+                e,
+                ParseError::Syntax(SyntaxError::ExpectedCommaBetweenMatchArms)
+            )),
             "expected a missing-comma diagnostic; got {:?}",
             parse.diagnostics
         );

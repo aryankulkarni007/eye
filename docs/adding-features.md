@@ -168,7 +168,7 @@ no new token, only a new _node_.
    - Run `cargo xtask codegen` - it rewrites `crates/ast/src/generated.rs`
      (committed) with the struct, its `AstNode` impl, and child accessors.
    - Only a _semantic_ accessor - one that reads meaning out of a token kind,
-     like `LetStmt::kind()` (`const`/`var`) or `BinExpr::op()` - is
+     like `LetStmt::kind()` (`let`/`mut`) or `BinExpr::op()` - is
      hand-written, as an extra `impl` block in `crates/ast/src/lib.rs`. The
      structural accessors are always generated.
 5. **Tests** - unit-test the rule in the `parser` crate and the accessors in

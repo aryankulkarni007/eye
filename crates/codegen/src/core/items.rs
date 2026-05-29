@@ -47,9 +47,9 @@ impl<'a> CGen<'a> {
     }
 
     pub(super) fn gen_function(&mut self, r#fn: &Function) {
-        // `_matchN` temp names are local to each C function.
-        self.match_temps.clear();
-        self.match_counter = 0;
+        // `_matchN`/`_ifN` temp names are local to each C function.
+        self.value_temps.clear();
+        self.temp_counter = 0;
 
         // An extern fn is a bare prototype: signature then `;`, no body. The
         // linker binds the symbol (libc for the v0.4 alloc/IO seam).
@@ -88,10 +88,10 @@ impl<'a> CGen<'a> {
                 let returns_value = r#fn.name != "main" && r#fn.ret.is_some();
                 if returns_value {
                     // The tail is the implicit return value. A value-position
-                    // match must be hoisted into its `_matchN` temp before the
+                    // `match`/`if` must be hoisted into its temp before the
                     // `return`, same as a `let` initializer, so the return reads
-                    // the temp instead of an unhoisted match.
-                    self.hoist_matches(tail_expr_idx, body);
+                    // the temp instead of an unhoisted form.
+                    self.hoist_values(tail_expr_idx, body);
                     self.push_indent();
                     self.output.push_str("return ");
                     self.gen_expr(tail_expr_idx, body);
@@ -99,8 +99,22 @@ impl<'a> CGen<'a> {
                 } else if let Expr::Match { scrut, .. } = &body.exprs[tail_expr_idx] {
                     // Tail value is discarded (`main` / void fn): the match runs
                     // for effect, so emit a bare statement-position `switch`.
-                    self.hoist_matches(*scrut, body);
+                    self.hoist_values(*scrut, body);
                     self.gen_match(tail_expr_idx, body, None);
+                } else if let Expr::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } = &body.exprs[tail_expr_idx]
+                {
+                    // Tail value is discarded: emit a C `if` statement, not a
+                    // ternary (which an else-less or statement-bodied chain
+                    // cannot form).
+                    let (cond, then_branch, else_branch) = (*cond, *then_branch, *else_branch);
+                    self.hoist_values(cond, body);
+                    self.push_indent();
+                    self.gen_if_statement(cond, then_branch, else_branch, body, None);
+                    self.output.push('\n');
                 } else {
                     self.push_indent();
                     self.gen_expr(tail_expr_idx, body);

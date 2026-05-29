@@ -20,6 +20,7 @@
 //! submodule so the public path stays `hir::core::*`.
 
 mod body;
+mod errors;
 mod ids;
 mod items;
 mod lower;
@@ -29,14 +30,15 @@ mod types;
 mod tests;
 
 pub use body::*;
+pub use errors::*;
 pub use ids::*;
 pub use items::*;
 pub use lower::*;
 pub use types::*;
 
+use diagnostics::Sink;
 use la_arena::Arena;
 use smol_str::SmolStr;
-use syntax::SyntaxNodePtr;
 
 pub type Text = SmolStr;
 
@@ -56,12 +58,5 @@ pub struct HIR {
     pub items: ItemScope,
     /// Diagnostics produced during lowering. Non-empty means the input had
     /// semantic issues even if the parser was happy.
-    pub diagnostics: Vec<HirDiagnostic>,
-}
-
-/// A semantic diagnostic raised during HIR lowering.
-#[derive(Debug, Clone)]
-pub struct HirDiagnostic {
-    pub ptr: SyntaxNodePtr,
-    pub msg: String,
+    pub diagnostics: Sink<HirError>,
 }

@@ -30,19 +30,27 @@ impl<'a> CGen<'a> {
         let value_args = &args[1..];
         let mut value_iter = value_args.iter();
         let mut rendered = String::with_capacity(s.len() + value_args.len() * 2);
-        let bytes = s.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'}' {
+        // Iterate by `char`, not by byte: `{`, `}`, and `%` are all ASCII, so
+        // placeholder and escape detection still work, while any multibyte
+        // UTF-8 character (e.g. `é`, `→`) is preserved intact. Byte-wise
+        // copying via `byte as char` would re-encode each byte as its own
+        // Latin-1 codepoint and corrupt the string.
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '{' && chars.peek() == Some(&'}') {
+                chars.next(); // consume the matching `}`
                 let spec = value_iter
                     .next()
                     .map(|&a| self.format_spec_for(a, body))
                     .unwrap_or("%d");
                 rendered.push_str(spec);
-                i += 2;
+            } else if c == '%' {
+                // Escape a literal `%` so printf does not read it as the start
+                // of a conversion spec. The `{}` branch above emits its own
+                // single-`%` specs and is intentionally not routed here.
+                rendered.push_str("%%");
             } else {
-                rendered.push(bytes[i] as char);
-                i += 1;
+                rendered.push(c);
             }
         }
         emit!(self, "\"{}\\n\"", rendered);
@@ -58,6 +66,12 @@ impl<'a> CGen<'a> {
     /// literal-kind inspection when no `expr_types` entry exists (literals
     /// don't get one today).
     fn format_spec_for(&self, arg: ExprId, body: &Body) -> &'static str {
+        // An explicitly recorded type wins, even for a literal: `arr.len`
+        // lowers to a `usize` integer constant and must print `%zu`, not the
+        // `%d` its literal kind would suggest.
+        if let Some(ty) = body.expr_types.get(arg) {
+            return Self::spec_for_type(ty);
+        }
         if let Expr::Literal(lit) = &body.exprs[arg] {
             return match lit {
                 Literal::Int(_) => "%d",

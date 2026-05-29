@@ -1,6 +1,7 @@
-//! `match` lowering (Strategy A). Statement-position matches become a direct
-//! `switch`; value-position matches are hoisted into `_matchN` temps declared
-//! ahead of their enclosing statement, then referenced at the use site.
+//! `match` lowering (Strategy A) and the shared value hoist. Statement-position
+//! matches become a direct `switch`; value-position `match` and `if` are hoisted
+//! into `_matchN`/`_ifN` temps declared ahead of their enclosing statement, then
+//! referenced at the use site. `if` shares this path so it is never a ternary.
 
 use super::CGen;
 use super::types::CType;
@@ -89,32 +90,67 @@ impl<'a> CGen<'a> {
         }
     }
 
-    pub(super) fn hoist_matches(&mut self, expr_idx: ExprId, body: &Body) {
-        let match_ids = self.collect_match_ids(expr_idx, body);
-        for mid in match_ids {
-            let name = format!("_match{}", self.match_counter);
-            self.match_counter += 1;
+    /// Hoist every value-position `match` and `if` reachable from `expr_idx`
+    /// into a `_matchN`/`_ifN` temp, declared and filled ahead of the enclosing
+    /// statement, so the use site only references the temp. Both control forms
+    /// share one mechanism and one counter; an `if` is never a ternary.
+    pub(super) fn hoist_values(&mut self, expr_idx: ExprId, body: &Body) {
+        let ids = self.collect_value_ids(expr_idx, body);
+        for id in ids {
+            match &body.exprs[id] {
+                Expr::Match { .. } => {
+                    let name = format!("_match{}", self.temp_counter);
+                    self.temp_counter += 1;
 
-            // The match type is the first arm body's type (recorded in HIR).
-            // When absent (e.g. a call-typed arm), fall back to int32 with a
-            // visible note - documented v0.3 limitation, never `void*`.
-            self.push_indent();
-            match body.expr_types.get(mid) {
-                Some(ty) => emitln!(self, "{} {};", CType::new(ty), name),
-                None => emitln!(self, "int32_t /* match temp type unknown */ {};", name),
+                    // The match type is the first arm body's type (recorded in
+                    // HIR). When absent (e.g. a call-typed arm), fall back to
+                    // int32 with a visible note - documented v0.3 limitation,
+                    // never `void*`.
+                    self.push_indent();
+                    match body.expr_types.get(id) {
+                        Some(ty) => emitln!(self, "{} {};", CType::new(ty), name),
+                        None => emitln!(self, "int32_t /* match temp type unknown */ {};", name),
+                    }
+                    self.gen_match(id, body, Some(&name));
+                    self.value_temps.insert(id, name);
+                }
+                Expr::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } => {
+                    let (cond, then_branch, else_branch) = (*cond, *then_branch, *else_branch);
+
+                    // The condition is value-position too; hoist any nested
+                    // value forms there first so they are declared and filled
+                    // before this `if` reads them.
+                    self.hoist_values(cond, body);
+
+                    let name = format!("_if{}", self.temp_counter);
+                    self.temp_counter += 1;
+
+                    self.push_indent();
+                    match body.expr_types.get(id) {
+                        Some(ty) => emitln!(self, "{} {};", CType::new(ty), name),
+                        None => emitln!(self, "int32_t /* if temp type unknown */ {};", name),
+                    }
+                    self.push_indent();
+                    self.gen_if_statement(cond, then_branch, else_branch, body, Some(&name));
+                    self.output.push('\n');
+                    self.value_temps.insert(id, name);
+                }
+                _ => unreachable!("collect_value_ids yields only Match and If"),
             }
-            self.gen_match(mid, body, Some(&name));
-            self.match_temps.insert(mid, name);
         }
     }
 
-    fn collect_match_ids(&self, expr_idx: ExprId, body: &Body) -> SmallVec<[ExprId; 4]> {
+    fn collect_value_ids(&self, expr_idx: ExprId, body: &Body) -> SmallVec<[ExprId; 4]> {
         let mut ids = SmallVec::new();
-        self.collect_match_ids_rec(expr_idx, body, &mut ids);
+        self.collect_value_ids_rec(expr_idx, body, &mut ids);
         ids
     }
 
-    fn collect_match_ids_rec(
+    fn collect_value_ids_rec(
         &self,
         expr_idx: ExprId,
         body: &Body,
@@ -123,12 +159,15 @@ impl<'a> CGen<'a> {
         let expr = &body.exprs[expr_idx];
         match expr {
             Expr::Match { scrut, .. } => {
-                self.collect_match_ids_rec(*scrut, body, out);
+                self.collect_value_ids_rec(*scrut, body, out);
                 out.push(expr_idx);
             }
-            // Block boundaries: do NOT recurse into these
-            Expr::If { .. } | Expr::Loop { .. } | Expr::Block(_) => {}
-            _ => expr.for_each_child_expr(|child| self.collect_match_ids_rec(child, body, out)),
+            // An `if` is hoisted as a unit; its condition and branch interiors
+            // are handled when `hoist_values` emits it, so do not recurse here.
+            Expr::If { .. } => out.push(expr_idx),
+            // Block boundaries: do NOT recurse into these.
+            Expr::Loop { .. } | Expr::Block(_) => {}
+            _ => expr.for_each_child_expr(|child| self.collect_value_ids_rec(child, body, out)),
         }
     }
 }

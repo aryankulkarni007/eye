@@ -10,6 +10,13 @@ fn lower(src: &str) -> HIR {
     lower_source_file(file)
 }
 
+/// The concrete diagnostic kinds, for structural assertions. Tests match on
+/// variants (and payloads) rather than message text, so rewording a message
+/// never breaks a test.
+fn diags(hir: &HIR) -> Vec<&HirError> {
+    hir.diagnostics.entries().iter().map(|(_, e)| e).collect()
+}
+
 const MAIN_EYE: &str = "\
 structure Point {
     int32 x,
@@ -21,7 +28,7 @@ main() {
     let y = 0;
     mut Point p = Point { x, y };
 
-    print(\"{}\", p);
+    print(\"{}\", p.x);
 }
 ";
 
@@ -86,9 +93,9 @@ main() {}
         hir.diagnostics
     );
     assert!(
-        hir.diagnostics[0].msg.contains("duplicate item `Point`"),
-        "unexpected message: {}",
-        hir.diagnostics[0].msg
+        matches!(diags(&hir)[0], HirError::Resolve(ResolveError::DuplicateItem { name }) if name == "Point"),
+        "unexpected diagnostic: {:?}",
+        diags(&hir)[0]
     );
     // both struct arena slots persist so existing IDs stay valid
     assert_eq!(hir.structs.len(), 2);
@@ -126,9 +133,9 @@ main() {
 ",
     );
     assert!(
-        two.diagnostics
+        diags(&two)
             .iter()
-            .any(|d| d.msg.contains("must set exactly one field")),
+            .any(|e| matches!(e, HirError::Type(TypeError::UnionLiteralFieldCount { .. }))),
         "expected a one-field diagnostic, got: {:?}",
         two.diagnostics
     );
@@ -144,9 +151,9 @@ main() {}
     );
     assert_eq!(hir.diagnostics.len(), 1, "{:?}", hir.diagnostics);
     assert!(
-        hir.diagnostics[0].msg.contains("duplicate item `main`"),
-        "unexpected message: {}",
-        hir.diagnostics[0].msg
+        matches!(diags(&hir)[0], HirError::Resolve(ResolveError::DuplicateItem { name }) if name == "main"),
+        "unexpected diagnostic: {:?}",
+        diags(&hir)[0]
     );
     assert_eq!(hir.functions.len(), 2);
 }
@@ -166,9 +173,9 @@ Foo() {}
     );
     assert_eq!(hir.diagnostics.len(), 1, "{:?}", hir.diagnostics);
     assert!(
-        hir.diagnostics[0].msg.contains("duplicate item `Foo`"),
-        "unexpected message: {}",
-        hir.diagnostics[0].msg
+        matches!(diags(&hir)[0], HirError::Resolve(ResolveError::DuplicateItem { name }) if name == "Foo"),
+        "unexpected diagnostic: {:?}",
+        diags(&hir)[0]
     );
 }
 
@@ -332,11 +339,11 @@ main() {
 ",
     );
     assert!(
-        hir.diagnostics
-            .iter()
-            .any(|d| d.msg.contains("let initializer type mismatch")
-                && d.msg.contains("expected string")
-                && d.msg.contains("got int32")),
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::LetTypeMismatch { expected, got })
+                if expected.to_string() == "string" && got.to_string() == "int32"
+        )),
         "expected explicit let mismatch diagnostic, got: {:?}",
         hir.diagnostics
     );
@@ -352,9 +359,9 @@ main() {
 ",
     );
     assert!(
-        !hir.diagnostics
+        !diags(&hir)
             .iter()
-            .any(|d| d.msg.contains("let initializer type mismatch")),
+            .any(|e| matches!(e, HirError::Type(TypeError::LetTypeMismatch { .. }))),
         "unknown initializer type should not cascade into mismatch: {:?}",
         hir.diagnostics
     );
@@ -450,14 +457,15 @@ fn match_non_exhaustive_diags_each_missing_variant() {
         SHAPE_DECL
     );
     let hir = lower(&src);
-    let msgs: Vec<&str> = hir.diagnostics.iter().map(|d| d.msg.as_str()).collect();
-    let exhaustive = msgs
+    let missing = diags(&hir)
         .iter()
-        .find(|m| m.starts_with("non-exhaustive match"))
-        .copied()
-        .unwrap_or_else(|| panic!("missing non-exhaustive diag: {msgs:?}"));
-    assert!(exhaustive.contains("`Rectangle`"), "got: {exhaustive}");
-    assert!(exhaustive.contains("`Triangle`"), "got: {exhaustive}");
+        .find_map(|e| match e {
+            HirError::Pattern(PatternError::NonExhaustive { missing, .. }) => Some(missing.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing non-exhaustive diag: {:?}", hir.diagnostics));
+    assert!(missing.iter().any(|m| m == "Rectangle"), "got: {missing:?}");
+    assert!(missing.iter().any(|m| m == "Triangle"), "got: {missing:?}");
 }
 
 #[test]
@@ -471,12 +479,14 @@ fn match_duplicate_arm_diagnosed() {
         SHAPE_DECL
     );
     let hir = lower(&src);
-    let dup = hir
-        .diagnostics
-        .iter()
-        .find(|d| d.msg.starts_with("duplicate match arm"))
-        .unwrap_or_else(|| panic!("missing dup diag: {:?}", hir.diagnostics));
-    assert!(dup.msg.contains("`Circle`"), "got: {}", dup.msg);
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Pattern(PatternError::DuplicateArm { variant }) if variant == "Circle"
+        )),
+        "missing dup diag: {:?}",
+        hir.diagnostics
+    );
 }
 
 #[test]
@@ -490,9 +500,9 @@ fn match_arm_after_wildcard_is_unreachable() {
     );
     let hir = lower(&src);
     assert!(
-        hir.diagnostics
+        diags(&hir)
             .iter()
-            .any(|d| d.msg.contains("unreachable match arm after `_`")),
+            .any(|e| matches!(e, HirError::Pattern(PatternError::UnreachableAfterWildcard))),
         "expected unreachable diag, got: {:?}",
         hir.diagnostics
     );
@@ -510,9 +520,11 @@ fn match_cross_enum_pattern_diagnosed() {
     );
     let hir = lower(&src);
     assert!(
-        hir.diagnostics
-            .iter()
-            .any(|d| d.msg.contains("pattern is from enum `Option`")),
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Resolve(ResolveError::PatternEnumMismatch { pattern_enum, .. })
+                if pattern_enum == "Option"
+        )),
         "expected cross-enum diag, got: {:?}",
         hir.diagnostics
     );
@@ -529,9 +541,11 @@ fn match_unknown_variant_diagnosed() {
     );
     let hir = lower(&src);
     assert!(
-        hir.diagnostics
-            .iter()
-            .any(|d| d.msg.contains("enum `Shape` has no variant `Square`")),
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Resolve(ResolveError::NoSuchVariant { enum_name, variant })
+                if enum_name == "Shape" && variant == "Square"
+        )),
         "expected unknown-variant diag, got: {:?}",
         hir.diagnostics
     );
@@ -550,9 +564,9 @@ main() {
 ";
     let hir = lower(src);
     assert!(
-        hir.diagnostics
+        diags(&hir)
             .iter()
-            .any(|d| d.msg.contains("match scrutinee type is not a known enum")),
+            .any(|e| matches!(e, HirError::Type(TypeError::MatchScrutineeNotEnum))),
         "expected non-enum diag, got: {:?}",
         hir.diagnostics
     );
@@ -614,11 +628,12 @@ main() {
 
     assert_eq!(hir.diagnostics.len(), 1, "{:?}", hir.diagnostics);
     assert!(
-        hir.diagnostics[0]
-            .msg
-            .contains("array length must be an integer literal"),
-        "unexpected diagnostic: {}",
-        hir.diagnostics[0].msg
+        matches!(
+            diags(&hir)[0],
+            HirError::Const(ConstError::ArrayLenNotLiteral)
+        ),
+        "unexpected diagnostic: {:?}",
+        diags(&hir)[0]
     );
 }
 
@@ -637,11 +652,12 @@ main() {
 
     assert_eq!(hir.diagnostics.len(), 1, "{:?}", hir.diagnostics);
     assert!(
-        hir.diagnostics[0]
-            .msg
-            .contains("array initializer length mismatch"),
-        "unexpected diagnostic: {}",
-        hir.diagnostics[0].msg
+        matches!(
+            diags(&hir)[0],
+            HirError::Type(TypeError::ArrayInitLenMismatch { .. })
+        ),
+        "unexpected diagnostic: {:?}",
+        diags(&hir)[0]
     );
 }
 
@@ -660,11 +676,11 @@ fn match_value_position_heterogeneous_arms_diagnosed() {
     );
     let hir = lower(&src);
     assert!(
-        hir.diagnostics
-            .iter()
-            .any(|d| d.msg.contains("match arm type mismatch")
-                && d.msg.contains("expected int32")
-                && d.msg.contains("produces string")),
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::MatchArmTypeMismatch { expected, found })
+                if expected.to_string() == "int32" && found.to_string() == "string"
+        )),
         "expected arm-type-mismatch diag, got: {:?}",
         hir.diagnostics
     );
@@ -690,10 +706,11 @@ main() {
 ";
     let hir = lower(src);
     assert!(
-        hir.diagnostics
-            .iter()
-            .any(|d| d.msg.contains("match arm type mismatch")
-                && d.msg.contains("produces Point")),
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::MatchArmTypeMismatch { found, .. })
+                if found.to_string() == "Point"
+        )),
         "expected Point arm mismatch diag, got: {:?}",
         hir.diagnostics
     );
@@ -713,9 +730,9 @@ fn match_wide_int_let_records_binding_type_without_false_positive() {
     );
     let hir = lower(&src);
     assert!(
-        !hir.diagnostics
+        !diags(&hir)
             .iter()
-            .any(|d| d.msg.contains("match arm type mismatch")),
+            .any(|e| matches!(e, HirError::Type(TypeError::MatchArmTypeMismatch { .. }))),
         "integer widening must not false-positive: {:?}",
         hir.diagnostics
     );
@@ -740,9 +757,9 @@ fn statement_position_match_heterogeneous_arms_not_diagnosed() {
     );
     let hir = lower(&src);
     assert!(
-        !hir.diagnostics
+        !diags(&hir)
             .iter()
-            .any(|d| d.msg.contains("match arm type mismatch")),
+            .any(|e| matches!(e, HirError::Type(TypeError::MatchArmTypeMismatch { .. }))),
         "statement-position match must not be result-type checked: {:?}",
         hir.diagnostics
     );
@@ -761,9 +778,9 @@ fn untyped_let_homogeneous_match_arms_are_clean() {
     );
     let hir = lower(&src);
     assert!(
-        !hir.diagnostics
+        !diags(&hir)
             .iter()
-            .any(|d| d.msg.contains("match arm type mismatch")),
+            .any(|e| matches!(e, HirError::Type(TypeError::MatchArmTypeMismatch { .. }))),
         "homogeneous untyped match must be clean: {:?}",
         hir.diagnostics
     );
@@ -784,9 +801,11 @@ main() {
 ";
     let hir = lower(src);
     assert!(
-        hir.diagnostics
-            .iter()
-            .any(|d| d.msg.contains("match arm type mismatch") && d.msg.contains("produces Color")),
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::MatchArmTypeMismatch { found, .. })
+                if found.to_string() == "Color"
+        )),
         "fn-arg value-position match must be arm-checked, got: {:?}",
         hir.diagnostics
     );
@@ -810,11 +829,11 @@ main() { print(\"{}\", sides(Red)); }
 ";
     let hir = lower(src);
     assert!(
-        hir.diagnostics
-            .iter()
-            .any(|d| d.msg.contains("match arm type mismatch")
-                && d.msg.contains("expected int32")
-                && d.msg.contains("produces Color")),
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::MatchArmTypeMismatch { expected, found })
+                if expected.to_string() == "int32" && found.to_string() == "Color"
+        )),
         "return-tail match arm must be checked against the return type, got: {:?}",
         hir.diagnostics
     );
@@ -839,9 +858,9 @@ main() {
 ";
     let hir = lower(src);
     assert!(
-        !hir.diagnostics
+        !diags(&hir)
             .iter()
-            .any(|d| d.msg.contains("match arm type mismatch")),
+            .any(|e| matches!(e, HirError::Type(TypeError::MatchArmTypeMismatch { .. }))),
         "value-discarded tail match must not be result-type checked, got: {:?}",
         hir.diagnostics
     );
@@ -858,11 +877,11 @@ main() { print(\"{}\", bad()); }
 ";
     let hir = lower(src);
     assert!(
-        hir.diagnostics
-            .iter()
-            .any(|d| d.msg.contains("return type mismatch")
-                && d.msg.contains("returns int32")
-                && d.msg.contains("produces Color")),
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::ReturnTypeMismatch { expected, found })
+                if expected.to_string() == "int32" && found.to_string() == "Color"
+        )),
         "expected return-type-mismatch diag, got: {:?}",
         hir.diagnostics
     );
@@ -879,9 +898,9 @@ main() { print(\"{}\", gt(3, 1)); }
 ";
     let hir = lower(src);
     assert!(
-        !hir.diagnostics
+        !diags(&hir)
             .iter()
-            .any(|d| d.msg.contains("return type mismatch")),
+            .any(|e| matches!(e, HirError::Type(TypeError::ReturnTypeMismatch { .. }))),
         "comparison tail must type as bool and not mismatch a bool return, got: {:?}",
         hir.diagnostics
     );
@@ -903,4 +922,363 @@ fn dump_main_eye() {
         eprintln!("exprs:  {:#?}", body.exprs);
         eprintln!("block:  {:?}", body.block);
     }
+}
+
+/// F3 / S1: a struct literal omitting a declared field is an error, naming the
+/// missing field. Garbage-in-C otherwise.
+#[test]
+fn incomplete_struct_literal_emits_diagnostic() {
+    let hir = lower(
+        "structure Point { int32 x, int32 y, int32 z, };\n\
+         main() {\n    let Point p = Point { x: 1, y: 2 };\n}\n",
+    );
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::StructLitMissingFields { fields, .. })
+                if fields.iter().any(|f| f == "z")
+        )),
+        "expected a missing-field diagnostic naming `z`, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// F3: a struct literal naming a field the type does not declare is an error.
+#[test]
+fn unknown_struct_field_emits_diagnostic() {
+    let hir = lower(
+        "structure Point { int32 x, int32 y, };\n\
+         main() {\n    let Point p = Point { x: 1, y: 2, w: 9 };\n}\n",
+    );
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::StructLitUnknownFields { fields, .. })
+                if fields.iter().any(|f| f == "w")
+        )),
+        "expected an unknown-field diagnostic naming `w`, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A struct literal that names every declared field exactly once is clean.
+#[test]
+fn complete_struct_literal_has_no_diagnostic() {
+    let hir = lower(
+        "structure Point { int32 x, int32 y, };\n\
+         main() {\n    let Point p = Point { x: 1, y: 2 };\n}\n",
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// F2 (`if x = 5`) is rejected in the parser now
+/// (GrammarError::AssignInIfCondition); see the parser crate's
+/// `assignment_in_if_condition_is_rejected`. A genuine comparison stays clean.
+#[test]
+fn comparison_in_if_condition_is_clean() {
+    let hir = lower(
+        "main() {\n    mut int32 x = 0;\n    if x == 5 {\n        print(\"hi\");\n    }\n}\n",
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// --- v0.7 arrays first-class + latent gaps ---
+
+/// A4: a literal index past a fixed array's length is a hard error - C would
+/// only warn.
+#[test]
+fn literal_array_index_out_of_bounds_is_rejected() {
+    let hir =
+        lower("main() {\n    let [int32; 4] xs = [1, 2, 3, 4];\n    print(\"{}\", xs[9]);\n}\n");
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Const(ConstError::IndexOutOfBounds { .. }))),
+        "expected an out-of-bounds diagnostic, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// An in-bounds literal index stays clean (control for A4).
+#[test]
+fn in_bounds_literal_index_is_clean() {
+    let hir =
+        lower("main() {\n    let [int32; 4] xs = [1, 2, 3, 4];\n    print(\"{}\", xs[3]);\n}\n");
+    assert!(
+        hir.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A3: the `len(xs)` intrinsic lowers to a `usize` integer constant carrying
+/// the type's length, not a call.
+#[test]
+fn array_len_is_usize_constant() {
+    let hir = lower(
+        "main() {\n    let [int32; 5] xs = [1, 2, 3, 4, 5];\n    print(\"{}\", len(xs));\n}\n",
+    );
+    let main_id = *hir.items.functions.get("main").unwrap();
+    let body = &hir.bodies[hir.functions[main_id].body.unwrap()];
+    // `len` folds to `(usize)5`: a usize-typed cast over the literal length, so
+    // it prints with `%zu` without a varargs type mismatch.
+    let has_len_const = body.exprs.iter().any(|(id, e)| {
+        matches!(e, Expr::Cast { operand, .. }
+            if matches!(body.exprs[*operand], Expr::Literal(Literal::Int(5))))
+            && matches!(
+                body.expr_types.get(id),
+                Some(TypeRef::Path(n)) if n == "usize"
+            )
+    });
+    assert!(
+        has_len_const,
+        "expected `len(xs)` to lower to a usize constant 5; exprs: {:?}",
+        body.exprs.iter().collect::<Vec<_>>()
+    );
+    // and the call to `len` did not survive as a call expression.
+    assert!(
+        !body.exprs.iter().any(|(_, e)| matches!(
+            e,
+            Expr::Call { callee, .. }
+                if matches!(&body.exprs[*callee], Expr::Path(Resolution::Unresolved(n)) if n == "len")
+        )),
+        "`len(xs)` must not lower to a call"
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "`len(xs)` on an array is valid; diagnostics: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// `len` on a non-array argument, and `.len` field syntax on an array, are both
+/// diagnostics: the first is a type error, the second steers to `len(x)`.
+#[test]
+fn len_misuse_is_diagnosed() {
+    let non_array = lower("main() {\n    let int32 x = 0;\n    print(\"{}\", len(x));\n}\n");
+    assert_eq!(
+        non_array.diagnostics.len(),
+        1,
+        "`len` on a non-array must diagnose; got: {:?}",
+        non_array.diagnostics
+    );
+
+    let dot_form =
+        lower("main() {\n    let [int32; 3] xs = [1, 2, 3];\n    print(\"{}\", xs.len);\n}\n");
+    assert_eq!(
+        dot_form.diagnostics.len(),
+        1,
+        "`.len` field form must steer to `len(x)`; got: {:?}",
+        dot_form.diagnostics
+    );
+}
+
+/// `len` never evaluates its operand (it reads the length from the type), so a
+/// computed operand like `len(f())` would silently discard the call. The
+/// operand is restricted to a place (variable/field/index/deref); a call or an
+/// array literal is rejected.
+#[test]
+fn len_of_computed_value_is_rejected() {
+    let call_form = lower(
+        "mk() -> [int32; 3] {\n    [1, 2, 3]\n}\nmain() {\n    print(\"{}\", len(mk()));\n}\n",
+    );
+    assert_eq!(
+        call_form.diagnostics.len(),
+        1,
+        "`len(f())` must be rejected (the call would be discarded); got: {:?}",
+        call_form.diagnostics
+    );
+
+    let literal_form = lower("main() {\n    print(\"{}\", len([1, 2, 3]));\n}\n");
+    assert_eq!(
+        literal_form.diagnostics.len(),
+        1,
+        "`len([..])` must be rejected (not a place); got: {:?}",
+        literal_form.diagnostics
+    );
+}
+
+/// `len` on an array reference still works without an explicit deref: `&[T; N]`
+/// is a place and one ref is peeled. `len(*r)` works too. Both fold to the
+/// length with no diagnostic.
+#[test]
+fn len_through_reference_is_accepted() {
+    let hir = lower(
+        "sum(&[int32; 3] r) -> usize {\n    len(r)\n}\nmain() {\n    mut [int32; 3] a = [1, 2, 3];\n    print(\"{}\", sum(&a));\n}\n",
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "`len(r)` on `&[T; N]` is valid (auto-deref kept); diagnostics: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A whole array is a struct in the C backend, so a binary operator on it would
+/// emit invalid C. Every operator family is rejected in lowering.
+#[test]
+fn binary_op_on_array_is_rejected() {
+    for op in ["==", "+", "<"] {
+        let src = format!(
+            "main() {{\n    let [int32; 2] a = [1, 2];\n    let [int32; 2] b = [3, 4];\n    let x = a {op} b;\n}}\n"
+        );
+        let hir = lower(&src);
+        assert!(
+            diags(&hir)
+                .iter()
+                .any(|e| matches!(e, HirError::Type(TypeError::OpOnArray { .. }))),
+            "`a {op} b` on arrays must be rejected; got: {:?}",
+            hir.diagnostics
+        );
+    }
+}
+
+/// `print` is a primitive-only intrinsic: a compound argument (array, struct,
+/// union) has no format and is rejected.
+#[test]
+fn print_compound_is_rejected() {
+    let arr = lower("main() {\n    let [int32; 2] a = [1, 2];\n    print(\"{}\", a);\n}\n");
+    assert!(
+        diags(&arr).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::PrintCannotFormat { kind }) if *kind == "an array"
+        )),
+        "printing a whole array must be rejected; got: {:?}",
+        arr.diagnostics
+    );
+    let strct = lower(
+        "structure P { int32 x, };\nmain() {\n    let P p = P { x: 1 };\n    print(\"{}\", p);\n}\n",
+    );
+    assert!(
+        diags(&strct).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::PrintCannotFormat { kind }) if *kind == "a struct"
+        )),
+        "printing a struct must be rejected; got: {:?}",
+        strct.diagnostics
+    );
+}
+
+/// A statically negative literal index is out of bounds for any length, so it is
+/// rejected like a too-large literal index (A4).
+#[test]
+fn negative_literal_index_is_rejected() {
+    let hir = lower("main() {\n    let [int32; 3] a = [1, 2, 3];\n    print(\"{}\", a[-1]);\n}\n");
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Const(ConstError::NegativeIndex))),
+        "negative literal index must be rejected; got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// `len(a)` folds to `(usize)N`, so `a[len(a)]` is a static off-by-one: the
+/// bounds check peels the fold's cast and still flags it.
+#[test]
+fn len_as_index_is_caught_out_of_bounds() {
+    let hir =
+        lower("main() {\n    let [int32; 3] a = [1, 2, 3];\n    print(\"{}\", a[len(a)]);\n}\n");
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Const(ConstError::IndexOutOfBounds { .. }))),
+        "`a[len(a)]` must be caught as out of bounds; got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A zero-length array `[T; 0]` lowers to a nonstandard C zero-length array, so
+/// it is rejected.
+#[test]
+fn zero_length_array_is_rejected() {
+    let hir = lower("main() {\n    let [int32; 0] a = [];\n    print(\"{}\", 0);\n}\n");
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Const(ConstError::ArrayLenZero))),
+        "zero-length array must be rejected; got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// Arrays as struct/union fields are rejected this version (the wrapper typedef
+/// would be emitted after the struct; needs a codegen type-dependency sort).
+#[test]
+fn array_struct_field_is_rejected() {
+    let hir = lower("structure Buf { [int32; 4] data, };\nmain() {}\n");
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Unsupported(UnsupportedError::ArrayField))),
+        "expected an array-field diagnostic, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// L1: a value-position match in a ternary-shaped `if` branch is rejected
+/// rather than emitting broken C.
+#[test]
+fn match_in_ternary_branch_is_rejected() {
+    let hir = lower(
+        "enum Color = Red | Blue;\n\
+         pick(Color c) -> int32 {\n\
+         \x20   let int32 r = if true { match c { Red -> 1, _ -> 0 } } else { 9 };\n\
+         \x20   r\n\
+         }\n",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Unsupported(UnsupportedError::TernaryMatch))),
+        "expected an unhoisted-match diagnostic, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A let-bound match (the normal value position) stays clean - control against
+/// a false positive in the ternary check.
+#[test]
+fn let_bound_match_is_clean() {
+    let hir = lower(
+        "enum Color = Red | Blue;\n\
+         rank(Color c) -> int32 {\n\
+         \x20   let int32 r = match c { Red -> 1, _ -> 0 };\n\
+         \x20   r\n\
+         }\n",
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A literal-array return whose element type differs from the declared return
+/// type is clean (the element type is coerced); a wrong *length* still errors.
+/// Guards that the element coercion does not mask an arity mismatch.
+#[test]
+fn array_literal_return_coercion_keeps_length_check() {
+    let ok = lower("g() -> [usize; 3] {\n    [1, 2, 3]\n}\nmain() {}\n");
+    assert!(
+        ok.diagnostics.is_empty(),
+        "element coercion should make this clean, got: {:?}",
+        ok.diagnostics
+    );
+
+    let bad = lower("g() -> [int32; 3] {\n    [1, 2]\n}\nmain() {}\n");
+    assert!(
+        diags(&bad)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ReturnTypeMismatch { .. }))),
+        "a wrong-length literal return must still error, got: {:?}",
+        bad.diagnostics
+    );
 }

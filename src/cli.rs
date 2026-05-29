@@ -29,4 +29,13 @@ pub struct Cli {
     /// Print the fully-lowered HIR (items, bodies, expr arenas, types).
     #[arg(long)]
     pub dump_hir: bool,
+
+    /// Stop after lexing and parsing: exit 0 if the source is syntactically
+    /// valid, non-zero otherwise. Skips HIR lowering, codegen and clang, and
+    /// writes no `.c` or binary. This is the parse-stage oracle the grammar
+    /// parity gate (scripts/check-grammars.sh) checks the tree-sitter grammar
+    /// against, so it deliberately matches what tree-sitter sees: lexer +
+    /// parser only, no semantic analysis.
+    #[arg(long)]
+    pub check: bool,
 }

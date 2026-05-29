@@ -2,7 +2,7 @@
 //! arenas plus a source map back to syntax pointers. One [`Body`] per fn so
 //! editing a single fn body invalidates only that body.
 
-use ast::{BinOp, UnaryOp};
+use ast::{AssignOp, BinOp, UnaryOp};
 use la_arena::{Arena, ArenaMap};
 use smol_str::SmolStr;
 use syntax::SyntaxNodePtr;
@@ -108,6 +108,7 @@ pub enum Expr {
         name: Text,
     },
     Assign {
+        op: AssignOp,
         lhs: ExprId,
         rhs: ExprId,
     },
@@ -150,7 +151,7 @@ impl Expr {
             | Expr::Break
             | Expr::Continue
             | Expr::Block(_) => {}
-            Expr::Binary { lhs, rhs, .. } | Expr::Assign { lhs, rhs } => {
+            Expr::Binary { lhs, rhs, .. } | Expr::Assign { lhs, rhs, .. } => {
                 f(*lhs);
                 f(*rhs);
             }

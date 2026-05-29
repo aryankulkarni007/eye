@@ -1,19 +1,27 @@
-//! The eye grammar - v0.3 covering `eyesrc/design.eye` plus the v0.3
-//! `match` surface from `eyesrc/v03.eye`.
+//! The eye grammar - the full v0.7 surface: items (struct, union, enum,
+//! `extern` FFI, fn), references / pointers / fixed arrays in the type system,
+//! the operator set (arithmetic, bitwise, comparison, logical, compound
+//! assignment), `match`, `as` casts, and array literals / indexing. Exercised
+//! end to end by `eyesrc/*.eye` (see `eyesrc/v06.eye` for the operator surface
+//! and `eyesrc/arrays.eye` for arrays).
 //!
 //! ```text
 //! source_file  := item*
-//! item         := struct_def | enum_def | fn_def
+//! item         := struct_def | union_def | extern_block | enum_def | fn_def
 //! struct_def   := 'structure' Ident field_list ';'
-//! field_list   := '{' (field ',')* '}'
-//! field        := type_ref Ident
-//! enum_def     := 'enum' Ident '=' variant ('|' variant)* ';'
-//! variant      := '|'? Ident          // leading '|' optional on first variant
+//! union_def    := 'union' Ident field_list ';'
+//! extern_block := 'extern' '{' extern_fn* '}'
+//! extern_fn    := Ident param_list ('->' type_ref)? ';'
+//! enum_def     := 'enum' Ident '=' '|'? variant ('|' variant)* ';'
+//! variant      := Ident                // leading '|' before the first is optional
 //! fn_def       := Ident param_list ('->' type_ref)? block
-//! param_list   := '(' (param (',' param)*)? ')'
+//! field_list   := '{' (field ',')* '}' // the ',' terminates every field
+//! field        := type_ref Ident
+//! param_list   := '(' (param (',' param)* ','?)? ')'
 //! param        := type_ref Ident
-//! type_ref     := ('&' type_ref) | (Ident postfix_ptr*)
-//! postfix_ptr  := '*'
+//! type_ref     := array_type | ('&' type_ref) | (Ident postfix_ptr*)
+//! array_type   := '[' type_ref ';' expr ']'        // fixed-size array
+//! postfix_ptr  := '*'                              // wraps the base in a PtrType
 //!
 //! block        := '{' (stmt)* expr? '}'
 //! stmt         := let_stmt | expr_stmt
@@ -21,16 +29,31 @@
 //! expr_stmt    := expr ';'                        // or block-like expr w/o ';'
 //! expr         := pratt
 //! pratt        := prefix (infix prefix)*
-//! prefix       := '-' prefix | '&' prefix | '*' prefix | postfix
-//! postfix      := atom (call | struct_body | '.' Ident)*
+//! prefix       := '-' prefix | '~' prefix | '!' prefix    // PrefixExpr
+//!               | '&' prefix | '*' prefix | postfix        // Ref/Deref expr
+//! postfix      := base (call | index | struct_body | '.' Ident | 'as' type_ref)*
+//! call         := '(' (expr (',' expr)* ','?)? ')'
+//! index        := '[' expr ']'
+//! base         := '(' expr ')' | atom            // parenthesized group or atom
 //! atom         := Int | Float | String | True | False | Char | NameRef
 //!               | if_expr | loop_expr | break_expr | continue_expr
-//! if_expr      := 'if' expr_no_struct block ('else' block)?
+//!               | match_expr | array_lit
+//! array_lit    := '[' (expr (',' expr)* ','?)? ']'
+//! if_expr      := 'if' expr_no_struct block ('else' (if_expr | block))?
 //! loop_expr    := 'loop' block
 //! break_expr   := 'break' expr?
 //! continue_expr:= 'continue'
-//! infix        := '=' | '||' | '&&' | comparison | '+' | '-' | '*' | '/'
-//! struct_body  := '{' (struct_lit_field (',' struct_lit_field)*)? '}'
+//! match_expr   := 'match' expr_no_struct '{' match_arm* '}'
+//! match_arm    := pat '->' expr ','?              // ',' optional on the last arm
+//! pat          := '_' | (NameRef '.' NameRef) | NameRef
+//! // precedence is Rust-style (no-footgun): every bitwise op binds tighter
+//! // than comparison, and comparison is non-associative (no chaining). '=' and
+//! // the compound forms are right-associative and lowest; 'as' / call / index /
+//! // field bind tightest, above every prefix unary.
+//! infix        := '=' | '+=' | '-=' | '||' | '&&' | comparison
+//!               | '|' | '^' | '&' | '<<' | '>>' | '+' | '-' | '*' | '/' | '%'
+//! comparison   := '==' | '!=' | '<' | '>' | '<=' | '>='
+//! struct_body  := '{' (struct_lit_field (',' struct_lit_field)* ','?)? '}'
 //! struct_lit_field := Ident (':' expr)? | expr           // last is positional
 //! ```
 //!
@@ -57,8 +80,11 @@ fn at_expr_start(p: &Parser) -> bool {
             | SyntaxKind::Char
             | SyntaxKind::Ident
             | T![-]
+            | T![~]
+            | T![!]
             | T![&]
             | T![*]
+            | T!['(']
             | T!['[']
             | T![if]
             | T![loop]
@@ -82,7 +108,7 @@ pub(crate) fn source_file(p: &mut Parser) {
         } else if p.at(SyntaxKind::Ident) {
             fn_def(p);
         } else {
-            p.error_and_advance("expected an item");
+            p.error_and_advance(crate::SyntaxError::ExpectedItem);
         }
     }
     m.complete(p, SyntaxKind::SourceFile);
@@ -91,9 +117,9 @@ pub(crate) fn source_file(p: &mut Parser) {
 fn struct_def(p: &mut Parser) {
     let m = p.open();
     p.advance(); // 'structure'
-    p.expect(SyntaxKind::Ident, "expected a struct name");
+    p.expect(SyntaxKind::Ident, crate::SyntaxError::ExpectedStructName);
     field_list(p);
-    p.expect(T![;], "expected ';' after struct definition");
+    p.expect(T![;], crate::SyntaxError::ExpectedSemiAfterStruct);
     m.complete(p, SyntaxKind::StructDef);
 }
 
@@ -102,9 +128,9 @@ fn struct_def(p: &mut Parser) {
 fn union_def(p: &mut Parser) {
     let m = p.open();
     p.advance(); // 'union'
-    p.expect(SyntaxKind::Ident, "expected a union name");
+    p.expect(SyntaxKind::Ident, crate::SyntaxError::ExpectedUnionName);
     field_list(p);
-    p.expect(T![;], "expected ';' after union definition");
+    p.expect(T![;], crate::SyntaxError::ExpectedSemiAfterUnion);
     m.complete(p, SyntaxKind::UnionDef);
 }
 
@@ -113,15 +139,15 @@ fn union_def(p: &mut Parser) {
 fn extern_block(p: &mut Parser) {
     let m = p.open();
     p.advance(); // 'extern'
-    p.expect(T!['{'], "expected '{' to open extern block");
+    p.expect(T!['{'], crate::SyntaxError::ExpectedExternOpen);
     while !p.at(T!['}']) && !p.at_eof() {
         if p.at(SyntaxKind::Ident) {
             extern_fn(p);
         } else {
-            p.error_and_advance("expected an extern function signature");
+            p.error_and_advance(crate::SyntaxError::ExpectedExternSignature);
         }
     }
-    p.expect(T!['}'], "expected '}' to close extern block");
+    p.expect(T!['}'], crate::SyntaxError::ExpectedExternClose);
     m.complete(p, SyntaxKind::ExternBlock);
 }
 
@@ -134,38 +160,40 @@ fn extern_fn(p: &mut Parser) {
     if p.eat(T![->]) {
         type_ref(p);
     }
-    p.expect(T![;], "expected ';' after extern signature");
+    p.expect(T![;], crate::SyntaxError::ExpectedSemiAfterExternSig);
     m.complete(p, SyntaxKind::ExternFn);
 }
 
 fn field_list(p: &mut Parser) {
     let m = p.open();
-    p.expect(T!['{'], "expected '{' to open field list");
+    p.expect(T!['{'], crate::SyntaxError::ExpectedFieldListOpen);
     while !p.at(T!['}']) && !p.at_eof() {
-        if p.at(SyntaxKind::Ident) || p.at(T![&]) {
+        // `[` starts an array field type; HIR rejects array-typed fields with a
+        // clear message, which is better than a cryptic crate::SyntaxError::ExpectedField.
+        if p.at(SyntaxKind::Ident) || p.at(T![&]) || p.at(T!['[']) {
             field(p);
             // the separating ',' is a child of FieldList, not of Field
-            p.expect(T![,], "expected ',' after field");
+            p.expect(T![,], crate::SyntaxError::ExpectedCommaAfterField);
         } else {
-            p.error_and_advance("expected a field");
+            p.error_and_advance(crate::SyntaxError::ExpectedField);
         }
     }
-    p.expect(T!['}'], "expected '}' to close field list");
+    p.expect(T!['}'], crate::SyntaxError::ExpectedFieldListClose);
     m.complete(p, SyntaxKind::FieldList);
 }
 
 fn field(p: &mut Parser) {
     let m = p.open();
     type_ref(p);
-    p.expect(SyntaxKind::Ident, "expected a field name");
+    p.expect(SyntaxKind::Ident, crate::SyntaxError::ExpectedFieldName);
     m.complete(p, SyntaxKind::Field);
 }
 
 fn enum_def(p: &mut Parser) {
     let m = p.open();
     p.advance(); // 'enum'
-    p.expect(SyntaxKind::Ident, "expected enum name");
-    p.expect(T![=], "expected '=' after enum name");
+    p.expect(SyntaxKind::Ident, crate::SyntaxError::ExpectedEnumName);
+    p.expect(T![=], crate::SyntaxError::ExpectedEqAfterEnumName);
 
     // First variant. At least one variant required. Leading `|` is always
     // optional - stylistic only, accepted inline or multi-line.
@@ -178,18 +206,21 @@ fn enum_def(p: &mut Parser) {
         v_m.complete(p, SyntaxKind::Variant);
     } else {
         v_m.abandon(p);
-        p.error("expected at least one variant");
+        p.error(crate::SyntaxError::ExpectedAtLeastOneVariant);
     }
 
     // Subsequent variants: '|' mandatory as a separator.
     while p.at(T![|]) {
         let v_m = p.open();
         p.advance(); // '|'
-        p.expect(SyntaxKind::Ident, "expected variant name after '|'");
+        p.expect(
+            SyntaxKind::Ident,
+            crate::SyntaxError::ExpectedVariantNameAfterPipe,
+        );
         v_m.complete(p, SyntaxKind::Variant);
     }
 
-    p.expect(T![;], "expected ';' after enum definition");
+    p.expect(T![;], crate::SyntaxError::ExpectedSemiAfterEnum);
     m.complete(p, SyntaxKind::EnumDef);
 }
 
@@ -201,9 +232,9 @@ fn type_ref(p: &mut Parser) {
         let m = p.open();
         p.advance(); // '['
         type_ref(p); // element type
-        p.expect(T![;], "expected ';' between array element type and length");
+        p.expect(T![;], crate::SyntaxError::ExpectedSemiInArrayType);
         expr(p); // length
-        p.expect(T![']'], "expected ']' to close array type");
+        p.expect(T![']'], crate::SyntaxError::ExpectedArrayTypeClose);
         m.complete(p, SyntaxKind::ArrayType)
     } else if p.at(T![&]) {
         let m = p.open();
@@ -215,7 +246,7 @@ fn type_ref(p: &mut Parser) {
         p.advance(); // ident
         m.complete(p, SyntaxKind::IdentType)
     } else {
-        p.error_and_advance("expected a type");
+        p.error_and_advance(crate::SyntaxError::ExpectedType);
         return;
     };
 
@@ -242,23 +273,23 @@ fn param_list(p: &mut Parser) {
     let m = p.open();
     // `(` and `)` are separate tokens; an empty `()` is just a ParamList
     // with no params - unit is inferred from the absence of content
-    p.expect(T!['('], "expected '('");
+    p.expect(T!['('], crate::SyntaxError::ExpectedOpenParen);
     while !p.at(T![')']) && !p.at_eof() {
         let param_m = p.open();
         type_ref(p);
-        p.expect(SyntaxKind::Ident, "expected parameter name");
+        p.expect(SyntaxKind::Ident, crate::SyntaxError::ExpectedParamName);
         param_m.complete(p, SyntaxKind::Param);
         if !p.eat(T![,]) {
             break;
         }
     }
-    p.expect(T![')'], "expected ')'");
+    p.expect(T![')'], crate::SyntaxError::ExpectedCloseParen);
     m.complete(p, SyntaxKind::ParamList);
 }
 
 fn block(p: &mut Parser) {
     let m = p.open();
-    p.expect(T!['{'], "expected '{' to open block");
+    p.expect(T!['{'], crate::SyntaxError::ExpectedBlockOpen);
     while !p.at(T!['}']) && !p.at_eof() {
         if p.at(T![let]) || p.at(T![mut]) {
             let_stmt(p);
@@ -286,14 +317,14 @@ fn block(p: &mut Parser) {
                 // no `;` required between block-like and the next stmt.
                 m_stmt.complete(p, SyntaxKind::ExprStmt);
             } else {
-                p.error("expected ';' after expression");
+                p.error(crate::SyntaxError::ExpectedSemiAfterExpr);
                 m_stmt.complete(p, SyntaxKind::ExprStmt);
             }
         } else {
-            p.error_and_advance("expected a statement");
+            p.error_and_advance(crate::SyntaxError::ExpectedStatement);
         }
     }
-    p.expect(T!['}'], "expected '}' to close block");
+    p.expect(T!['}'], crate::SyntaxError::ExpectedBlockClose);
     m.complete(p, SyntaxKind::Block);
 }
 
@@ -304,18 +335,21 @@ fn stmt(p: &mut Parser) {
     } else if at_expr_start(p) {
         expr_stmt(p);
     } else {
-        p.error_and_advance("expected a statement");
+        p.error_and_advance(crate::SyntaxError::ExpectedStatement);
     }
 }
 
-/// `let_stmt` accepts three shapes:
+/// `let_stmt` accepts these shapes, distinguished by a fixed two-token
+/// lookahead after the `let`/`mut` keyword:
 ///
-/// - inferred:    `let x = expr;`
-/// - explicit:    `mut Point p = expr;`         (Ident then Ident)
-/// - explicit ref: `mut &Point r = expr;`       (& then Ident then Ident)
+/// - inferred:     `let x = expr;`                (Ident then `=` -> no type)
+/// - explicit:     `mut Point p = expr;`          (Ident then Ident)
+/// - pointer:      `mut Point* p = expr;`         (Ident then `*`)
+/// - explicit ref: `mut &Point r = expr;`         (leading `&`)
+/// - explicit arr: `let [int32; 3] xs = expr;`    (leading `[`)
 ///
-/// The pointer-suffix form `T*` is not yet disambiguated here; a future v0.3
-/// will look further ahead.
+/// Nested refs are written with a space (`& &Point`); the `&&` spelling lexes
+/// as a single logical-and token, so it cannot denote a ref-to-ref type.
 fn let_stmt(p: &mut Parser) {
     let m = p.open();
     p.advance(); // 'let' or 'mut'
@@ -332,10 +366,10 @@ fn let_stmt(p: &mut Parser) {
     if has_type {
         type_ref(p);
     }
-    p.expect(SyntaxKind::Ident, "expected a binding name");
-    p.expect(T![=], "expected '=' in binding");
+    p.expect(SyntaxKind::Ident, crate::SyntaxError::ExpectedBindingName);
+    p.expect(T![=], crate::SyntaxError::ExpectedEqInBinding);
     expr(p);
-    p.expect(T![;], "expected ';' after statement");
+    p.expect(T![;], crate::SyntaxError::ExpectedSemiAfterStatement);
     m.complete(p, SyntaxKind::LetStmt);
 }
 
@@ -343,7 +377,7 @@ fn let_stmt(p: &mut Parser) {
 fn expr_stmt(p: &mut Parser) {
     let m = p.open();
     expr(p);
-    p.expect(T![;], "expected ';' after expression");
+    p.expect(T![;], crate::SyntaxError::ExpectedSemiAfterExpr);
     m.complete(p, SyntaxKind::ExprStmt);
 }
 
@@ -358,19 +392,36 @@ fn expr(p: &mut Parser) {
 /// right-associative (`l_bp > r_bp`) and has the lowest precedence.
 fn infix_binding_power(kind: SyntaxKind) -> Option<(u8, u8)> {
     Some(match kind {
-        T![=] => (2, 1),
+        // Assignment (incl. compound `+=`/`-=`) is right-associative and lowest.
+        T![=] | T![+=] | T![-=] => (2, 1),
         T![||] => (3, 4),
         T![&&] => (5, 6),
+        // Comparison is its own tier; F1 makes it non-associative (see
+        // `expr_bp`) so `a < b < c` is a hard error, not C's silent chain.
         T![==] | T![!=] | T![<] | T![>] | T![<=] | T![>=] => (7, 8),
-        T![+] | T![-] => (9, 10),
-        T![*] | T![/] => (11, 12),
+        // No-footgun precedence (Rust-style, not C-style): every bitwise op
+        // binds TIGHTER than comparison, so `a & b == c` is `(a & b) == c`,
+        // never C's `a & (b == c)`. Each bitwise op gets its own tier.
+        T![|] => (9, 10),
+        T![^] => (11, 12),
+        T![&] => (13, 14),
+        T![<<] | T![>>] => (15, 16),
+        T![+] | T![-] => (17, 18),
+        T![*] | T![/] | T![%] => (19, 20),
         _ => return None,
     })
 }
 
+/// True if `kind` is a comparison/equality operator. These form one tier and
+/// are non-associative (F1): chaining two of them at the same level is an
+/// error, so `a < b < c` must be parenthesized.
+fn is_comparison(kind: SyntaxKind) -> bool {
+    matches!(kind, T![==] | T![!=] | T![<] | T![>] | T![<=] | T![>=])
+}
+
 /// Right binding power of any prefix unary - above every infix operator, so
 /// `-a * b` parses as `(-a) * b`.
-const PREFIX_BP: u8 = 13;
+const PREFIX_BP: u8 = 21;
 
 /// Pratt loop: parse a left-hand side, then fold in infix operators while
 /// their left binding power is at least `min_bp`. Each operator wraps the
@@ -378,12 +429,21 @@ const PREFIX_BP: u8 = 13;
 /// stays append-only.
 fn expr_bp(p: &mut Parser, min_bp: u8) -> Option<CompletedMarker> {
     let mut lhs = lhs(p)?;
+    // Tracks whether the operator folded last at *this* level was a comparison.
+    // Two comparisons in a row at the same level is a non-associativity error
+    // (F1). A same-tier comparison never appears in an operator's right operand
+    // (r_bp > l_bp breaks it out), so a chain only ever shows up here.
+    let mut prev_was_cmp = false;
     while let Some((l_bp, r_bp)) = infix_binding_power(p.nth0()) {
         if l_bp < min_bp {
             break;
         }
         let op = p.nth0();
-        let kind = if op == T![=] {
+        let is_cmp = is_comparison(op);
+        if is_cmp && prev_was_cmp {
+            p.error(crate::GrammarError::ComparisonChain);
+        }
+        let kind = if matches!(op, T![=] | T![+=] | T![-=]) {
             SyntaxKind::AssignExpr
         } else {
             SyntaxKind::BinExpr
@@ -392,6 +452,7 @@ fn expr_bp(p: &mut Parser, min_bp: u8) -> Option<CompletedMarker> {
         p.advance(); // the operator token
         expr_bp(p, r_bp);
         lhs = m.complete(p, kind);
+        prev_was_cmp = is_cmp;
     }
     Some(lhs)
 }
@@ -399,9 +460,11 @@ fn expr_bp(p: &mut Parser, min_bp: u8) -> Option<CompletedMarker> {
 /// A prefix-unary form, or an atom followed by any run of postfix forms. Each
 /// postfix form uses [`CompletedMarker::precede`] to wrap its operand.
 fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
-    if p.at(T![-]) {
+    // Prefix-unary: `-` negate, `~` bitwise-complement, `!` logical-not. The
+    // operand binds at PREFIX_BP (above every infix op) so `-a * b` is `(-a) * b`.
+    if p.at(T![-]) || p.at(T![~]) || p.at(T![!]) {
         let m = p.open();
-        p.advance(); // '-'
+        p.advance(); // the prefix operator
         expr_bp(p, PREFIX_BP);
         return Some(m.complete(p, SyntaxKind::PrefixExpr));
     }
@@ -436,7 +499,14 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
         return Some(array_lit(p));
     }
 
-    let mut lhs = atom(p)?;
+    // The base of the postfix chain: a parenthesized group or an atom. A
+    // leading `(` is unambiguously a group here (a postfix `(` - a call - only
+    // appears after a base is already parsed, handled in the loop below).
+    let mut lhs = if p.at(T!['(']) {
+        paren_expr(p)
+    } else {
+        atom(p)?
+    };
     loop {
         if p.at(T!['(']) {
             let call = lhs.precede(p);
@@ -447,7 +517,7 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
             let index = lhs.precede(p);
             p.advance(); // '['
             expr(p);
-            p.expect(T![']'], "expected ']' to close index");
+            p.expect(T![']'], crate::SyntaxError::ExpectedIndexClose);
             lhs = index.complete(p, SyntaxKind::IndexExpr);
         } else if p.at(T!['{']) && !p.no_struct_lit() {
             let lit = lhs.precede(p);
@@ -457,7 +527,10 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
             let field_expr = lhs.precede(p);
             p.advance();
             let name_m = p.open();
-            p.expect(SyntaxKind::Ident, "expected field identifier after '.'");
+            p.expect(
+                SyntaxKind::Ident,
+                crate::SyntaxError::ExpectedFieldIdentAfterDot,
+            );
             name_m.complete(p, SyntaxKind::NameRef);
             lhs = field_expr.complete(p, SyntaxKind::FieldExpr);
         } else if p.at(T![as]) {
@@ -478,8 +551,14 @@ fn if_expr(p: &mut Parser) -> CompletedMarker {
     let m = p.open();
     p.advance(); // 'if'
     let prev = p.set_no_struct_lit(true);
-    expr(p);
+    // Reject `if x = y { ... }`: an assignment in a condition is the classic
+    // `=`/`==` footgun. Anchored at the condition's first token, not the cursor.
+    let cond_start = p.cursor_range();
+    let cond = expr_bp(p, 0);
     p.set_no_struct_lit(prev);
+    if matches!(cond, Some(cm) if cm.kind() == SyntaxKind::AssignExpr) {
+        p.error_at(cond_start, crate::GrammarError::AssignInIfCondition);
+    }
     block(p);
     if p.eat(T![else]) {
         if p.at(T![if]) {
@@ -536,23 +615,23 @@ fn match_expr(p: &mut Parser) -> CompletedMarker {
 
 fn match_arm_list(p: &mut Parser) {
     let m = p.open();
-    p.expect(T!['{'], "expected '{' to open match arms");
+    p.expect(T!['{'], crate::SyntaxError::ExpectedMatchArmsOpen);
     // arm body expressions can contain struct literals freely
     let prev = p.set_no_struct_lit(false);
     while !p.at(T!['}']) && !p.at_eof() {
         if !at_pat_start(p) {
-            p.error_and_advance("expected a match arm");
+            p.error_and_advance(crate::SyntaxError::ExpectedMatchArm);
             continue;
         }
         let had_comma = match_arm(p);
         // `,` is the arm separator. It is mandatory between arms; only the
         // final arm before `}` may omit it.
         if !had_comma && !p.at(T!['}']) && !p.at_eof() {
-            p.error("expected ',' between match arms");
+            p.error(crate::SyntaxError::ExpectedCommaBetweenMatchArms);
         }
     }
     p.set_no_struct_lit(prev);
-    p.expect(T!['}'], "expected '}' to close match arms");
+    p.expect(T!['}'], crate::SyntaxError::ExpectedMatchArmsClose);
     m.complete(p, SyntaxKind::MatchArmList);
 }
 
@@ -561,7 +640,7 @@ fn match_arm_list(p: &mut Parser) {
 fn match_arm(p: &mut Parser) -> bool {
     let m = p.open();
     pat(p);
-    p.expect(T![->], "expected '->' after match pattern");
+    p.expect(T![->], crate::SyntaxError::ExpectedArrowAfterPattern);
     expr(p);
     let had_comma = p.eat(T![,]);
     m.complete(p, SyntaxKind::MatchArm);
@@ -594,7 +673,10 @@ fn pat(p: &mut Parser) {
             p.advance(); // '.'
             // variant name ref
             let nm = p.open();
-            p.expect(SyntaxKind::Ident, "expected variant name after '.'");
+            p.expect(
+                SyntaxKind::Ident,
+                crate::SyntaxError::ExpectedVariantNameAfterDot,
+            );
             nm.complete(p, SyntaxKind::NameRef);
             m.complete(p, SyntaxKind::PathPat);
         } else {
@@ -606,7 +688,7 @@ fn pat(p: &mut Parser) {
         }
         return;
     }
-    p.error_and_advance("expected a pattern");
+    p.error_and_advance(crate::SyntaxError::ExpectedPattern);
 }
 
 fn atom(p: &mut Parser) -> Option<CompletedMarker> {
@@ -627,7 +709,7 @@ fn atom(p: &mut Parser) -> Option<CompletedMarker> {
         }
         _ => {
             m.abandon(p);
-            p.error("expected an expression");
+            p.error(crate::SyntaxError::ExpectedExpression);
             return None;
         }
     };
@@ -648,17 +730,30 @@ fn array_lit(p: &mut Parser) -> CompletedMarker {
                 break;
             }
         } else {
-            p.error_and_advance("expected an array element");
+            p.error_and_advance(crate::SyntaxError::ExpectedArrayElement);
         }
     }
     p.set_no_struct_lit(prev);
-    p.expect(T![']'], "expected ']' to close array literal");
+    p.expect(T![']'], crate::SyntaxError::ExpectedArrayLitClose);
     m.complete(p, SyntaxKind::ArrayLit)
+}
+
+/// `( expr )` - a parenthesized group. Purely a precedence override; HIR
+/// lowers it to its inner expression, so it leaves no trace past the AST. A
+/// group is its own struct-lit context, like an arg list or array element.
+fn paren_expr(p: &mut Parser) -> CompletedMarker {
+    let m = p.open();
+    p.advance(); // '('
+    let prev = p.set_no_struct_lit(false);
+    expr(p);
+    p.set_no_struct_lit(prev);
+    p.expect(T![')'], crate::SyntaxError::ExpectedParenExprClose);
+    m.complete(p, SyntaxKind::ParenExpr)
 }
 
 fn arg_list(p: &mut Parser) {
     let m = p.open();
-    p.expect(T!['('], "expected '('");
+    p.expect(T!['('], crate::SyntaxError::ExpectedOpenParen);
     // an arg list is its own struct-lit context: a suppressed flag from an
     // enclosing if/loop condition does not apply inside the arguments.
     let prev = p.set_no_struct_lit(false);
@@ -669,13 +764,13 @@ fn arg_list(p: &mut Parser) {
         }
     }
     p.set_no_struct_lit(prev);
-    p.expect(T![')'], "expected ')' to close argument list");
+    p.expect(T![')'], crate::SyntaxError::ExpectedArgListClose);
     m.complete(p, SyntaxKind::ArgList);
 }
 
 fn struct_body(p: &mut Parser) {
     let m = p.open();
-    p.expect(T!['{'], "expected '{' to open struct literal");
+    p.expect(T!['{'], crate::SyntaxError::ExpectedStructLitOpen);
     // a struct body's fields are independent of any outer no-struct-lit gate
     let prev = p.set_no_struct_lit(false);
     while !p.at(T!['}']) && !p.at_eof() {
@@ -685,11 +780,11 @@ fn struct_body(p: &mut Parser) {
                 break;
             }
         } else {
-            p.error_and_advance("expected a field initializer");
+            p.error_and_advance(crate::SyntaxError::ExpectedFieldInit);
         }
     }
     p.set_no_struct_lit(prev);
-    p.expect(T!['}'], "expected '}' to close struct literal");
+    p.expect(T!['}'], crate::SyntaxError::ExpectedStructLitClose);
     m.complete(p, SyntaxKind::StructLitFieldList);
 }
 

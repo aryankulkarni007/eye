@@ -252,6 +252,13 @@ fn describe_expr(expr: &ast::Expr) -> String {
                 .unwrap_or_else(|| "<missing>".to_string());
             format!("match {scrut} {{ {arms} }}")
         }
+        ast::Expr::ParenExpr(pe) => {
+            let expr = pe
+                .expr()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            format!("({expr})")
+        }
     }
 }
 

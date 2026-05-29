@@ -8,6 +8,8 @@ name = "parser"
 
 [dependencies]
 token.workspace = true
+diagnostics.workspace = true
+thiserror.workspace = true
 lexer.workspace = true
 syntax.workspace = true
 drop_bomb.workspace = true

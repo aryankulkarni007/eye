@@ -6,7 +6,9 @@ use thin_vec::ThinVec;
 
 use super::LoweringCtx;
 use super::types::lower_type_ref;
-use crate::core::{Block, BlockId, ExprId, Local, Pat, Stmt, StmtId, Text, TypeRef};
+use crate::core::{
+    Block, BlockId, ExprId, Local, Pat, Stmt, StmtId, Text, TypeError, TypeRef, UnsupportedError,
+};
 
 impl<'a> LoweringCtx<'a> {
     pub(super) fn lower_block(&mut self, block: ast::Block) -> BlockId {
@@ -46,6 +48,7 @@ impl<'a> LoweringCtx<'a> {
                 self.check_array_init_len(ptr, ty.as_ref(), init);
                 self.check_explicit_let_init_type(ptr, ty.as_ref(), init);
                 self.record_match_result_override(ty.as_ref(), init);
+                self.record_array_init_override(ty.as_ref(), init);
 
                 // pat <-> local back-reference: allocate Pat::Missing first so
                 // the local can point at a valid PatId, then patch the pat to
@@ -96,11 +99,12 @@ impl<'a> LoweringCtx<'a> {
             return;
         };
         if declared_len != init_len {
-            self.diag(
-                ptr,
-                format!(
-                    "array initializer length mismatch: declared length {declared_len}, initializer has {init_len} element(s)"
-                ),
+            self.emit(
+                self.expr_ptr(init_id, ptr),
+                TypeError::ArrayInitLenMismatch {
+                    declared: *declared_len,
+                    found: *init_len,
+                },
             );
         }
     }
@@ -141,13 +145,12 @@ impl<'a> LoweringCtx<'a> {
             return;
         }
         if actual != *expected {
-            self.diag(
-                ptr,
-                format!(
-                    "let initializer type mismatch: expected {}, got {}",
-                    display_type_ref(expected),
-                    display_type_ref(&actual)
-                ),
+            self.emit(
+                self.expr_ptr(init_id, ptr),
+                TypeError::LetTypeMismatch {
+                    expected: expected.clone(),
+                    got: actual.clone(),
+                },
             );
         }
     }
@@ -170,6 +173,24 @@ impl<'a> LoweringCtx<'a> {
             return;
         }
         self.body.expr_types.insert(match_id, declared.clone());
+    }
+
+    /// A literal array initializer takes its element type from its elements,
+    /// which default integer literals to `int32`. When the `let` declares the
+    /// array type (e.g. `[usize; 2] = [100, 200]`), that type wins: re-type the
+    /// literal onto the declared type so its wrapper matches the binding. C
+    /// converts the element constants inside the brace initializer.
+    fn record_array_init_override(&mut self, declared: Option<&TypeRef>, init: Option<ExprId>) {
+        let Some(init_id) = init else {
+            return;
+        };
+        let Some(declared @ TypeRef::Array { .. }) = declared else {
+            return;
+        };
+        if !matches!(self.body.exprs[init_id], crate::core::Expr::ArrayLit(_)) {
+            return;
+        }
+        self.body.expr_types.insert(init_id, declared.clone());
     }
 
     /// Cross-arm result-type consistency for every value-position `match` in the
@@ -232,16 +253,81 @@ impl<'a> LoweringCtx<'a> {
                     let Some(arm_ptr) = self.body.source_map.expr.get(body_id).cloned() else {
                         continue;
                     };
-                    self.diag(
+                    self.emit(
                         arm_ptr,
-                        format!(
-                            "match arm type mismatch: expected {}, this arm produces {}",
-                            display_type_ref(&result_ty),
-                            display_type_ref(&arm_ty)
-                        ),
+                        TypeError::MatchArmTypeMismatch {
+                            expected: result_ty.clone(),
+                            found: arm_ty.clone(),
+                        },
                     );
                 }
             }
+        }
+    }
+
+    /// L1: a value-position `match` inside a ternary-shaped `if` branch cannot
+    /// be hoisted. Codegen renders such an `if` as `cond ? a : b`, but a C
+    /// `switch` is a statement, not an expression, so the match has no temp to
+    /// reference and would emit broken C (the old `/* UNHOISTED MATCH */`
+    /// marker). Reject it with a clear message until codegen can lift the temp
+    /// out of the conditional. The ternary shape here mirrors codegen's `If`
+    /// arm (else present, then-block is a single tail value); the branch scan
+    /// mirrors codegen's hoist boundary (stops at `If`/`Loop`/`Block`).
+    pub(super) fn check_unhoisted_matches(&mut self) {
+        let if_ids: Vec<ExprId> = self
+            .body
+            .exprs
+            .iter()
+            .filter_map(|(id, e)| matches!(e, crate::core::Expr::If { .. }).then_some(id))
+            .collect();
+
+        for if_id in if_ids {
+            let crate::core::Expr::If {
+                then_branch,
+                else_branch,
+                ..
+            } = &self.body.exprs[if_id]
+            else {
+                continue;
+            };
+            let then_branch = *then_branch;
+            let Some(else_branch) = *else_branch else {
+                continue;
+            };
+            let then_block = &self.body.blocks[then_branch];
+            if !(then_block.stmts.is_empty() && then_block.tail.is_some()) {
+                continue;
+            }
+
+            let mut unhoisted: Vec<ExprId> = Vec::new();
+            if let Some(tail) = self.body.blocks[then_branch].tail {
+                self.collect_branch_matches(tail, &mut unhoisted);
+            }
+            if let Some(tail) = self.body.blocks[else_branch].tail {
+                self.collect_branch_matches(tail, &mut unhoisted);
+            }
+            for mid in unhoisted {
+                let Some(ptr) = self.body.source_map.expr.get(mid).cloned() else {
+                    continue;
+                };
+                self.emit(ptr, UnsupportedError::TernaryMatch);
+            }
+        }
+    }
+
+    /// Collect value-position matches reachable from `expr` without crossing an
+    /// `If`/`Loop`/`Block` boundary - exactly the matches codegen's hoist walk
+    /// does not reach. Mirrors `collect_match_ids_rec` in codegen.
+    fn collect_branch_matches(&self, expr_id: ExprId, out: &mut Vec<ExprId>) {
+        match &self.body.exprs[expr_id] {
+            crate::core::Expr::Match { scrut, .. } => {
+                self.collect_branch_matches(*scrut, out);
+                out.push(expr_id);
+            }
+            crate::core::Expr::If { .. }
+            | crate::core::Expr::Loop { .. }
+            | crate::core::Expr::Block(_) => {}
+            other => other.for_each_child_expr(|c| self.collect_branch_matches(c, out)),
         }
     }
 
@@ -264,6 +350,18 @@ impl<'a> LoweringCtx<'a> {
             self.body.expr_types.insert(tail, ret.clone());
             return;
         }
+        // An array-literal tail defaults its elements to int32; the declared
+        // array return type wins, same as a `let` initializer. Coerce only when
+        // the lengths agree so a wrong-length literal still hits the mismatch
+        // diagnostic below.
+        if matches!(self.body.exprs[tail], crate::core::Expr::ArrayLit(_))
+            && let TypeRef::Array { len: ret_len, .. } = ret
+            && let Some(TypeRef::Array { len: lit_len, .. }) = self.body.expr_types.get(tail)
+            && lit_len == ret_len
+        {
+            self.body.expr_types.insert(tail, ret.clone());
+            return;
+        }
         let Some(actual) = self.body.expr_types.get(tail).cloned() else {
             return;
         };
@@ -271,13 +369,12 @@ impl<'a> LoweringCtx<'a> {
             let Some(ptr) = self.body.source_map.expr.get(tail).cloned() else {
                 return;
             };
-            self.diag(
+            self.emit(
                 ptr,
-                format!(
-                    "return type mismatch: function returns {}, tail expression produces {}",
-                    display_type_ref(ret),
-                    display_type_ref(&actual)
-                ),
+                TypeError::ReturnTypeMismatch {
+                    expected: ret.clone(),
+                    found: actual.clone(),
+                },
             );
         }
     }
@@ -319,14 +416,4 @@ fn is_integer_path(ty: &TypeRef) -> bool {
                     | "usize" | "isize"
             )
     )
-}
-
-fn display_type_ref(ty: &TypeRef) -> String {
-    match ty {
-        TypeRef::Path(name) => name.to_string(),
-        TypeRef::Ref(inner) => format!("&{}", display_type_ref(inner)),
-        TypeRef::Ptr(inner) => format!("{}*", display_type_ref(inner)),
-        TypeRef::Array { elem, len } => format!("[{}; {}]", display_type_ref(elem), len),
-        TypeRef::Error => "<error>".to_string(),
-    }
 }

@@ -77,6 +77,7 @@ Expr =
   | DerefExpr
   | CastExpr
   | MatchExpr
+  | ParenExpr
 
 Literal = 'int' | 'float' | 'string' | 'true' | 'false' | 'char'
 
@@ -109,6 +110,8 @@ ContinueExpr = 'continue'
 RefExpr = '&' expr:Expr
 
 DerefExpr = '*' expr:Expr
+
+ParenExpr = '(' expr:Expr ')'
 
 CastExpr = operand:Expr 'as' ty:TypeRef
 

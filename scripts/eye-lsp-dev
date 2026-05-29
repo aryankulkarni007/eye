@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#
+# Dev wrapper for the eye language server.
+#
+# The previous nvim config pointed straight at target/release/eye-lsp, a
+# prebuilt binary. Every time grammar.rs (or any compiler crate) changed, that
+# binary went stale: the `eye` compiler saw the new syntax, the LSP did not, and
+# nvim lit up with phantom parse errors until the release binary was rebuilt by
+# hand. This wrapper removes that whole failure mode by rebuilding from source
+# on every spawn, then exec'ing the fresh debug binary.
+#
+# Incremental no-op builds are ~0.1-0.3s, so editor startup cost is negligible.
+# stdout is reserved for the LSP JSON-RPC channel; cargo's chatter goes to a log
+# file so it can never corrupt the protocol. If the build fails, the wrapper
+# exits non-zero and the server simply doesn't start -- which is correct: a
+# broken tree should surface as "no LSP", not as a server lying with old syntax.
+set -euo pipefail
+
+REPO="$HOME/dev/eye"
+LOG="${TMPDIR:-/tmp}/eye-lsp-build.log"
+
+cd "$REPO"
+cargo build -q -p eye-lsp >>"$LOG" 2>&1
+exec "$REPO/target/debug/eye-lsp" "$@"

@@ -8,6 +8,8 @@ name = "lexer"
 
 [dependencies]
 token.workspace = true
+diagnostics.workspace = true
+thiserror.workspace = true
 logos.workspace = true
 memchr.workspace = true
 memmap2.workspace = true

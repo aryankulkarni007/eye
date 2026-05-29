@@ -1,5 +1,5 @@
-//! Statement codegen. Handles the value-position match hoist for `let`
-//! initializers and the statement-position match `switch`.
+//! Statement codegen. Handles the value-position `match`/`if` hoist for `let`
+//! initializers and the statement-position `if` chain and match `switch`.
 
 use super::CGen;
 use super::types::CDeclarator;
@@ -14,10 +14,10 @@ impl<'a> CGen<'a> {
                 init,
                 mutable,
             } => {
-                // Hoist value-position matches in the initializer so their
-                // `_matchN` temps are declared and filled before this line.
+                // Hoist value-position `match`/`if` in the initializer so their
+                // `_matchN`/`_ifN` temps are declared and filled before this line.
                 if let Some(expr_idx) = init {
-                    self.hoist_matches(*expr_idx, body);
+                    self.hoist_values(*expr_idx, body);
                 }
 
                 self.push_indent();
@@ -40,7 +40,7 @@ impl<'a> CGen<'a> {
                 match ty {
                     Some(t) => emit!(self, "{}", CDeclarator::new(t, &var_name)),
                     // FIXME: change once we have type inference
-                    None => emit!(self, "/* EXPLICT TYPE MISSING */ {}", var_name),
+                    None => emit!(self, "/* EXPLICIT TYPE MISSING */ {}", var_name),
                 }
 
                 if let Some(expr_idx) = init {
@@ -51,21 +51,28 @@ impl<'a> CGen<'a> {
                 self.output.push_str(";\n");
             }
             Stmt::Expr(expr_idx) => match &body.exprs[*expr_idx] {
-                Expr::If { cond, .. } => {
-                    // A match in the condition is value-position; hoist it.
-                    self.hoist_matches(*cond, body);
+                Expr::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } => {
+                    let (cond, then_branch, else_branch) = (*cond, *then_branch, *else_branch);
+                    // Statement position: the value is discarded, so this is
+                    // always a C `if` statement, never a temp. A value-position
+                    // `match`/`if` in the condition is hoisted first.
+                    self.hoist_values(cond, body);
                     self.push_indent();
-                    self.gen_expr(*expr_idx, body);
+                    self.gen_if_statement(cond, then_branch, else_branch, body, None);
                     self.output.push('\n');
                 }
                 Expr::Match { scrut, .. } => {
                     // Statement-position match: a direct `switch`, no temp and
                     // no trailing `;`. Hoist any match nested in the scrutinee.
-                    self.hoist_matches(*scrut, body);
+                    self.hoist_values(*scrut, body);
                     self.gen_match(*expr_idx, body, None);
                 }
                 _ => {
-                    self.hoist_matches(*expr_idx, body);
+                    self.hoist_values(*expr_idx, body);
                     self.push_indent();
                     self.gen_expr(*expr_idx, body);
                     self.output.push_str(";\n");

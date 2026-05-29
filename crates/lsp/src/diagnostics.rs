@@ -10,14 +10,17 @@ pub fn parser_diagnostics(source: &str, parse: &Parse) -> Vec<Diagnostic> {
     let text = SourceText::new(source.to_string());
     parse
         .diagnostics
+        .entries()
         .iter()
-        .map(|err| Diagnostic {
-            range: text_range_to_lsp(&text, err.range),
+        .map(|(span, err)| Diagnostic {
+            range: text_range_to_lsp(&text, span.text_range()),
             severity: Some(DiagnosticSeverity::ERROR),
             code: None,
             code_description: None,
             source: Some("eye-parser".into()),
-            message: err.msg.to_string(),
+            // `Display` (the ratified `Diagnostic` bound) gives the message for
+            // free, replacing the old `err.msg` field.
+            message: err.to_string(),
             related_information: None,
             tags: None,
             data: None,

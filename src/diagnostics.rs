@@ -1,47 +1,54 @@
-use hir::core::HirDiagnostic;
-use lexer::{Diagnostic as LexerDiagnostic, SourceText};
-use parser::ParseDiagnostic;
+//! Diagnostic rendering at the binary edge.
+//!
+//! The core crates emit typed [`Diagnostic`](diagnostics::Diagnostic) kinds and
+//! accumulate them in a [`Sink`](diagnostics::Sink). Here, and only here, those
+//! typed diagnostics are turned into human output with `ariadne`. No core crate
+//! depends on a renderer, so this can be swapped or rethemed without touching
+//! them.
 
-macro_rules! report_diagnostics {
-    ($source:expr, $diagnostics:expr, $prefix:expr, $label:literal, |$diag:ident| $range:expr, $msg:expr) => {{
-        let diagnostics = $diagnostics;
-        eprintln!("{}{} {} diagnostic(s):", $prefix, diagnostics.len(), $label);
-        for $diag in diagnostics {
-            let lc = $source.line_col($range.start());
-            eprintln!("  {}:{}: {}", lc.line, lc.col, $msg);
+use std::ops::Range;
+
+use ariadne::{Label, Report, ReportKind, Source};
+use diagnostics::{Diag, Severity, Span};
+use lexer::SourceText;
+use syntax::SyntaxNode;
+
+/// The byte range `ariadne` underlines for a span: [`Span::trimmed_range`] does
+/// the resolve-and-trim against the parse `root` (shared with the language
+/// server); this only adapts the result to `ariadne`'s `usize` range.
+fn resolve(span: &Span, root: Option<&SyntaxNode>) -> Range<usize> {
+    let r = span.trimmed_range(root);
+    usize::from(r.start())..usize::from(r.end())
+}
+
+/// Render every diagnostic in `diags` against `source`. Each phase produces a
+/// `Sink<K>`; the caller boxes it with `Sink::into_diags()` and passes the
+/// `Vec<Diag>` here. `root` is the parse tree when one exists, used to trim
+/// trivia off pointer spans; pass `None` for the pre-parse lexer phase.
+pub fn render(source: &SourceText, diags: Vec<Diag>, root: Option<&SyntaxNode>) {
+    let text = source.as_str();
+    for d in &diags {
+        let span = resolve(&d.span, root);
+        let kind = match d.kind.severity() {
+            Severity::Error => ReportKind::Error,
+            Severity::Warning => ReportKind::Warning,
+        };
+        let message = d.kind.to_string();
+        let mut builder = Report::build(kind, span.clone())
+            .with_code(d.kind.code())
+            .with_message(&message)
+            .with_label(Label::new(span).with_message(&message));
+        for (sp, label) in d.kind.secondary_labels() {
+            builder = builder.with_label(Label::new(resolve(&sp, root)).with_message(label));
         }
-    }};
-}
-
-pub fn report_lexer_diagnostics(source: &SourceText, diagnostics: &[LexerDiagnostic]) {
-    report_diagnostics!(
-        source,
-        diagnostics,
-        "",
-        "lexer",
-        |diag| diag.range,
-        diag.msg
-    );
-}
-
-pub fn report_parse_diagnostics(source: &SourceText, diagnostics: &[ParseDiagnostic]) {
-    report_diagnostics!(
-        source,
-        diagnostics,
-        "\n",
-        "parse",
-        |diag| diag.range,
-        diag.msg
-    );
-}
-
-pub fn report_hir_diagnostics(source: &SourceText, diagnostics: &[HirDiagnostic]) {
-    report_diagnostics!(
-        source,
-        diagnostics,
-        "\n",
-        "hir",
-        |diag| diag.ptr.text_range(),
-        diag.msg
-    );
+        for note in d.kind.notes() {
+            builder = builder.with_note(note);
+        }
+        if let Some(help) = d.kind.help() {
+            builder = builder.with_help(help);
+        }
+        // Rendering to stderr cannot fail for an in-memory source; ignore the
+        // io::Result rather than panic on a broken pipe.
+        let _ = builder.finish().eprint(Source::from(text));
+    }
 }

@@ -31,7 +31,8 @@ fn main() -> anyhow::Result<()> {
     let lexed = Lexer::new(&source).tokenize();
 
     if !lexed.diags.is_empty() {
-        diagnostics::report_lexer_diagnostics(&source, &lexed.diags);
+        // No parse tree yet; lexer spans are tight byte ranges.
+        diagnostics::render(&source, lexed.diags.into_diags(), None);
         std::process::exit(1);
     }
 
@@ -47,8 +48,16 @@ fn main() -> anyhow::Result<()> {
     }
 
     if !parse.diagnostics.is_empty() {
-        diagnostics::report_parse_diagnostics(&source, &parse.diagnostics);
+        diagnostics::render(&source, parse.diagnostics.into_diags(), Some(&parse.green));
         std::process::exit(1);
+    }
+
+    // Parse-stage oracle: lexer and parser were both clean above, which is all
+    // tree-sitter can verify. Stop before HIR so semantic errors (which
+    // tree-sitter never sees) can't masquerade as grammar drift in the parity
+    // gate.
+    if cli.check {
+        return Ok(());
     }
 
     let file_ast = ast::SourceFile::cast(parse.green.clone())
@@ -67,7 +76,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if !hir.diagnostics.is_empty() {
-        diagnostics::report_hir_diagnostics(&source, &hir.diagnostics);
+        diagnostics::render(&source, hir.diagnostics.into_diags(), Some(&parse.green));
         std::process::exit(1);
     }
 

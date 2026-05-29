@@ -470,6 +470,7 @@ pub enum Expr {
     DerefExpr(DerefExpr),
     CastExpr(CastExpr),
     MatchExpr(MatchExpr),
+    ParenExpr(ParenExpr),
 }
 impl AstNode for Expr {
     fn can_cast(kind: SyntaxKind) -> bool {
@@ -493,6 +494,7 @@ impl AstNode for Expr {
                 | SyntaxKind::DerefExpr
                 | SyntaxKind::CastExpr
                 | SyntaxKind::MatchExpr
+                | SyntaxKind::ParenExpr
         )
     }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -515,6 +517,7 @@ impl AstNode for Expr {
             SyntaxKind::DerefExpr => Expr::DerefExpr(DerefExpr { syntax }),
             SyntaxKind::CastExpr => Expr::CastExpr(CastExpr { syntax }),
             SyntaxKind::MatchExpr => Expr::MatchExpr(MatchExpr { syntax }),
+            SyntaxKind::ParenExpr => Expr::ParenExpr(ParenExpr { syntax }),
             _ => return None,
         };
         Some(res)
@@ -539,6 +542,7 @@ impl AstNode for Expr {
             Expr::DerefExpr(it) => it.syntax(),
             Expr::CastExpr(it) => it.syntax(),
             Expr::MatchExpr(it) => it.syntax(),
+            Expr::ParenExpr(it) => it.syntax(),
         }
     }
 }
@@ -1146,6 +1150,30 @@ impl MatchExpr {
         support::child(&self.syntax)
     }
     pub fn arm_list(&self) -> Option<MatchArmList> {
+        support::child(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParenExpr {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for ParenExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ParenExpr
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::ParenExpr {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl ParenExpr {
+    pub fn expr(&self) -> Option<Expr> {
         support::child(&self.syntax)
     }
 }

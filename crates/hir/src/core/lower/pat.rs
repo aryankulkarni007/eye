@@ -4,7 +4,7 @@ use ast::AstNode;
 use syntax::SyntaxNodePtr;
 
 use super::LoweringCtx;
-use crate::core::{EnumId, Pat, PatId, Text};
+use crate::core::{EnumId, Pat, PatId, ResolveError, Text};
 
 impl<'a> LoweringCtx<'a> {
     /// Lower a match arm pattern. Bare-ident and qualified-path patterns are
@@ -21,16 +21,24 @@ impl<'a> LoweringCtx<'a> {
                 let qual: Text = Self::text(pp.qualifier().and_then(|n| n.name()));
                 let vname: Text = Self::text(pp.name().and_then(|n| n.name()));
                 let Some(&qual_enum) = self.hir.items.enums.get(&qual) else {
-                    self.diag(ptr, format!("unknown enum `{qual}` in match pattern"));
+                    self.emit(
+                        ptr,
+                        ResolveError::UnknownEnumInPattern {
+                            enum_name: qual.clone(),
+                        },
+                    );
                     return self.alloc_pat(Pat::Missing, ptr);
                 };
                 if let Some(scrut_eid) = scrut_enum
                     && scrut_eid != qual_enum
                 {
                     let scrut_name = self.hir.enums[scrut_eid].name.clone();
-                    self.diag(
+                    self.emit(
                         ptr,
-                        format!("pattern is from enum `{qual}`, but scrutinee is `{scrut_name}`"),
+                        ResolveError::PatternEnumMismatch {
+                            pattern_enum: qual.clone(),
+                            scrutinee_enum: scrut_name,
+                        },
                     );
                     return self.alloc_pat(Pat::Missing, ptr);
                 }
@@ -44,7 +52,13 @@ impl<'a> LoweringCtx<'a> {
                         ptr,
                     ),
                     None => {
-                        self.diag(ptr, format!("enum `{qual}` has no variant `{vname}`"));
+                        self.emit(
+                            ptr,
+                            ResolveError::NoSuchVariant {
+                                enum_name: qual.clone(),
+                                variant: vname.clone(),
+                            },
+                        );
                         self.alloc_pat(Pat::Missing, ptr)
                     }
                 }
@@ -59,7 +73,13 @@ impl<'a> LoweringCtx<'a> {
                         return self.alloc_pat(Pat::Variant { enum_id: eid, idx }, ptr);
                     }
                     let enum_name = enum_def.name.clone();
-                    self.diag(ptr, format!("enum `{enum_name}` has no variant `{name}`"));
+                    self.emit(
+                        ptr,
+                        ResolveError::NoSuchVariant {
+                            enum_name,
+                            variant: name.clone(),
+                        },
+                    );
                     return self.alloc_pat(Pat::Missing, ptr);
                 }
                 // Scrutinee type unknown: fall back to the global variant
@@ -68,7 +88,12 @@ impl<'a> LoweringCtx<'a> {
                 if let Some(&(enum_id, idx)) = self.hir.items.variants.get(&name) {
                     return self.alloc_pat(Pat::Variant { enum_id, idx }, ptr);
                 }
-                self.diag(ptr, format!("unknown variant `{name}` in match pattern"));
+                self.emit(
+                    ptr,
+                    ResolveError::UnknownVariantInPattern {
+                        variant: name.clone(),
+                    },
+                );
                 self.alloc_pat(Pat::Missing, ptr)
             }
         }

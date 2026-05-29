@@ -213,6 +213,23 @@ main() {
     );
 }
 
+/// A literal `%` in the format string must be escaped to `%%` so printf does
+/// not read it as a conversion spec. The `{}`-driven specs stay single-`%`.
+#[test]
+fn print_escapes_literal_percent() {
+    let src = "\
+main() {
+    let int32 done = 50;
+    print(\"{}% done\", done);
+}
+";
+    let c = emit(src);
+    assert!(
+        c.contains("\"%d%% done\\n\""),
+        "expected literal `%` escaped to `%%` with single-`%` spec, got:\n{c}"
+    );
+}
+
 /// v0.4 sized/unsigned integer types lower to their `<stdint.h>` C types and
 /// pick the right printf specifier: `%d` for signed widths up to 32, `%lld`
 /// for `int64`, `%u` for unsigned widths up to 32, `%llu` for `uint64`.
@@ -294,12 +311,13 @@ main() {
     );
 }
 
-/// `else if` lowers flat: a statement-position chain emits C `} else if (`
-/// rather than nesting `else { if ... }` braces (the parser desugars to the
-/// nested form; codegen flattens it back). A value-position chain folds into
-/// a chained ternary.
+/// `else if` lowers flat: a chain emits C `} else if (` rather than nesting
+/// `else { if ... }` braces (the parser desugars to the nested form; codegen
+/// flattens it back). An `if` is never a ternary - a value-position chain is
+/// hoisted into an `_ifN` temp, each branch assigning the temp, exactly like a
+/// value-position `match`.
 #[test]
-fn else_if_chain_lowers_flat_and_ternary() {
+fn else_if_chain_lowers_flat_statement_and_hoisted_value() {
     let src = "\
 pick(int32 n) {
     if n < 0 {
@@ -318,29 +336,85 @@ main() {
 ";
     let c = emit(src);
 
-    // statement-position chain: flat `else if`, no nested `else {` wrapper.
+    // Both chains flatten: the statement chain in `pick` and the hoisted value
+    // chain in `main` each emit one flat `else if`, never a nested `else { if }`.
     assert!(
         c.contains("} else if ("),
         "expected flat `else if`, got:\n{c}"
     );
-    // the statement chain has one `else if` arm; it must be flat, with no
-    // `else { if ... }` nesting from the desugar leaking through. (The
-    // value-position chain is a ternary, so it contributes no `else if`.)
     assert_eq!(
         c.matches("else if (").count(),
-        1,
-        "expected one flattened `else if` arm, got:\n{c}"
+        2,
+        "expected two flattened `else if` arms, got:\n{c}"
     );
-    // value-position chain folds into a chained ternary.
+    // No ternary is ever emitted for `if`.
+    assert!(!c.contains('?'), "expected no ternary, got:\n{c}");
+    // The value-position chain is hoisted into an `_if0` temp declared ahead of
+    // the `let`, each branch assigns it, and the `let` reads it back.
     assert!(
-        c.contains("? 10 :") && c.contains("? 20 : 30"),
-        "expected chained ternary, got:\n{c}"
+        c.contains("int32_t _if0;"),
+        "expected hoisted `_if0` temp, got:\n{c}"
+    );
+    assert!(
+        c.contains("_if0 = 10;") && c.contains("_if0 = 20;") && c.contains("_if0 = 30;"),
+        "expected each branch to assign the temp, got:\n{c}"
+    );
+    assert!(
+        c.contains("const int32_t g = _if0;"),
+        "expected the `let` to read the hoisted temp, got:\n{c}"
     );
 }
 
-/// Fixed-size arrays: `[T; N]` declarations keep the `[N]` next to the name
-/// (`T name[N]`, not a prefix type), `[...]` lowers to a `{...}` initializer,
-/// indexing lowers to `a[i]` (rvalue and lvalue), and `mut` drops the `const`.
+#[test]
+fn _scratch_dump() {
+    let src = "\
+main() {
+    let int32 x = if 1 == 1 { if 2 == 2 { 10 } else { 20 } } else { 30 };
+    print(\"{}\", x);
+}
+";
+    std::fs::write("/tmp/eye_nested.c", emit(src)).unwrap();
+}
+
+/// Regression: a statement-position `if`/`else if` with no final `else` whose
+/// branch bodies are tail expressions (assignments written without a trailing
+/// `;`) once miscompiled into a broken `(cond ? a : if (...) { ... })` - a
+/// ternary whose else operand was an `if` statement. Statement position must
+/// always emit control flow: each tail assignment becomes a plain statement and
+/// the chain stays flat.
+#[test]
+fn elseless_statement_if_chain_with_tail_assignments_is_not_a_ternary() {
+    let src = "\
+enum Coin = Head | Tail;
+
+main() {
+    mut int32 d = 0;
+    mut Coin coin = Head;
+    if d == 0 {
+        coin = Coin.Tail
+    } else if d == 1 {
+        coin = Coin.Head
+    }
+}
+";
+    let c = emit(src);
+
+    // No ternary, and crucially no `if` smuggled into a `:` else operand.
+    assert!(!c.contains('?'), "expected no ternary, got:\n{c}");
+    // The chain is a flat statement: each branch assigns as a statement.
+    assert!(
+        c.contains("coin = Tail;") && c.contains("coin = Head;"),
+        "expected branch assignments as statements, got:\n{c}"
+    );
+    assert!(
+        c.contains("} else if ("),
+        "expected a flat `else if`, got:\n{c}"
+    );
+}
+
+/// Fixed-size arrays are value types via struct-wrap: `[T; N]` renders as its
+/// wrapper typedef, `[...]` is a compound literal of that wrapper, indexing
+/// reaches through `.data[i]` (rvalue and lvalue), and `mut` drops the `const`.
 #[test]
 fn fixed_array_decl_literal_and_index() {
     let src = "\
@@ -353,24 +427,30 @@ main() {
 ";
     let c = emit(src);
 
-    // declarator: size after the name, element type before it.
+    // An array is a value: it renders as its struct-wrap typedef, and a literal
+    // is a compound literal of that wrapper.
     assert!(
-        c.contains("const int32_t xs[3] = {10, 20, 30}"),
-        "expected array declarator + initializer, got:\n{c}"
+        c.contains("typedef struct { int32_t data[3]; } __eye_arr_3_5int32;"),
+        "expected wrapper typedef, got:\n{c}"
+    );
+    assert!(
+        c.contains("const __eye_arr_3_5int32 xs = (__eye_arr_3_5int32){{ 10, 20, 30 }}"),
+        "expected wrapped value initializer, got:\n{c}"
     );
     // `mut` array is non-const and mutable.
     assert!(
-        c.contains("int32_t ys[2] = {1, 2}") && !c.contains("const int32_t ys"),
+        c.contains("__eye_arr_2_5int32 ys = (__eye_arr_2_5int32){{ 1, 2 }}")
+            && !c.contains("const __eye_arr_2_5int32 ys"),
         "expected non-const mut array, got:\n{c}"
     );
-    // index as lvalue and rvalue.
+    // index reaches through the wrapper's `data` field, lvalue and rvalue.
     assert!(
-        c.contains("ys[0] = xs[2]"),
-        "expected index assignment, got:\n{c}"
+        c.contains("ys.data[0] = xs.data[2]"),
+        "expected index assignment through .data, got:\n{c}"
     );
     // element type drives the print specifier through the index.
     assert!(
-        c.contains("printf(\"%d\\n\", xs[1])"),
+        c.contains("printf(\"%d\\n\", xs.data[1])"),
         "expected %d for int32 element, got:\n{c}"
     );
 }
@@ -703,7 +783,10 @@ main() {
     );
     let decl = c.find("int32_t _match0;").unwrap();
     let ret = c.find("return _match0;").unwrap();
-    assert!(decl < ret, "temp must be declared before the return, got:\n{c}");
+    assert!(
+        decl < ret,
+        "temp must be declared before the return, got:\n{c}"
+    );
 }
 
 /// The declared return type drives the return-tail match's hoist temp: an
@@ -734,5 +817,173 @@ main() {
     assert!(
         !c.contains("int32_t _match0;"),
         "temp must not fall back to the first arm's int32, got:\n{c}"
+    );
+}
+
+/// O1 modulo lowers to native C `%`.
+#[test]
+fn modulo_operator_emits_native_c_rem() {
+    let c = emit("main() {\n    let int32 r = 17 % 5;\n    print(\"{}\", r);\n}\n");
+    assert!(c.contains("17 % 5"), "expected `17 % 5`, got:\n{c}");
+}
+
+/// O3 bitwise binary operators each pass straight through to native C.
+#[test]
+fn bitwise_operators_emit_native_c() {
+    let c = emit(
+        "main() {\n    let int32 a = 12;\n    let int32 b = 10;\n    \
+         print(\"{}\", a & b);\n    print(\"{}\", a | b);\n    print(\"{}\", a ^ b);\n    \
+         print(\"{}\", a << 2);\n    print(\"{}\", a >> 1);\n}\n",
+    );
+    for frag in ["a & b", "a | b", "a ^ b", "a << 2", "a >> 1"] {
+        assert!(c.contains(frag), "expected `{frag}` in output, got:\n{c}");
+    }
+}
+
+/// O2 prefix `~` (complement) and `!` (logical-not) emit native C prefixes.
+#[test]
+fn prefix_complement_and_not_emit_native_c() {
+    let c = emit(
+        "main() {\n    let int32 a = 12;\n    let bool f = false;\n    \
+         print(\"{}\", ~a);\n    print(\"{}\", !f);\n}\n",
+    );
+    assert!(c.contains("~a"), "expected `~a`, got:\n{c}");
+    assert!(c.contains("!f"), "expected `!f`, got:\n{c}");
+}
+
+/// `!` types `bool`: a fn declared `-> bool` whose tail is `!n` must pass the
+/// return-type check, so `emit` (which asserts no HIR diagnostics) succeeding
+/// is the proof. `==` (also bool) is checked alongside as a control.
+#[test]
+fn logical_not_and_neq_type_bool() {
+    let c =
+        emit("not(int32 n) -> bool { !n }\nne(int32 a, int32 b) -> bool { a != b }\nmain() {}\n");
+    assert!(c.contains("!n"), "expected `!n`, got:\n{c}");
+    assert!(c.contains("a != b"), "expected `a != b`, got:\n{c}");
+}
+
+/// O4 compound assignment emits the native C compound operator, not a desugar.
+#[test]
+fn compound_assignment_emits_native_c() {
+    let c = emit(
+        "main() {\n    mut int32 c = 100;\n    c += 5;\n    c -= 20;\n    print(\"{}\", c);\n}\n",
+    );
+    assert!(c.contains("c += 5"), "expected `c += 5`, got:\n{c}");
+    assert!(c.contains("c -= 20"), "expected `c -= 20`, got:\n{c}");
+}
+
+/// A parenthesized group overrides precedence: codegen brackets each binary by
+/// its parse structure, so `a * (b + c)` nests the add inside the multiply,
+/// whereas the unparenthesized `a * b + c` does not.
+#[test]
+fn paren_group_overrides_precedence_in_emission() {
+    let grouped = emit(
+        "main() {\n    let int32 a = 2;\n    let int32 b = 3;\n    let int32 c = 4;\n    \
+         print(\"{}\", a * (b + c));\n}\n",
+    );
+    assert!(
+        grouped.contains("(a * (b + c))"),
+        "expected the add nested inside the multiply, got:\n{grouped}"
+    );
+}
+
+// --- v0.7 arrays first-class + latent gaps ---
+
+/// A1: a function returns a fixed array by value - the wrapper struct is the
+/// return type and the body `return`s it as a value (no decayed pointer, no
+/// dangling-stack UB).
+#[test]
+fn array_returns_by_value() {
+    let c = emit(
+        "mkarr() -> [int32; 3] {\n    let [int32; 3] a = [7, 8, 9];\n    a\n}\n\
+         main() {\n    let [int32; 3] r = mkarr();\n    print(\"{}\", r[0]);\n}\n",
+    );
+    assert!(
+        c.contains("__eye_arr_3_5int32 mkarr("),
+        "expected wrapper return type, got:\n{c}"
+    );
+    assert!(
+        c.contains("return a;"),
+        "expected a by-value array return, got:\n{c}"
+    );
+}
+
+/// A3: the `len(xs)` intrinsic emits the compile-time length constant, with no
+/// `len(` call and no `.data` surviving to C.
+#[test]
+fn array_len_emits_constant() {
+    let c = emit(
+        "main() {\n    let [int32; 5] xs = [1, 2, 3, 4, 5];\n    print(\"{}\", len(xs));\n}\n",
+    );
+    assert!(
+        c.contains("printf(\"%zu\\n\", (size_t)5)"),
+        "expected the length to emit as a size_t-typed constant 5, got:\n{c}"
+    );
+    assert!(
+        !c.contains("len("),
+        "`len(xs)` must fold away, not survive as a call, got:\n{c}"
+    );
+}
+
+/// A2: indexing a reference to an array reaches through `->data[i]` (the
+/// reference is a pointer to the wrapper struct), while a value array uses
+/// `.data[i]`.
+#[test]
+fn ref_to_array_indexes_through_arrow() {
+    let c = emit(
+        "bump(&[int32; 3] r) {\n    r[0] = 42;\n}\n\
+         main() {\n    mut [int32; 3] a = [1, 2, 3];\n    bump(&a);\n    print(\"{}\", a[0]);\n}\n",
+    );
+    assert!(
+        c.contains("__eye_arr_3_5int32* r"),
+        "expected a pointer-to-wrapper parameter, got:\n{c}"
+    );
+    assert!(
+        c.contains("r->data[0] = 42"),
+        "expected index through the reference, got:\n{c}"
+    );
+    assert!(
+        c.contains("a.data[0]"),
+        "expected value-array index through .data, got:\n{c}"
+    );
+}
+
+/// L3: a multibyte UTF-8 character in a format string is preserved byte-for-byte
+/// (not re-encoded per byte as Latin-1).
+#[test]
+fn print_preserves_utf8() {
+    let c = emit("main() {\n    print(\"café {}\", 1);\n}\n");
+    assert!(
+        c.contains("\"café %d\\n\""),
+        "expected the UTF-8 to survive intact, got:\n{c}"
+    );
+}
+
+/// An array literal in argument position is coerced to the parameter's array
+/// type. Without it, the literal's int32-default elements would produce a
+/// wrapper type that mismatches a `[usize; N]` parameter (a C type error). The
+/// `emit` helper also asserts no HIR diagnostics, so this guards both ends.
+#[test]
+fn array_literal_arg_coerced_to_param_type() {
+    let c = emit(
+        "f([usize; 2] xs) -> usize {\n    xs[0]\n}\n\
+         main() {\n    print(\"{}\", f([10, 20]));\n}\n",
+    );
+    assert!(
+        c.contains("f((__eye_arr_2_5usize){{ 10, 20 }})"),
+        "expected the literal arg coerced to the usize wrapper, got:\n{c}"
+    );
+}
+
+/// An array literal in return position is coerced to the declared array return
+/// type (element type), so no spurious return-type mismatch and a matching
+/// wrapper.
+#[test]
+fn array_literal_return_coerced_to_ret_type() {
+    let c =
+        emit("g() -> [usize; 3] {\n    [1, 2, 3]\n}\nmain() {\n    let [usize; 3] r = g();\n}\n");
+    assert!(
+        c.contains("return (__eye_arr_3_5usize){{ 1, 2, 3 }};"),
+        "expected the literal return coerced to the usize wrapper, got:\n{c}"
     );
 }

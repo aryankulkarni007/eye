@@ -13,7 +13,7 @@ match, not a payload sum-type system.
 
 ## Current shape
 
-The implemented v0.3 surface is:
+The implemented surface (v0.3 plus the v0.5 result-type hardening) is:
 
 ```eye
 enum Shape = Circle | Rectangle | Triangle;
@@ -43,11 +43,25 @@ Current semantic checks:
 - duplicate arm diagnostic
 - unreachable arm after wildcard diagnostic
 - enum exhaustiveness diagnostic when no wildcard is present
+- value-position arm type mismatch: every arm whose type is known must produce
+  the match's result type, else a diagnostic (the result-type rule below)
+- function tail vs declared return type: a mismatch is a diagnostic; a match in
+  return-tail position is anchored on the declared return type, then arm-checked
 
 Current codegen forms:
 
 - statement-position match lowers directly to `switch`
-- value-position match hoists into a temporary and assigns it inside `switch`
+- value-position match hoists into a temporary and assigns it inside `switch`.
+  This now fires in every consuming context - `let` init, function-call
+  argument, operator operand, and implicit-return / block tail - not only a
+  `let`. A tail match whose value is discarded (void / `main` body) lowers to a
+  bare statement-position `switch`.
+- `if` shares this exact mechanism (`codegen::core::matches::hoist_values`): a
+  statement-position `if` lowers directly to a C `if`/`else if` chain, and a
+  value-position `if` hoists into an `_ifN` temp each branch assigns. `if` is
+  never lowered to a `?:` ternary - the ternary cannot carry an else-less chain,
+  a branch with statements, or a nested hoisted value, so the uniform temp path
+  replaces it.
 
 ## Kernel contract
 
@@ -126,6 +140,14 @@ trivial case:
    exists, or emit a narrow diagnostic only when codegen needs a concrete type.
 5. Record the match expression type as the resolved result type.
 
+This rule is implemented (HIR lowering, enum slice). An explicitly typed `let`
+or a declared function return type is re-recorded as the match's result type so
+the codegen hoist temp uses it; cross-arm consistency runs once after the body
+is lowered. Compatibility is lenient where it must be: an `Error` arm does not
+cascade, and integer-family arms are mutually compatible because integer
+literals are all typed `int32` today, so a wider binding (`int64`) still accepts
+literal arms.
+
 Example:
 
 ```eye
@@ -199,16 +221,23 @@ can lower them into kernel discriminant match plus ordinary expressions.
 The next useful kernel work is not richer pattern syntax. It is tightening the
 existing primitive:
 
-1. Add match arm result type resolution.
-2. Use explicit typed `let` context when available.
-3. Diagnose mismatched known arm types.
+1. Add match arm result type resolution. **Done.**
+2. Use explicit typed `let` context when available. **Done** - and extended to
+   the declared function return type for a return-tail match.
+3. Diagnose mismatched known arm types. **Done** (in every value position, not
+   only a `let`).
 4. Keep first-known-arm fallback for untyped contexts until inference exists.
-5. Keep enum-only discriminants for now.
+   **Done.**
+5. Keep enum-only discriminants for now. **Held** - still in force; the
+   discriminant domain is enum-only by decision, not yet by generalization.
 6. Later generalize HIR from enum-only matching to a `DiscreteDomain` model.
+   *Not started.*
 7. Add bool matching before integer/range matching; it is the smallest useful
-   proof that match is no longer enum-specific.
+   proof that match is no longer enum-specific. *Not started.*
 
-Only after that should integer labels, char labels, and range arms be considered.
+Steps 1-4 landed in v0.5 (HIR lowering + the codegen return-tail hoist). Step 5
+remains the standing decision. Only after steps 6-7 should integer labels, char
+labels, and range arms be considered.
 
 ## Design line
 

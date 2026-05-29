@@ -262,27 +262,6 @@ fn ffi_eye_links_libc_and_lowers_union() {
     );
 }
 
-/// Fixed-size arrays end-to-end: `[T; N]` declarations, `[...]` literals, and
-/// indexing (rvalue + lvalue), including a `usize` element type. Source lives
-/// in `eyesrc/arrays.eye`.
-#[test]
-fn arrays_eye_lowers_fixed_arrays_and_indexing() {
-    let source = include_str!("../eyesrc/arrays.eye");
-    let (out, _) = run_program(source);
-    assert!(
-        out.status.success(),
-        "program exited {}; stderr: {}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "10\n40\n1\n99\n3\n30\n200\n",
-        "stderr was: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
 /// `--dump-ast` is the user-facing typed-AST smoke test. Keep it aligned with
 /// the current syntax surface, including params, returns, externs, unions,
 /// arrays, casts, indexing, assignment, control flow, refs/derefs, and match.
@@ -399,6 +378,38 @@ main() {
     }
 }
 
+/// v0.6 end-to-end: operator completeness - modulo, bitwise binary, prefix
+/// complement/not, compound assignment. Source lives in `eyesrc/v06.eye` so
+/// the file stays authoritative. Locks the externally visible v0.6 behaviour.
+#[test]
+fn v06_eye_runs_operators_and_prints_expected_output() {
+    let source = include_str!("../eyesrc/v06.eye");
+    let (out, _) = run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        10,
+        "unexpected line count; full stdout:\n{stdout}"
+    );
+    assert_eq!(lines[0], "mod        2");
+    assert_eq!(lines[1], "bitand     8");
+    assert_eq!(lines[2], "bitor      14");
+    assert_eq!(lines[3], "bitxor     6");
+    assert_eq!(lines[4], "shl        48");
+    assert_eq!(lines[5], "shr        6");
+    assert_eq!(lines[6], "bitnot     -13");
+    assert_eq!(lines[7], "lognot     1");
+    assert_eq!(lines[8], "compound   85");
+    assert_eq!(lines[9], "grouped    14");
+}
+
 /// Driver should refuse non-`.eye` input rather than overwriting an
 /// arbitrary file with generated C.
 #[test]
@@ -414,4 +425,35 @@ fn driver_rejects_non_eye_extension() {
 
     let status = Command::new(DRIVER).arg(&bad).status().unwrap();
     assert!(!status.success(), "driver should have rejected non-.eye");
+}
+
+/// v0.7 end-to-end: fixed arrays as a first-class value type - lvalue index,
+/// `len(x)`, value-copy independence, return-by-value, `&[T; N]` reference, and
+/// multi-dimensional nesting. Source is `eyesrc/arrays.eye`. Locks that the
+/// struct-wrap representation behaves as real value semantics at runtime.
+#[test]
+fn arrays_eye_runs_value_semantics_and_prints_expected_output() {
+    let source = include_str!("../eyesrc/arrays.eye");
+    let (out, _) = run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        7,
+        "unexpected line count; full stdout:\n{stdout}"
+    );
+    assert_eq!(lines[0], "idx        99");
+    assert_eq!(lines[1], "len        4");
+    // value copy: `a` is untouched by mutating its copy `b`.
+    assert_eq!(lines[2], "copy       1 77");
+    assert_eq!(lines[3], "return     30");
+    assert_eq!(lines[4], "sumref     6");
+    assert_eq!(lines[5], "grid       3");
+    assert_eq!(lines[6], "usize      200");
 }

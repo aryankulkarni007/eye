@@ -1,12 +1,13 @@
 //! AST type and literal lowering helpers.
 
 use ast::AstNode;
+use diagnostics::Sink;
 use smol_str::SmolStr;
 use syntax::SyntaxNodePtr;
 
-use crate::core::{HirDiagnostic, Literal, TypeRef};
+use crate::core::{ConstError, HirError, Literal, TypeRef};
 
-pub(super) fn lower_type_ref(ty: &ast::TypeRef, diagnostics: &mut Vec<HirDiagnostic>) -> TypeRef {
+pub(super) fn lower_type_ref(ty: &ast::TypeRef, diagnostics: &mut Sink<HirError>) -> TypeRef {
     match ty {
         ast::TypeRef::IdentType(it) => match it.name() {
             Some(t) => TypeRef::Path(SmolStr::from(t.text())),
@@ -44,35 +45,42 @@ pub(super) fn lower_type_ref(ty: &ast::TypeRef, diagnostics: &mut Vec<HirDiagnos
 
 /// Extract an array length from the `[T; N]` length slot. Restricted to an
 /// integer literal for now.
-fn array_len(len: Option<ast::Expr>, diagnostics: &mut Vec<HirDiagnostic>) -> Option<u64> {
+fn array_len(len: Option<ast::Expr>, diagnostics: &mut Sink<HirError>) -> Option<u64> {
     let lit = match len {
         Some(ast::Expr::Literal(lit)) => lit,
         Some(expr) => {
             // FIXME: change when we allow compile time constant length arrays.
-            diagnostics.push(HirDiagnostic {
-                ptr: SyntaxNodePtr::new(expr.syntax()),
-                msg: "array length must be an integer literal".to_string(),
-            });
+            diagnostics.emit(
+                SyntaxNodePtr::new(expr.syntax()),
+                HirError::Const(ConstError::ArrayLenNotLiteral),
+            );
             return None;
         }
         None => return None,
     };
     if !matches!(lit.literal_kind(), Some(ast::LiteralKind::Int)) {
         // FIXME: change when we allow compile time constant length arrays.
-        diagnostics.push(HirDiagnostic {
-            ptr: SyntaxNodePtr::new(lit.syntax()),
-            msg: "array length must be an integer literal".to_string(),
-        });
+        diagnostics.emit(
+            SyntaxNodePtr::new(lit.syntax()),
+            HirError::Const(ConstError::ArrayLenNotLiteral),
+        );
         return None;
     }
     let token = lit.token()?;
     match token.text().parse::<u64>() {
+        Ok(0) => {
+            diagnostics.emit(
+                SyntaxNodePtr::new(lit.syntax()),
+                HirError::Const(ConstError::ArrayLenZero),
+            );
+            None
+        }
         Ok(len) => Some(len),
         Err(_) => {
-            diagnostics.push(HirDiagnostic {
-                ptr: SyntaxNodePtr::new(lit.syntax()),
-                msg: "array length integer literal is too large".to_string(),
-            });
+            diagnostics.emit(
+                SyntaxNodePtr::new(lit.syntax()),
+                HirError::Const(ConstError::ArrayLenTooLarge),
+            );
             None
         }
     }

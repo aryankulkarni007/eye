@@ -17,3 +17,15 @@ pub enum TypeRef {
     Array { elem: Box<TypeRef>, len: u64 },
     Error,
 }
+
+impl std::fmt::Display for TypeRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeRef::Path(name) => write!(f, "{name}"),
+            TypeRef::Ref(inner) => write!(f, "&{inner}"),
+            TypeRef::Ptr(inner) => write!(f, "{inner}*"),
+            TypeRef::Array { elem, len } => write!(f, "[{elem}; {len}]"),
+            TypeRef::Error => write!(f, "<error>"),
+        }
+    }
+}

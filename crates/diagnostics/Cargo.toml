@@ -1,0 +1,11 @@
+[package]
+name = "eye-diagnostics"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "diagnostics"
+
+[dependencies]
+syntax.workspace = true
+text-size.workspace = true

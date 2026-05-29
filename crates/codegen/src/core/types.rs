@@ -42,12 +42,12 @@ impl fmt::Display for CType<'_> {
                 other => f.write_str(other),
             },
             TypeRef::Ref(inner) | TypeRef::Ptr(inner) => write!(f, "{}*", CType::new(inner)),
-            // WARNING: step-1 array support intentionally treats arrays in
-            // type-only positions (cast, return, param) as decayed `elem*`.
-            // This is only correct for the current one-dimensional local-array
-            // scope. Multi-dimensional arrays need pointer-to-array
-            // declarators, not `T**`.
-            TypeRef::Array { elem, .. } => write!(f, "{}*", CType::new(elem)),
+            // An array is a value: it renders as its struct-wrap typedef name
+            // (see `arrays`). The wrapper makes copy, by-value passing, return,
+            // and multi-dimensional nesting all work as plain C struct values.
+            TypeRef::Array { elem, len } => {
+                f.write_str(&super::arrays::array_wrapper_name(elem, *len))
+            }
             TypeRef::Error => f.write_str("void* /* ERROR TY */"),
         }
     }
@@ -62,32 +62,14 @@ impl<'a> CDeclarator<'a> {
     pub(super) fn new(ty: &'a TypeRef, name: &'a str) -> Self {
         Self { ty, name }
     }
-
-    fn fmt_with_name(&self, f: &mut fmt::Formatter<'_>, ty: &TypeRef, name: &str) -> fmt::Result {
-        match ty {
-            TypeRef::Array { elem, len } => {
-                struct NestedName<'a> {
-                    name: &'a str,
-                    len: u64,
-                }
-
-                impl fmt::Display for NestedName<'_> {
-                    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                        write!(f, "{}[{}]", self.name, self.len)
-                    }
-                }
-
-                let nested = NestedName { name, len: *len };
-                self.fmt_with_name(f, elem, &nested.to_string())
-            }
-            _ => write!(f, "{} {}", CType::new(ty), name),
-        }
-    }
 }
 
 impl fmt::Display for CDeclarator<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt_with_name(f, self.ty, self.name)
+        // Every type, arrays included, is now a plain C value: `<type> <name>`.
+        // Arrays carry their `[N]` inside the wrapper struct, not the
+        // declarator, so there is no special nesting here anymore.
+        write!(f, "{} {}", CType::new(self.ty), self.name)
     }
 }
 

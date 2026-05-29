@@ -1,12 +1,13 @@
 //! [`LoweringCtx`] lifecycle, allocation, name resolution, and field lookup.
 
+use diagnostics::Sink;
 use smol_str::SmolStr;
 use syntax::{SyntaxNodePtr, SyntaxToken};
 
 use super::LoweringCtx;
 use crate::core::{
-    Block, BlockId, Body, Expr, ExprId, HIR, HirDiagnostic, Pat, PatId, Resolution, Stmt, StmtId,
-    Text, TypeRef,
+    Block, BlockId, Body, Expr, ExprId, HIR, HirError, Pat, PatId, Resolution, Stmt, StmtId, Text,
+    TypeRef,
 };
 
 impl<'a> LoweringCtx<'a> {
@@ -15,12 +16,24 @@ impl<'a> LoweringCtx<'a> {
             hir,
             body: Body::default(),
             scopes: super::Scopes::new(),
-            diagnostics: Vec::new(),
+            diagnostics: Sink::new(),
         }
     }
 
-    pub(super) fn diag(&mut self, ptr: SyntaxNodePtr, msg: String) {
-        self.diagnostics.push(HirDiagnostic { ptr, msg });
+    /// Emit a diagnostic anchored at `ptr`. The pointer is stored as-is; the
+    /// renderer resolves it against the parse tree and trims trivia off the
+    /// span centrally, so every diagnostic - from any emit path - is tight
+    /// without each site repeating the trim.
+    pub(super) fn emit(&mut self, ptr: SyntaxNodePtr, err: impl Into<HirError>) {
+        self.diagnostics.emit(ptr, err.into());
+    }
+
+    /// The source pointer of an already-lowered expression, for an emit site
+    /// that wants to anchor on a child sub-expression (e.g. a `let`
+    /// initializer) rather than the enclosing node. Falls back to `default`
+    /// when the expression has no recorded pointer.
+    pub(super) fn expr_ptr(&self, id: ExprId, default: SyntaxNodePtr) -> SyntaxNodePtr {
+        self.body.source_map.expr.get(id).cloned().unwrap_or(default)
     }
 
     pub(super) fn text(token: Option<SyntaxToken>) -> Text {
@@ -77,7 +90,7 @@ impl<'a> LoweringCtx<'a> {
         id
     }
 
-    pub(super) fn finish(self) -> (Body, Vec<HirDiagnostic>) {
+    pub(super) fn finish(self) -> (Body, Sink<HirError>) {
         (self.body, self.diagnostics)
     }
 

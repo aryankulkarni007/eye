@@ -8,6 +8,7 @@ name = "hir"
 
 [dependencies]
 la-arena.workspace = true
+diagnostics.workspace = true
 syntax.workspace = true
 ast.workspace = true
 smol_str.workspace = true

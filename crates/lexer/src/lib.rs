@@ -2,7 +2,7 @@
 //!
 //! [`Lexer::tokenize`] drives `logos` (the lex rules live on [`TokenKind`] in
 //! the `token` crate) and yields a [`Lexed`]: the token vector, the populated
-//! [`Interner`], and any [`Diagnostic`]s. [`SourceText`] owns the input (heap
+//! [`Interner`], and any [`LexError`]s. [`SourceText`] owns the input (heap
 //! string or `mmap`) and answers byte-offset/line-column queries.
 
 use logos::Logos;
@@ -12,10 +12,64 @@ use rustc_hash::FxHashMap;
 use smol_str::SmolStr;
 use text_size::{TextRange, TextSize};
 
-use thin_vec::ThinVec;
-use token::{Token, TokenKind};
+use diagnostics::{Class, Code, Sink};
+use token::{LexErrorTag, Token, TokenKind};
 
-pub use token::Diagnostic;
+/// A lexer diagnostic (class `L`). The single source of truth for a malformed
+/// lexeme; the prose message comes from [`std::fmt::Display`] via `thiserror`.
+/// Most variants map one-to-one from a [`LexErrorTag`] recorded by the `token`
+/// crate's logos callbacks; [`LexError::UnexpectedChar`] is raised here, for a
+/// byte `logos` could not start any token from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum LexError {
+    #[error("unclosed string literal")]
+    UnclosedString,
+    #[error("empty character literal")]
+    EmptyChar,
+    #[error("unterminated escape")]
+    UnterminatedEscape,
+    #[error("unclosed char literal")]
+    UnclosedChar,
+    #[error("invalid char in literal")]
+    InvalidChar,
+    #[error("missing closing quote")]
+    MissingQuote,
+    #[error("unclosed block comment")]
+    UnclosedBlockComment,
+    #[error("unexpected character: '{0}'")]
+    UnexpectedChar(char),
+}
+
+impl LexError {
+    /// Lift a callback-recorded [`LexErrorTag`] into the typed kind.
+    fn from_tag(tag: LexErrorTag) -> Self {
+        match tag {
+            LexErrorTag::UnclosedString => LexError::UnclosedString,
+            LexErrorTag::EmptyChar => LexError::EmptyChar,
+            LexErrorTag::UnterminatedEscape => LexError::UnterminatedEscape,
+            LexErrorTag::UnclosedChar => LexError::UnclosedChar,
+            LexErrorTag::InvalidChar => LexError::InvalidChar,
+            LexErrorTag::MissingQuote => LexError::MissingQuote,
+            LexErrorTag::UnclosedBlockComment => LexError::UnclosedBlockComment,
+        }
+    }
+}
+
+impl diagnostics::Diagnostic for LexError {
+    fn code(&self) -> Code {
+        let number = match self {
+            LexError::UnclosedString => 1,
+            LexError::EmptyChar => 2,
+            LexError::UnterminatedEscape => 3,
+            LexError::UnclosedChar => 4,
+            LexError::InvalidChar => 5,
+            LexError::MissingQuote => 6,
+            LexError::UnclosedBlockComment => 7,
+            LexError::UnexpectedChar(_) => 8,
+        };
+        Code::new(Class::Lex, number)
+    }
+}
 
 /// A interned string handle - an index into an [`Interner`]'s table. `Copy`
 /// and pointer-free, so name comparison downstream is a `u32` equality check
@@ -84,6 +138,7 @@ impl Default for Interner {
 
 /// line (one based), col (one based, byte offset from line start)
 /// WARNING: u32 to save memory; used to be usize
+/// warn because for big files could be insufficient
 #[derive(Debug)]
 pub struct LineCol {
     pub line: u32,
@@ -121,6 +176,7 @@ pub struct SourceText {
     pub lstart: Vec<usize>,
 }
 
+/// calculates lstarts using memchr_iter (SIMD)
 fn lstarts(bytes: &[u8]) -> Vec<usize> {
     let mut lstart = Vec::with_capacity(bytes.len() / 40);
     lstart.push(0);
@@ -197,11 +253,12 @@ impl SourceText {
 pub struct Lexed {
     pub tokens: Vec<Token>,
     pub interner: Interner,
-    pub diags: ThinVec<Diagnostic>,
+    pub diags: Sink<LexError>,
 }
 
-/// A thin driver over `logos`. Holds only the borrowed source; the real work
-/// is in [`Lexer::tokenize`].
+/// A thin driver over `logos`.
+/// Holds only the borrowed source;
+/// the real work is in [`Lexer::tokenize`].
 pub struct Lexer<'a> {
     pub source: &'a SourceText,
 }
@@ -221,7 +278,7 @@ impl<'a> Lexer<'a> {
         let mut interner = Interner::new();
         // diagnostics from lex errors; the callback diagnostics for unclosed
         // literals/comments accumulate separately in `lex.extras`
-        let mut err_diags: ThinVec<Diagnostic> = ThinVec::new();
+        let mut err_diags: Vec<(TextRange, LexError)> = Vec::new();
 
         while let Some(result) = lex.next() {
             let span = lex.span();
@@ -232,10 +289,8 @@ impl<'a> Lexer<'a> {
             let kind = match result {
                 Ok(kind) => kind,
                 Err(()) => {
-                    err_diags.push(Diagnostic {
-                        msg: format!("unexpected character: '{}'", &src[span.clone()]).into(),
-                        range,
-                    });
+                    let ch = src[span.clone()].chars().next().unwrap_or('\u{fffd}');
+                    err_diags.push((range, LexError::UnexpectedChar(ch)));
                     TokenKind::Illegal
                 }
             };
@@ -264,10 +319,22 @@ impl<'a> Lexer<'a> {
             range: TextRange::empty(end),
         });
 
-        // merge the two diagnostic streams into one source-ordered list
-        let mut diags = err_diags;
-        diags.extend(lex.extras.0);
-        diags.sort_by_key(|d| d.range.start());
+        // merge the two diagnostic streams into one source-ordered list, then
+        // build the typed sink (the kind enum carries no span; the sink pairs
+        // each kind with its range)
+        let mut all = err_diags;
+        all.extend(
+            lex.extras
+                .0
+                .into_iter()
+                .map(|(tag, range)| (range, LexError::from_tag(tag))),
+        );
+        all.sort_by_key(|(range, _)| range.start());
+
+        let mut diags = Sink::new();
+        for (range, kind) in all {
+            diags.emit(range, kind);
+        }
 
         Lexed {
             tokens,
@@ -383,21 +450,27 @@ mod tests {
     fn unclosed_string_diagnoses() {
         let lexed = lex("\"oops");
         assert_eq!(lexed.diags.len(), 1);
-        assert!(lexed.diags[0].msg.contains("unclosed string"));
+        assert!(matches!(
+            lexed.diags.entries()[0].1,
+            LexError::UnclosedString
+        ));
     }
 
     #[test]
     fn unclosed_block_comment_diagnoses() {
         let lexed = lex("--* never closed");
         assert_eq!(lexed.diags.len(), 1);
-        assert!(lexed.diags[0].msg.contains("unclosed block comment"));
+        assert!(matches!(
+            lexed.diags.entries()[0].1,
+            LexError::UnclosedBlockComment
+        ));
     }
 
     #[test]
     fn empty_char_diagnoses() {
         let lexed = lex("''");
         assert_eq!(lexed.diags.len(), 1);
-        assert!(lexed.diags[0].msg.contains("empty character"));
+        assert!(matches!(lexed.diags.entries()[0].1, LexError::EmptyChar));
     }
 
     #[test]
