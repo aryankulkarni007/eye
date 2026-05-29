@@ -17,9 +17,9 @@ structure Point {
 };
 
 main() {
-    const x = 0;
-    const y = 0;
-    var Point p = Point { x, y };
+    let x = 0;
+    let y = 0;
+    mut Point p = Point { x, y };
 
     print(\"{}\", p);
 }
@@ -92,6 +92,46 @@ main() {}
     );
     // both struct arena slots persist so existing IDs stay valid
     assert_eq!(hir.structs.len(), 2);
+}
+
+/// A union literal must set exactly one member - overlapping storage means
+/// a second field silently overwrites the first. One field is clean; two
+/// emits a diagnostic.
+#[test]
+fn union_literal_must_set_exactly_one_field() {
+    let one = lower(
+        "\
+union Bits {
+    int64 i,
+    float64 f,
+};
+
+main() {
+    mut Bits b = Bits { i: 1 };
+}
+",
+    );
+    assert!(one.diagnostics.is_empty(), "{:?}", one.diagnostics);
+
+    let two = lower(
+        "\
+union Bits {
+    int64 i,
+    float64 f,
+};
+
+main() {
+    mut Bits b = Bits { i: 1, f: 2.0 };
+}
+",
+    );
+    assert!(
+        two.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("must set exactly one field")),
+        "expected a one-field diagnostic, got: {:?}",
+        two.diagnostics
+    );
 }
 
 #[test]
@@ -185,8 +225,8 @@ structure P {
 };
 
 main() {
-    var P p = P { x: 0 };
-    var &P p_ref = &p;
+    mut P p = P { x: 0 };
+    mut &P p_ref = &p;
     loop {
         if p_ref.x > 10 { break; }
         p_ref.x = p_ref.x + 1;
@@ -200,9 +240,10 @@ main() {
 
     // Every `Path` expression that names `p_ref` must resolve to a
     // Local, not fall through to Unresolved.
-    let unresolved_p_ref = body.exprs.iter().any(
-        |(_, e)| matches!(e, Expr::Path(Resolution::Unresolved(n)) if n.as_str() == "p_ref"),
-    );
+    let unresolved_p_ref = body
+        .exprs
+        .iter()
+        .any(|(_, e)| matches!(e, Expr::Path(Resolution::Unresolved(n)) if n.as_str() == "p_ref"));
     assert!(
         !unresolved_p_ref,
         "p_ref inside the tail loop body did not resolve to the outer local"
@@ -230,8 +271,8 @@ const SHAPE_DECL: &str = "enum Shape = Circle | Rectangle | Triangle ;\n";
 #[test]
 fn match_lowers_arms_and_pins_scrut_enum() {
     let src = format!(
-        "{}main() {{\n    const Shape sh = Rectangle;\n    \
-         const int32 n = match sh {{\n        \
+        "{}main() {{\n    let Shape sh = Rectangle;\n    \
+         let int32 n = match sh {{\n        \
          Shape.Circle -> 0,\n        \
          Rectangle -> 1,\n        \
          Triangle -> 2,\n    }};\n    \
@@ -272,8 +313,8 @@ fn match_lowers_arms_and_pins_scrut_enum() {
 #[test]
 fn match_wildcard_covers_remaining_variants() {
     let src = format!(
-        "{}main() {{\n    const Shape sh = Circle;\n    \
-         const int32 n = match sh {{\n        \
+        "{}main() {{\n    let Shape sh = Circle;\n    \
+         let int32 n = match sh {{\n        \
          Circle -> 0,\n        \
          _ -> 99,\n    }};\n    \
          print(\"{{}}\", n);\n}}\n",
@@ -293,8 +334,8 @@ fn match_wildcard_covers_remaining_variants() {
 #[test]
 fn match_non_exhaustive_diags_each_missing_variant() {
     let src = format!(
-        "{}main() {{\n    const Shape sh = Circle;\n    \
-         const int32 n = match sh {{\n        Circle -> 0,\n    }};\n    \
+        "{}main() {{\n    let Shape sh = Circle;\n    \
+         let int32 n = match sh {{\n        Circle -> 0,\n    }};\n    \
          print(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
     );
@@ -312,8 +353,8 @@ fn match_non_exhaustive_diags_each_missing_variant() {
 #[test]
 fn match_duplicate_arm_diagnosed() {
     let src = format!(
-        "{}main() {{\n    const Shape sh = Circle;\n    \
-         const int32 n = match sh {{\n        \
+        "{}main() {{\n    let Shape sh = Circle;\n    \
+         let int32 n = match sh {{\n        \
          Circle -> 0,\n        Rectangle -> 1,\n        \
          Circle -> 2,\n        Triangle -> 3,\n    }};\n    \
          print(\"{{}}\", n);\n}}\n",
@@ -331,8 +372,8 @@ fn match_duplicate_arm_diagnosed() {
 #[test]
 fn match_arm_after_wildcard_is_unreachable() {
     let src = format!(
-        "{}main() {{\n    const Shape sh = Circle;\n    \
-         const int32 n = match sh {{\n        \
+        "{}main() {{\n    let Shape sh = Circle;\n    \
+         let int32 n = match sh {{\n        \
          _ -> 0,\n        Triangle -> 1,\n    }};\n    \
          print(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
@@ -351,8 +392,8 @@ fn match_arm_after_wildcard_is_unreachable() {
 fn match_cross_enum_pattern_diagnosed() {
     let src = format!(
         "{}enum Option = Some | None ;\nmain() {{\n    \
-         const Shape sh = Circle;\n    \
-         const int32 n = match sh {{\n        \
+         let Shape sh = Circle;\n    \
+         let int32 n = match sh {{\n        \
          Option.Some -> 0,\n        _ -> 1,\n    }};\n    \
          print(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
@@ -370,8 +411,8 @@ fn match_cross_enum_pattern_diagnosed() {
 #[test]
 fn match_unknown_variant_diagnosed() {
     let src = format!(
-        "{}main() {{\n    const Shape sh = Circle;\n    \
-         const int32 n = match sh {{\n        \
+        "{}main() {{\n    let Shape sh = Circle;\n    \
+         let int32 n = match sh {{\n        \
          Square -> 0,\n        _ -> 1,\n    }};\n    \
          print(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
@@ -390,8 +431,8 @@ fn match_unknown_variant_diagnosed() {
 fn match_non_enum_scrut_diagnosed() {
     let src = "\
 main() {
-    const int32 x = 0;
-    const int32 n = match x {
+    let int32 x = 0;
+    let int32 n = match x {
         _ -> 1,
     };
     print(\"{}\", n);

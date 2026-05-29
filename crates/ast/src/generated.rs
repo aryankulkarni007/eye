@@ -34,12 +34,18 @@ pub enum Item {
     StructDef(StructDef),
     FnDef(FnDef),
     EnumDef(EnumDef),
+    UnionDef(UnionDef),
+    ExternBlock(ExternBlock),
 }
 impl AstNode for Item {
     fn can_cast(kind: SyntaxKind) -> bool {
         matches!(
             kind,
-            SyntaxKind::StructDef | SyntaxKind::FnDef | SyntaxKind::EnumDef
+            SyntaxKind::StructDef
+                | SyntaxKind::FnDef
+                | SyntaxKind::EnumDef
+                | SyntaxKind::UnionDef
+                | SyntaxKind::ExternBlock
         )
     }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -47,6 +53,8 @@ impl AstNode for Item {
             SyntaxKind::StructDef => Item::StructDef(StructDef { syntax }),
             SyntaxKind::FnDef => Item::FnDef(FnDef { syntax }),
             SyntaxKind::EnumDef => Item::EnumDef(EnumDef { syntax }),
+            SyntaxKind::UnionDef => Item::UnionDef(UnionDef { syntax }),
+            SyntaxKind::ExternBlock => Item::ExternBlock(ExternBlock { syntax }),
             _ => return None,
         };
         Some(res)
@@ -56,6 +64,8 @@ impl AstNode for Item {
             Item::StructDef(it) => it.syntax(),
             Item::FnDef(it) => it.syntax(),
             Item::EnumDef(it) => it.syntax(),
+            Item::UnionDef(it) => it.syntax(),
+            Item::ExternBlock(it) => it.syntax(),
         }
     }
 }
@@ -147,6 +157,57 @@ impl EnumDef {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UnionDef {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for UnionDef {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::UnionDef
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::UnionDef {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl UnionDef {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::Ident)
+    }
+    pub fn field_list(&self) -> Option<FieldList> {
+        support::child(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExternBlock {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for ExternBlock {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ExternBlock
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::ExternBlock {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl ExternBlock {
+    pub fn fns(&self) -> AstChildren<ExternFn> {
+        support::children(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FieldList {
     pub(crate) syntax: SyntaxNode,
 }
@@ -171,15 +232,15 @@ impl FieldList {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Field {
+pub struct ExternFn {
     pub(crate) syntax: SyntaxNode,
 }
-impl AstNode for Field {
+impl AstNode for ExternFn {
     fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::Field
+        kind == SyntaxKind::ExternFn
     }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
-        if syntax.kind() == SyntaxKind::Field {
+        if syntax.kind() == SyntaxKind::ExternFn {
             Some(Self { syntax })
         } else {
             None
@@ -189,12 +250,39 @@ impl AstNode for Field {
         &self.syntax
     }
 }
-impl Field {
-    pub fn ty(&self) -> Option<TypeRef> {
-        support::child(&self.syntax)
-    }
+impl ExternFn {
     pub fn name(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, SyntaxKind::Ident)
+    }
+    pub fn param_list(&self) -> Option<ParamList> {
+        support::child(&self.syntax)
+    }
+    pub fn ret_type(&self) -> Option<TypeRef> {
+        support::child(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParamList {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for ParamList {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ParamList
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::ParamList {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl ParamList {
+    pub fn params(&self) -> AstChildren<Param> {
+        support::children(&self.syntax)
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -228,6 +316,33 @@ impl AstNode for TypeRef {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Field {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for Field {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::Field
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::Field {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl Field {
+    pub fn ty(&self) -> Option<TypeRef> {
+        support::child(&self.syntax)
+    }
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::Ident)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Variant {
     pub(crate) syntax: SyntaxNode,
 }
@@ -249,30 +364,6 @@ impl AstNode for Variant {
 impl Variant {
     pub fn name(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, SyntaxKind::Ident)
-    }
-}
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ParamList {
-    pub(crate) syntax: SyntaxNode,
-}
-impl AstNode for ParamList {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == SyntaxKind::ParamList
-    }
-    fn cast(syntax: SyntaxNode) -> Option<Self> {
-        if syntax.kind() == SyntaxKind::ParamList {
-            Some(Self { syntax })
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.syntax
-    }
-}
-impl ParamList {
-    pub fn params(&self) -> AstChildren<Param> {
-        support::children(&self.syntax)
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -369,6 +460,7 @@ pub enum Expr {
     ContinueExpr(ContinueExpr),
     RefExpr(RefExpr),
     DerefExpr(DerefExpr),
+    CastExpr(CastExpr),
     MatchExpr(MatchExpr),
 }
 impl AstNode for Expr {
@@ -389,6 +481,7 @@ impl AstNode for Expr {
                 | SyntaxKind::ContinueExpr
                 | SyntaxKind::RefExpr
                 | SyntaxKind::DerefExpr
+                | SyntaxKind::CastExpr
                 | SyntaxKind::MatchExpr
         )
     }
@@ -408,6 +501,7 @@ impl AstNode for Expr {
             SyntaxKind::ContinueExpr => Expr::ContinueExpr(ContinueExpr { syntax }),
             SyntaxKind::RefExpr => Expr::RefExpr(RefExpr { syntax }),
             SyntaxKind::DerefExpr => Expr::DerefExpr(DerefExpr { syntax }),
+            SyntaxKind::CastExpr => Expr::CastExpr(CastExpr { syntax }),
             SyntaxKind::MatchExpr => Expr::MatchExpr(MatchExpr { syntax }),
             _ => return None,
         };
@@ -429,6 +523,7 @@ impl AstNode for Expr {
             Expr::ContinueExpr(it) => it.syntax(),
             Expr::RefExpr(it) => it.syntax(),
             Expr::DerefExpr(it) => it.syntax(),
+            Expr::CastExpr(it) => it.syntax(),
             Expr::MatchExpr(it) => it.syntax(),
         }
     }
@@ -905,6 +1000,33 @@ impl AstNode for DerefExpr {
 }
 impl DerefExpr {
     pub fn expr(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CastExpr {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for CastExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::CastExpr
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::CastExpr {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl CastExpr {
+    pub fn operand(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+    pub fn ty(&self) -> Option<TypeRef> {
         support::child(&self.syntax)
     }
 }

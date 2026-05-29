@@ -29,13 +29,22 @@ version live elsewhere (PR descriptions, branch READMEs).
 - Items: `structure`, `fn` (named via call-form), `enum` (assignment form
   `enum X = A | B ;`; leading `|` on the first variant is always optional
   (accepted inline or multi-line, stylistic only); `|` is mandatory
-  between subsequent variants; empty variant list rejected).
-- Statements: `const`/`var` let with optional type, expression statements,
-  trailing tail expression in blocks.
+  between subsequent variants; empty variant list rejected), `union`
+  (`union X { T a, T b, };` - struct field-list grammar verbatim,
+  overlapping storage), `extern` block (`extern { sig; sig; }` - bodyless
+  C signatures `name(T arg, ...) -> Ret;`, each entering the global fn
+  namespace, resolved at link).
+- Statements: `let`/`mut` binding with optional type (the type heuristic reads
+  both `Ident name` and postfix-pointer `Ident* name` forms), expression
+  statements, trailing tail expression in blocks.
 - Expressions: literals, paths, calls, field access, struct literals
   (positional, named, shorthand, mixed), binops, prefix `-` / `!` / `*` / `&`,
-  `if`/`else`, `loop` / `break` / `continue`, assignment, block expressions.
-- Types: identifier path, `&T` reference, `T*` raw pointer.
+  `if`/`else`, `loop` / `break` / `continue`, assignment, block expressions,
+  `expr as Type` casts (postfix, binds tighter than binary operators).
+- Types: identifier path, `&T` reference, `T*` raw pointer, `ptr` (opaque
+  untyped pointer - C `void*`; bridged to/from typed `T*` via `as`). `ptr`
+  opacity (no deref/arith/field) is currently enforced by the C backend -
+  those ops are errors on `void*` - rather than by an Eye-side check.
 
 ## AST
 
@@ -44,8 +53,9 @@ version live elsewhere (PR descriptions, branch READMEs).
 
 ## HIR
 
-- Arena-allocated structs, enums, fields, functions, locals, pats, exprs,
-  stmts, blocks (la-arena).
+- Arena-allocated structs, unions, enums, fields, functions, locals, pats,
+  exprs, stmts, blocks (la-arena). `Function::is_extern` marks bodyless
+  signatures collected from `extern` blocks.
 - Item scope with duplicate-name diagnostics.
 - Lexical scope stack for locals; name resolution to
   `Local` / `Fn` / `Struct` / `Enum` / `Unresolved`.
@@ -55,17 +65,33 @@ version live elsewhere (PR descriptions, branch READMEs).
 
 ## Codegen (C backend)
 
-- `int32`, `float32`, `float64`, `bool`, `char`, `string` map to fixed-width
-  C types; refs/pointers lower to `T*`.
+- `int8`/`int16`/`int32`/`int64`, `uint8`/`uint16`/`uint32`/`uint64`,
+  `float32`, `float64`, `bool`, `char`, `string` map to fixed-width C types
+  (signed/unsigned ints to the `<stdint.h>` `intN_t`/`uintN_t` forms);
+  refs/pointers lower to `T*`. `print` picks `%d`/`%lld`/`%u`/`%llu` by width
+  and signedness.
 - Structs lower to `typedef struct { ... } Name;`.
+- Unions lower to `typedef union { ... } Name;`; a union member's type drives
+  its `print` specifier the same as a struct field (field-type lookup spans
+  both, since they share the field arena). A union literal must set exactly
+  one member (enforced in lowering with a diagnostic - overlapping storage
+  means a second field would silently overwrite the first).
 - Enums lower to `typedef enum { ... } Name;`.
+- `extern` signatures lower to bare C prototypes emitted before every
+  definition (so a call site sees them regardless of source order); the
+  linker binds the symbol (libc for the alloc/IO seam, no link flags needed).
+  `ptr` maps to `void*`. Note: declaring a libc builtin (`malloc`/`free`)
+  draws a benign clang redeclaration warning - `uint64` vs the builtin's
+  `size_t`, ABI-identical on 64-bit; a future `usize` type would silence it.
 - Functions: params, return types, tail expression as implicit `return`.
-- Statements: `const`/`var` let, expression statements.
+- Statements: `let`/`mut` binding, expression statements.
 - Expressions: literals, paths, calls (every arg emitted), struct literals
   (compound literal form), field access with auto-deref to `->` on `&T`/`T*`
   bases, binops, prefix unops, blocks with tail value, `if`/`else` (both
   statement and ternary-expression forms), `loop` lowered to `while(true)`,
-  `break`, `continue`, `&x`, `*x`.
+  `break`, `continue`, `&x`, `*x`, `x as T` (C cast `(T)x`; the cast's value
+  type is its target, so it drives field access, `print` specifiers, and
+  match temps).
 - `print(fmt, args...)` builtin lowers to `printf` with type-directed format
   specifiers: `%d` / `%f` / `%s` / `%c` / `%p` selected per arg from the HIR
   type (or literal kind when the arg has no recorded type).
@@ -86,6 +112,11 @@ version live elsewhere (PR descriptions, branch READMEs).
 - `eyesrc/particle.eye` - reference parameter, field mutation via auto-deref.
 - `eyesrc/physics.eye` - nested structs, conditional expressions, mixed
   primitive `print` formatting.
+- `eyesrc/v04.eye` - sized/unsigned integer primitives and `as` casts
+  (truncation, int->float promotion, widen/narrow roundtrip).
+- `eyesrc/ffi.eye` - `extern` block binding libc `malloc`/`free`, the `ptr`
+  opaque pointer bridged to `Point*` via `as`, and a `union` with typed
+  members.
 
 ## Roadmap - v0.3 (enums + match)
 
@@ -134,7 +165,7 @@ Authoritative source spec: `eyesrc/v03.eye`.
     Unknown variant after `Enum.X` raises "enum `E` has no variant `X`".
   - Codegen: `Resolution::Variant` emits the C enum constant name.
     `Resolution::Enum` arm is now `unreachable!()` (HIR rejects it).
-  - **Known limitation:** untyped `const x = Rectangle;` still trips the
+  - **Known limitation:** untyped `let x = Rectangle;` still trips the
     existing "EXPLICIT TYPE MISSING" codegen placeholder; v0.3 does not
     add inference for untyped `let`. Workaround: annotate the type.
 - [x] M3 - match expression parse.

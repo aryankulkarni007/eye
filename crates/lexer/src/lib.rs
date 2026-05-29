@@ -310,9 +310,9 @@ mod tests {
     fn keywords_vs_idents() {
         use TokenKind::*;
         assert_eq!(
-            kinds("const var structure enum if else loop break continue foo"),
+            kinds("let mut structure enum if else loop break continue foo"),
             [
-                Const, Var, Structure, Enum, If, Else, Loop, Break, Continue, Ident, Eof
+                Let, Mut, Structure, Enum, If, Else, Loop, Break, Continue, Ident, Eof
             ]
         );
     }
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn spans_tile_the_source_with_no_gaps() {
-        let src = "const x = 0;";
+        let src = "let x = 0;";
         let lexed = lex(src);
         let mut cursor = TextSize::from(0);
         for tok in &lexed.tokens {
@@ -459,11 +459,11 @@ mod tests {
     #[test]
     fn v02_punctuation_and_prefixes() {
         use TokenKind::*;
-        // `var &Point pt_ref = &pt;` - `&` appears both in a type position
+        // `mut &Point pt_ref = &pt;` - `&` appears both in a type position
         // and as a prefix operator, lexed as the same `Amp` token either way
         assert_eq!(
-            kinds("var &Point pt_ref = &pt;"),
-            [Var, Amp, Ident, Ident, Assign, Amp, Ident, Semicolon, Eof]
+            kinds("mut &Point pt_ref = &pt;"),
+            [Mut, Amp, Ident, Ident, Assign, Amp, Ident, Semicolon, Eof]
         );
 
         // `pt.x = 15;` - member access then assignment
@@ -500,7 +500,10 @@ mod tests {
             kinds("if else loop break continue"),
             [If, Else, Loop, Break, Continue, Eof]
         );
-        assert_eq!(kinds("breakage continuee elsewhere"), [Ident, Ident, Ident, Eof]);
+        assert_eq!(
+            kinds("breakage continuee elsewhere"),
+            [Ident, Ident, Ident, Eof]
+        );
     }
 
     /// `match` is a reserved keyword (not an ident); bare `_` is its own
@@ -515,10 +518,7 @@ mod tests {
         // `matches` is just an identifier - keyword match is exact
         assert_eq!(kinds("matches"), [Ident, Eof]);
         // `_foo`/`foo_` are idents; bare `_` is the Underscore token
-        assert_eq!(
-            kinds("_ _foo foo_"),
-            [Underscore, Ident, Ident, Eof]
-        );
+        assert_eq!(kinds("_ _foo foo_"), [Underscore, Ident, Ident, Eof]);
     }
 
     /// `->` arrow as a return-type marker stays one token even when wedged
@@ -538,22 +538,17 @@ mod tests {
     /// - the form used in `eyesrc/design.eye`.
     #[test]
     fn block_comment_multiline() {
-        let lexed = lex("--*\n  * note\n--*\nconst x = 0;");
+        let lexed = lex("--*\n  * note\n--*\nlet x = 0;");
         assert!(lexed.diags.is_empty(), "diags: {:?}", lexed.diags);
         use TokenKind::*;
         let stream: Vec<_> = lexed.tokens.iter().map(|t| t.kind).collect();
         // block comment is one token; whitespace/newlines surround it
         assert!(stream.contains(&Bcomment));
-        // significant tokens after the comment match `const x = 0;`
+        // significant tokens after the comment match `let x = 0;`
         let nonws: Vec<_> = stream
             .into_iter()
-            .filter(|k| {
-                !matches!(
-                    k,
-                    Wspace | Newline | Lcomment | Dcomment | Bcomment
-                )
-            })
+            .filter(|k| !matches!(k, Wspace | Newline | Lcomment | Dcomment | Bcomment))
             .collect();
-        assert_eq!(nonws, [Const, Ident, Assign, Int, Semicolon, Eof]);
+        assert_eq!(nonws, [Let, Ident, Assign, Int, Semicolon, Eof]);
     }
 }

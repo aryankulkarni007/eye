@@ -93,14 +93,18 @@ define_tokens! {
     Char = "CHAR",
 
     // keywords
-    #[token("const")]
-    Const = "CONST",
-    #[token("var")]
-    Var = "VAR",
+    #[token("let")]
+    Let = "LET",
+    #[token("mut")]
+    Mut = "MUT",
     #[token("structure")]
     Structure = "STRUCTURE",
     #[token("enum")]
     Enum = "ENUM",
+    #[token("union")]
+    Union = "UNION",
+    #[token("extern")]
+    Extern = "EXTERN",
 
     // control flow
     #[token("if")]
@@ -115,6 +119,8 @@ define_tokens! {
     Continue = "CONTINUE",
     #[token("match")]
     Match = "MATCH",
+    #[token("as")]
+    As = "AS",
 
     // a lone `_`. The ident regex would also match it - `priority = 3`
     // breaks the tie in favour of `Underscore`. `_foo` still lexes as

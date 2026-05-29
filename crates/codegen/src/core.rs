@@ -63,13 +63,28 @@ impl<'a> CGen<'a> {
             .for_each(|(_id, struct_def)| self.gen_struct(struct_def));
 
         self.hir
+            .unions
+            .iter()
+            .for_each(|(_id, union_def)| self.gen_union(union_def));
+
+        self.hir
             .enums
             .iter()
             .for_each(|(_id, enum_def)| self.gen_enum(enum_def));
 
+        // Extern prototypes come before every definition so a call site sees
+        // the C signature regardless of where the `extern` block sits in the
+        // source. Bodies are emitted in a second pass.
         self.hir
             .functions
             .iter()
+            .filter(|(_id, r#fn)| r#fn.is_extern)
+            .for_each(|(_id, r#fn)| self.gen_function(r#fn));
+
+        self.hir
+            .functions
+            .iter()
+            .filter(|(_id, r#fn)| !r#fn.is_extern)
             .for_each(|(_id, r#fn)| self.gen_function(r#fn));
 
         self.output

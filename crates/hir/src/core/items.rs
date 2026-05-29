@@ -14,6 +14,15 @@ pub struct Struct {
     pub fields: Vec<FieldId>,
 }
 
+/// A union - overlapping storage. Structurally identical to [`Struct`]; the
+/// difference is the C emit (`union` not `struct`) and that a value occupies
+/// exactly one field at a time.
+#[derive(Debug)]
+pub struct Union {
+    pub name: Text,
+    pub fields: Vec<FieldId>,
+}
+
 #[derive(Debug)]
 pub struct Enum {
     pub name: Text,
@@ -38,6 +47,9 @@ pub struct Function {
     pub ret: Option<TypeRef>,
     /// Body lives in its own arena keyed by [`FnId`] on [`HIR`].
     pub body: Option<BodyId>,
+    /// `true` for a signature declared in an `extern` block: no body, emitted
+    /// as a bare C prototype and resolved by the linker.
+    pub is_extern: bool,
 }
 
 #[derive(Debug)]
@@ -50,6 +62,7 @@ pub struct Param {
 pub struct ItemScope {
     pub functions: FxHashMap<Text, FnId>,
     pub structs: FxHashMap<Text, StructId>,
+    pub unions: FxHashMap<Text, UnionId>,
     pub enums: FxHashMap<Text, EnumId>,
     /// Flat variant-name index across every enum. Lets a bare variant name
     /// resolve to its enum + index without an expected-type hint. Two enums

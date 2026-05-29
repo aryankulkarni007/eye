@@ -30,9 +30,9 @@ structure Point {
 };
 
 main() {
-    const int32 x = 0;
-    const int32 y = 0;
-    var Point p = Point { x, y };
+    let int32 x = 0;
+    let int32 y = 0;
+    mut Point p = Point { x, y };
 
     print(\"{}\", p.x);
     print(\"{}\", p.y);
@@ -57,6 +57,7 @@ fn user_fn_call_emits_every_argument_in_order() {
         params: Vec::new(),
         ret: None,
         body: None,
+        is_extern: false,
     });
 
     let mut body = Body::default();
@@ -77,6 +78,7 @@ fn user_fn_call_emits_every_argument_in_order() {
         params: Vec::new(),
         ret: None,
         body: Some(body_id),
+        is_extern: false,
     });
     hir.items.functions.insert("main".into(), main_fn);
     hir.items.functions.insert("add".into(), callee_fn);
@@ -107,8 +109,8 @@ structure Outer {
 };
 
 main() {
-    const Inner i = Inner { y: 42 };
-    const Outer o = Outer { i: i };
+    let Inner i = Inner { y: 42 };
+    let Outer o = Outer { i: i };
     print(\"{}\", o.i.y);
 }
 ";
@@ -135,7 +137,7 @@ update_vector(&Vector v) {
 }
 
 main() {
-    var Vector vec = Vector { x: 10, y: 20 };
+    mut Vector vec = Vector { x: 10, y: 20 };
     -- Pass by reference
     update_vector(&vec);
 }
@@ -166,10 +168,10 @@ main() {
 fn print_format_specifiers_match_primitive_types() {
     let src = "\
 main() {
-    const int32 i = 7;
-    const float64 f = 3.14;
-    const bool b = true;
-    const char c = 'x';
+    let int32 i = 7;
+    let float64 f = 3.14;
+    let bool b = true;
+    let char c = 'x';
     print(\"i={} f={} b={} c={}\", i, f, b, c);
     print(\"lit s={} lit i={} lit f={} lit b={} lit c={}\", \"hi\", 1, 2.5, false, 'q');
 }
@@ -193,8 +195,8 @@ fn print_format_specifier_for_reference_is_pointer() {
 structure P { int32 x, };
 
 main() {
-    var P p = P { x: 1 };
-    var &P r = &p;
+    mut P p = P { x: 1 };
+    mut &P r = &p;
     print(\"{}\", r);
 }
 ";
@@ -205,6 +207,137 @@ main() {
     );
 }
 
+/// v0.4 sized/unsigned integer types lower to their `<stdint.h>` C types and
+/// pick the right printf specifier: `%d` for signed widths up to 32, `%lld`
+/// for `int64`, `%u` for unsigned widths up to 32, `%llu` for `uint64`.
+#[test]
+fn sized_integer_types_map_to_stdint_and_specifiers() {
+    let src = "\
+main() {
+    let int8 a = 1;
+    let int16 b = 2;
+    let int64 c = 3;
+    let uint8 d = 4;
+    let uint16 e = 5;
+    let uint32 f = 6;
+    let uint64 g = 7;
+    print(\"{}\", a);
+    print(\"{}\", b);
+    print(\"{}\", c);
+    print(\"{}\", d);
+    print(\"{}\", e);
+    print(\"{}\", f);
+    print(\"{}\", g);
+}
+";
+    let c = emit(src);
+
+    assert!(c.contains("int8_t a"), "expected `int8_t a`, got:\n{c}");
+    assert!(c.contains("int16_t b"), "expected `int16_t b`, got:\n{c}");
+    assert!(c.contains("int64_t c"), "expected `int64_t c`, got:\n{c}");
+    assert!(c.contains("uint8_t d"), "expected `uint8_t d`, got:\n{c}");
+    assert!(c.contains("uint16_t e"), "expected `uint16_t e`, got:\n{c}");
+    assert!(c.contains("uint32_t f"), "expected `uint32_t f`, got:\n{c}");
+    assert!(c.contains("uint64_t g"), "expected `uint64_t g`, got:\n{c}");
+
+    assert!(
+        c.contains("\"%lld\\n\""),
+        "expected `%lld` for int64, got:\n{c}"
+    );
+    assert!(
+        c.contains("\"%llu\\n\""),
+        "expected `%llu` for uint64, got:\n{c}"
+    );
+    assert!(
+        c.contains("\"%u\\n\""),
+        "expected `%u` for unsigned widths up to 32, got:\n{c}"
+    );
+}
+
+/// `as` casts lower to a C cast `(T)operand`. The cast binds tighter than a
+/// binary `+`, so `a + b as int64` emits `(a + (int64_t)b)`.
+#[test]
+fn cast_expr_lowers_to_c_cast() {
+    let src = "\
+main() {
+    let int64 a = 1;
+    let uint8 b = a as uint8;
+    let int64 c = a + b as int64;
+    print(\"{}\", b);
+    print(\"{}\", c);
+}
+";
+    let c = emit(src);
+    assert!(
+        c.contains("(uint8_t)a"),
+        "expected `(uint8_t)a` cast, got:\n{c}"
+    );
+    // cast binds tighter than `+`: the cast wraps `b`, inside the binary.
+    assert!(
+        c.contains("(a + (int64_t)b)"),
+        "expected cast to bind tighter than `+`, got:\n{c}"
+    );
+}
+
+/// A `union` decl lowers to `typedef union`, and a union member's type drives
+/// its print specifier the same as a struct field (proves the field-type
+/// lookup spans unions, not just structs).
+#[test]
+fn union_def_lowers_to_typedef_union_with_typed_members() {
+    let src = "\
+union Bits {
+    int64 i,
+    float64 f,
+};
+
+main() {
+    mut Bits b = Bits { i: 42 };
+    mut Bits g = Bits { f: 3.5 };
+    print(\"{}\", b.i);
+    print(\"{}\", g.f);
+}
+";
+    let c = emit(src);
+    assert!(
+        c.contains("typedef union {"),
+        "expected `typedef union`, got:\n{c}"
+    );
+    // one-member designated init, and per-member specifiers resolved.
+    assert!(c.contains(".i = 42"), "expected designated union init, got:\n{c}");
+    assert!(c.contains("%lld"), "int64 member should print %lld, got:\n{c}");
+    assert!(c.contains("%f"), "float64 member should print %f, got:\n{c}");
+}
+
+/// An `extern` block lowers to bare C prototypes (no body), with `ptr` mapping
+/// to `void*`. The prototypes precede `main` so call sites always see them.
+#[test]
+fn extern_block_lowers_to_prototypes_with_ptr_as_void_star() {
+    let src = "\
+extern {
+    malloc(uint64 size) -> ptr;
+    free(ptr p);
+}
+
+main() {
+    mut ptr p = malloc(8);
+    free(p);
+}
+";
+    let c = emit(src);
+    assert!(
+        c.contains("void *malloc(uint64_t);") || c.contains("void* malloc(uint64_t);"),
+        "expected a malloc prototype with void* return, got:\n{c}"
+    );
+    assert!(
+        c.contains("void free(void *);") || c.contains("void free(void*);"),
+        "expected a free prototype taking void*, got:\n{c}"
+    );
+    // prototype precedes the definition that calls it.
+    let proto = c.find("malloc(uint64_t)").expect("prototype present");
+    let call = c.find("malloc(8)").expect("call present");
+    assert!(proto < call, "prototype must precede the call site:\n{c}");
+}
+
 /// Statement-position match lowers to a bare `switch` with one `case` per
 /// variant and no hoisted temp - the arm bodies run for effect only.
 #[test]
@@ -213,7 +346,7 @@ fn statement_position_match_emits_switch_without_temp() {
 enum Color = Red | Green;
 
 main() {
-    const Color c = Red;
+    let Color c = Red;
     match c {
         Red -> print(\"r\"),
         Green -> print(\"g\"),
@@ -244,8 +377,8 @@ fn value_position_match_hoists_temp_then_reads_it() {
 enum Color = Red | Green;
 
 main() {
-    const Color c = Red;
-    const int32 n = match c {
+    let Color c = Red;
+    let int32 n = match c {
         Red -> 1,
         Green -> 2,
     };
@@ -285,8 +418,8 @@ fn wildcard_arm_emits_default() {
 enum Color = Red | Green | Blue;
 
 main() {
-    const Color c = Red;
-    const int32 n = match c {
+    let Color c = Red;
+    let int32 n = match c {
         Red -> 1,
         _ -> 0,
     };
@@ -316,12 +449,12 @@ fn two_matches_in_one_function_use_distinct_temps() {
 enum Color = Red | Green;
 
 main() {
-    const Color c = Red;
-    const int32 x = match c {
+    let Color c = Red;
+    let int32 x = match c {
         Red -> 1,
         Green -> 2,
     };
-    const int32 y = match c {
+    let int32 y = match c {
         Red -> 3,
         Green -> 4,
     };
@@ -345,8 +478,8 @@ fn match_counter_resets_per_function() {
 enum Color = Red | Green;
 
 helper() {
-    const Color c = Red;
-    const int32 x = match c {
+    let Color c = Red;
+    let int32 x = match c {
         Red -> 1,
         Green -> 2,
     };
@@ -354,8 +487,8 @@ helper() {
 }
 
 main() {
-    const Color c = Green;
-    const int32 y = match c {
+    let Color c = Green;
+    let int32 y = match c {
         Red -> 3,
         Green -> 4,
     };

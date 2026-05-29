@@ -399,8 +399,8 @@ structure Point {
 };
 
 main() {
-    const x = 0;
-    var Point p = Point { x, y };
+    let x = 0;
+    mut Point p = Point { x, y };
     print(\"{}\", p.x);
 }
 ";
@@ -430,7 +430,7 @@ main() {
     #[test]
     fn operator_expr_parses_clean_and_round_trips() {
         // a mix of arithmetic, comparison, logical and prefix operators
-        let src = "main() {\n    const x = -1 + 2 * 3 == 7 && a || b;\n}\n";
+        let src = "main() {\n    let x = -1 + 2 * 3 == 7 && a || b;\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -438,7 +438,7 @@ main() {
 
     #[test]
     fn struct_lit_shorthand_form_parses_clean() {
-        let src = "main() {\n    var Point p = Point { x, y };\n}\n";
+        let src = "main() {\n    mut Point p = Point { x, y };\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -446,7 +446,7 @@ main() {
 
     #[test]
     fn struct_lit_explicit_form_parses_clean() {
-        let src = "main() {\n    var Point p = Point { x: x, y: y };\n}\n";
+        let src = "main() {\n    mut Point p = Point { x: x, y: y };\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -454,7 +454,7 @@ main() {
 
     #[test]
     fn struct_lit_mixed_forms_parses_clean() {
-        let src = "main() {\n    var Point p = Point { x, y: 0 };\n}\n";
+        let src = "main() {\n    mut Point p = Point { x, y: 0 };\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -512,11 +512,11 @@ main() {
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// `var &Point pt_ref = &pt;` - reference type annotation plus address-of
+    /// `mut &Point pt_ref = &pt;` - reference type annotation plus address-of
     /// prefix expression on the right-hand side.
     #[test]
     fn ref_type_and_ref_expr_parse_clean() {
-        let src = "main() {\n    var pt = Point { 10, 20 };\n    var &Point pt_ref = &pt;\n}\n";
+        let src = "main() {\n    mut pt = Point { 10, 20 };\n    mut &Point pt_ref = &pt;\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -525,7 +525,7 @@ main() {
     /// `*p` as a prefix expression - the deref form mirrors `&p`.
     #[test]
     fn deref_expr_parses_clean() {
-        let src = "main() {\n    var x = *p;\n}\n";
+        let src = "main() {\n    mut x = *p;\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -534,7 +534,7 @@ main() {
     /// Positional struct literal: `Point { 10, 20 }` has no field names.
     #[test]
     fn positional_struct_lit_parses_clean() {
-        let src = "main() {\n    var pt = Point { 10, 20 };\n}\n";
+        let src = "main() {\n    mut pt = Point { 10, 20 };\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -550,12 +550,12 @@ main() {
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// `if cond { ... } else { ... }` as the right-hand side of a `const`
+    /// `if cond { ... } else { ... }` as the right-hand side of a `let`
     /// binding - exercises if-as-expression and the no-struct-lit gate inside
     /// the condition.
     #[test]
     fn if_expr_as_value_parses_clean() {
-        let src = "main() {\n    const max = if x > counter { x } else { counter };\n}\n";
+        let src = "main() {\n    let max = if x > counter { x } else { counter };\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -607,11 +607,14 @@ main() {
             node.children().find_map(|c| find_kind(&c, kind))
         }
 
-        let assign = find_kind(&parse.green, SyntaxKind::AssignExpr)
-            .expect("AssignExpr in tree");
+        let assign = find_kind(&parse.green, SyntaxKind::AssignExpr).expect("AssignExpr in tree");
         let kids: Vec<SyntaxKind> = assign.children().map(|c| c.kind()).collect();
-        assert_eq!(kids, vec![SyntaxKind::NameRef, SyntaxKind::BinExpr],
-            "AssignExpr children must be (NameRef, BinExpr), got {:?}", kids);
+        assert_eq!(
+            kids,
+            vec![SyntaxKind::NameRef, SyntaxKind::BinExpr],
+            "AssignExpr children must be (NameRef, BinExpr), got {:?}",
+            kids
+        );
     }
 
     /// Struct literal inside a call argument inside an if-condition - the
@@ -642,10 +645,10 @@ main() {
     /// This test pins the current behaviour so a future fix is easy to spot.
     #[test]
     fn double_ref_type_in_let_binding_currently_misparses() {
-        // `var &&Point p = &q;` - the heuristic sees `&` + `&` and decides
+        // `mut &&Point p = &q;` - the heuristic sees `&` + `&` and decides
         // there is no type, so `&&Point` parses as a logical-and prefix
         // (which itself errors). Expect at least one diagnostic.
-        let parse = parse_src("main() {\n    var &&Point p = &q;\n}\n");
+        let parse = parse_src("main() {\n    mut &&Point p = &q;\n}\n");
         assert!(
             !parse.errors.is_empty(),
             "nested-ref type-form should fail until the heuristic learns it"
@@ -659,7 +662,7 @@ main() {
     #[test]
     fn match_expr_with_every_pattern_form_parses_clean() {
         let src = "\
-enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    const int32 r = match sh {\n        Circle -> 1,\n        Shape.Rectangle -> 2,\n        _ -> 0,\n    };\n}\n";
+enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r = match sh {\n        Circle -> 1,\n        Shape.Rectangle -> 2,\n        _ -> 0,\n    };\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -686,14 +689,58 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    const int32 
         assert!(dump.contains("MatchExpr"));
         // the only StructLit-shaped node in the tree must be absent: the
         // arm list body lives in MatchArmList, not in a StructLit.
-        assert!(!dump.contains("StructLit"), "scrutinee parsed as a struct literal:\n{dump}");
+        assert!(
+            !dump.contains("StructLit"),
+            "scrutinee parsed as a struct literal:\n{dump}"
+        );
     }
 
-    /// `match` as the right-hand side of a `const` binding - exercises
+    /// `match` as the right-hand side of a `let` binding - exercises
     /// match-as-expression in a typed let.
     #[test]
     fn match_expr_as_let_value_parses_clean() {
-        let src = "main() {\n    const int32 r = match x {\n        A -> 1,\n        _ -> 0,\n    };\n}\n";
+        let src = "main() {\n    let int32 r = match x {\n        A -> 1,\n        _ -> 0,\n    };\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `expr as Type` parses as a postfix cast and round-trips byte-for-byte.
+    /// `a + b as uint8` must nest as `a + (b as uint8)` - the cast binds
+    /// tighter than the binary `+`.
+    #[test]
+    fn cast_expr_parses_clean_and_binds_tight() {
+        let src = "main() {\n    let uint8 b = x as uint8;\n    let int32 c = a + b as int32;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// A union reuses the struct field-list grammar; only the keyword
+    /// differs. Parses clean and round-trips.
+    #[test]
+    fn union_def_parses_clean() {
+        let src = "union Bits {\n    int64 i,\n    float64 f,\n};\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// An `extern` block of bodyless C signatures, with a `ptr` return and a
+    /// `ptr` parameter. Parses clean and round-trips.
+    #[test]
+    fn extern_block_parses_clean() {
+        let src = "extern {\n    malloc(uint64 size) -> ptr;\n    free(ptr p);\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// A postfix-pointer type in a `let` binding (`Point* p`) - the binding
+    /// heuristic must read `Ident *` as a type, not a bare name.
+    #[test]
+    fn let_binding_with_postfix_pointer_type_parses() {
+        let src = "main() {\n    mut Point* p = q as Point*;\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -703,7 +750,8 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    const int32 
     /// required between it and the next statement.
     #[test]
     fn match_in_statement_position_needs_no_semicolon() {
-        let src = "main() {\n    match x {\n        _ -> 0,\n    }\n    counter = counter + 1;\n}\n";
+        let src =
+            "main() {\n    match x {\n        _ -> 0,\n    }\n    counter = counter + 1;\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -733,14 +781,17 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    const int32 
         assert_eq!(parse.green.to_string(), src);
         let dump = format!("{:#?}", parse.green);
         assert!(dump.contains("MatchArmList"));
-        assert!(!dump.contains("MatchArm@"), "empty arm list should not produce a MatchArm node:\n{dump}");
+        assert!(
+            !dump.contains("MatchArm@"),
+            "empty arm list should not produce a MatchArm node:\n{dump}"
+        );
     }
 
     /// Arm body expressions can be any expression, including struct literals -
     /// the suppression gate is cleared on entry to the arm list.
     #[test]
     fn match_arm_body_can_be_a_struct_literal() {
-        let src = "main() {\n    const Point r = match x {\n        _ -> Point { x: 0, y: 0 },\n    };\n}\n";
+        let src = "main() {\n    let Point r = match x {\n        _ -> Point { x: 0, y: 0 },\n    };\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);
@@ -760,7 +811,10 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    const int32 
         // both arms still recover into the tree
         let dump = format!("{:#?}", parse.green);
         let arm_count = dump.matches("MatchArm@").count();
-        assert_eq!(arm_count, 2, "both arms must recover into the tree:\n{dump}");
+        assert_eq!(
+            arm_count, 2,
+            "both arms must recover into the tree:\n{dump}"
+        );
         // tree still round-trips to the source bytes
         assert_eq!(parse.green.to_string(), src);
     }
@@ -771,7 +825,10 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    const int32 
     fn match_arm_missing_arrow_is_recovered() {
         let src = "main() {\n    match x {\n        A 1,\n        _ -> 0,\n    };\n}\n";
         let parse = parse_src(src);
-        assert!(!parse.errors.is_empty(), "expected a diagnostic for the missing '->'");
+        assert!(
+            !parse.errors.is_empty(),
+            "expected a diagnostic for the missing '->'"
+        );
         // recovery still preserves the input text byte-for-byte
         assert_eq!(parse.green.to_string(), src);
     }

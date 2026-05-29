@@ -44,6 +44,7 @@ pub type Text = SmolStr;
 #[derive(Debug, Default)]
 pub struct HIR {
     pub structs: Arena<Struct>,
+    pub unions: Arena<Union>,
     pub enums: Arena<Enum>,
     pub fields: Arena<Field>,
     pub functions: Arena<Function>,

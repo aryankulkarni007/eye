@@ -51,9 +51,9 @@ structure Point {
 };
 
 main() {
-    const int32 x = 0;
-    const int32 y = 0;
-    var Point p = Point { x, y };
+    let int32 x = 0;
+    let int32 y = 0;
+    mut Point p = Point { x, y };
 
     print(\"{}\", p.x);
     print(\"{}\", p.y);
@@ -79,7 +79,7 @@ main() {
 fn arithmetic_expression_evaluates_correctly() {
     let source = "\
 main() {
-    const int32 x = -1 + 2 * 3;
+    let int32 x = -1 + 2 * 3;
     print(\"{}\", x);
 }
 ";
@@ -103,7 +103,11 @@ fn print_eye_covers_every_format_specifier() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
 
-    assert_eq!(lines.len(), 9, "unexpected line count; full stdout:\n{stdout}");
+    assert_eq!(
+        lines.len(),
+        9,
+        "unexpected line count; full stdout:\n{stdout}"
+    );
     assert_eq!(lines[0], "int32      i = 42");
     assert_eq!(lines[1], "float32    f32 = 1.500000");
     assert_eq!(lines[2], "float64    f64 = 3.141590");
@@ -139,6 +143,122 @@ fn v03_eye_lowers_match_and_prints_expected_output() {
         String::from_utf8_lossy(&out.stdout),
         "0\n1\nboxy\n4\n0\n",
         "unexpected v0.3 stdout"
+    );
+}
+
+/// v0.4 end-to-end: every sized/unsigned integer type compiles under clang
+/// and prints its value with the correct printf specifier (catches a `%lld` /
+/// `%llu` width mismatch that would only surface at C-compile or run time).
+#[test]
+fn sized_integer_types_compile_and_print() {
+    let source = "\
+main() {
+    let int8 a = 1;
+    let int16 b = 2;
+    let int64 c = 3;
+    let uint8 d = 4;
+    let uint16 e = 5;
+    let uint32 f = 6;
+    let uint64 g = 7;
+    print(\"{}\", a);
+    print(\"{}\", b);
+    print(\"{}\", c);
+    print(\"{}\", d);
+    print(\"{}\", e);
+    print(\"{}\", f);
+    print(\"{}\", g);
+}
+";
+    let (out, _) = run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "1\n2\n3\n4\n5\n6\n7\n",
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// v0.4 end-to-end: `as` casts compile under clang and carry C cast
+/// semantics. `300 as uint8` truncates to `44`; an int promoted to float
+/// divides as floating point.
+#[test]
+fn cast_expr_compiles_and_truncates() {
+    let source = "\
+main() {
+    let int32 big = 300;
+    let uint8 small = big as uint8;
+    let int32 n = 7;
+    let float64 half = n as float64 / 2.0;
+    print(\"{}\", small);
+    print(\"{}\", half);
+}
+";
+    let (out, _) = run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "44\n3.500000\n",
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// v0.4 end-to-end: the canonical v0.4 showcase. Every sized/unsigned integer
+/// primitive plus the `as` cast paths (truncation, int->float promotion, tight
+/// binding in a widening add, and a widen/narrow roundtrip). Source lives in
+/// `eyesrc/v04.eye` so the file stays authoritative.
+#[test]
+fn v04_eye_lowers_primitives_and_casts() {
+    let source = include_str!("../eyesrc/v04.eye");
+    let (out, _) = run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "signed     1 2 3 4\n\
+         unsigned   5 6 7 8\n\
+         truncate   44\n\
+         promote    3.500000\n\
+         widen-add  30\n\
+         roundtrip  5\n",
+        "unexpected v0.4 stdout"
+    );
+}
+
+/// v0.4 end-to-end: the FFI + union substrate. An `extern` block binds libc
+/// `malloc`/`free` (resolved at link), `ptr` is the opaque untyped pointer
+/// bridged to `Point*` via `as`, and a `union` gives overlapping storage whose
+/// members print with their own specifiers. Source lives in `eyesrc/ffi.eye`.
+#[test]
+fn ffi_eye_links_libc_and_lowers_union() {
+    let source = include_str!("../eyesrc/ffi.eye");
+    let (out, _) = run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "union i = 42\nunion f = 3.500000\nfreed\n",
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 

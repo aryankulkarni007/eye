@@ -10,8 +10,8 @@ enum Shape =
 ;
 
 main() {
-    const int32 x = 0;
-    const Shape sh = Rectangle;
+    let int32 x = 0;
+    let Shape sh = Rectangle;
     print("{}", x);
     print("{}", sh);
 
@@ -24,7 +24,7 @@ main() {
 
     -- value-position match: hoisted into `int32 _match0;` + switch, then
     -- the let reads the temp. exhaustive, so no wildcard needed.
-    const int32 sides = match sh {
+    let int32 sides = match sh {
         Circle -> 0,
         Rectangle -> 4,
         Triangle -> 3,
@@ -32,7 +32,7 @@ main() {
     print("{}", sides);
 
     -- wildcard arm -> `default:` in the switch.
-    const int32 is_round = match sh {
+    let int32 is_round = match sh {
         Circle -> 1,
         _ -> 0,
     };

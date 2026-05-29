@@ -105,22 +105,22 @@ pub mod support {
 // meaning. The four nodes below carry a category that lives in a token kind:
 // these `impl` blocks layer that on top of the generated structs.
 
-/// Whether a binding is immutable (`const`) or mutable (`var`).
+/// Whether a binding is immutable (`let`) or mutable (`mut`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LetKind {
-    Const,
-    Var,
+    Let,
+    Mut,
 }
 
 impl LetStmt {
-    /// `const` vs `var` - the leading keyword.
+    /// `let` vs `mut` - the leading keyword.
     pub fn kind(&self) -> Option<LetKind> {
         self.syntax()
             .children_with_tokens()
             .filter_map(|e| e.into_token())
             .find_map(|t| match t.kind() {
-                T![const] => Some(LetKind::Const),
-                T![var] => Some(LetKind::Var),
+                T![let] => Some(LetKind::Let),
+                T![mut] => Some(LetKind::Mut),
                 _ => None,
             })
     }
@@ -278,9 +278,9 @@ structure Point {
 };
 
 main() {
-    const x = 0;
-    const y = 0;
-    var Point p = Point { x, y };
+    let x = 0;
+    let y = 0;
+    mut Point p = Point { x, y };
 
     print(\"{}\", p);
 }
@@ -328,11 +328,11 @@ main() {
         };
         let stmts: Vec<_> = f.body().unwrap().stmts().collect();
 
-        // `const x = 0;` - inferred type, no annotation
+        // `let x = 0;` - inferred type, no annotation
         let Stmt::LetStmt(x) = &stmts[0] else {
             panic!("first stmt is a let");
         };
-        assert_eq!(x.kind(), Some(LetKind::Const));
+        assert_eq!(x.kind(), Some(LetKind::Let));
         assert!(x.ty().is_none());
         assert_eq!(x.name().unwrap().text(), "x");
         let Some(Expr::Literal(lit)) = x.value() else {
@@ -340,11 +340,11 @@ main() {
         };
         assert_eq!(lit.literal_kind(), Some(LiteralKind::Int));
 
-        // `var Point p = Point { x, y };` - explicit type, struct literal
+        // `mut Point p = Point { x, y };` - explicit type, struct literal
         let Stmt::LetStmt(p) = &stmts[2] else {
             panic!("third stmt is a let");
         };
-        assert_eq!(p.kind(), Some(LetKind::Var));
+        assert_eq!(p.kind(), Some(LetKind::Mut));
         let TypeRef::IdentType(pty) = p.ty().unwrap() else {
             panic!("let type is an ident type");
         };
@@ -375,7 +375,7 @@ main() {
     #[test]
     fn operator_precedence_nests_left_assoc() {
         // `1 + 2 * 3 - 4` parses as `((1 + (2 * 3)) - 4)`
-        let Expr::BinExpr(top) = first_let_value("main() {\n    const r = 1 + 2 * 3 - 4;\n}\n")
+        let Expr::BinExpr(top) = first_let_value("main() {\n    let r = 1 + 2 * 3 - 4;\n}\n")
         else {
             panic!("top expr is a binop");
         };
@@ -397,7 +397,7 @@ main() {
     #[test]
     fn prefix_minus_binds_tighter_than_infix() {
         // `-a * b` parses as `((-a) * b)`, not `-(a * b)`
-        let Expr::BinExpr(top) = first_let_value("main() {\n    const r = -a * b;\n}\n") else {
+        let Expr::BinExpr(top) = first_let_value("main() {\n    let r = -a * b;\n}\n") else {
             panic!("top expr is the '*' binop");
         };
         assert_eq!(top.op(), Some(BinOp::Mul));
@@ -413,7 +413,7 @@ main() {
     fn struct_lit_named_fields() {
         // explicit `name: value` form - the value is a full expression
         let Expr::StructLit(sl) =
-            first_let_value("main() {\n    const p = Point { x: 0, y: 1 };\n}\n")
+            first_let_value("main() {\n    let p = Point { x: 0, y: 1 };\n}\n")
         else {
             panic!("value is a struct literal");
         };
@@ -429,7 +429,7 @@ main() {
     #[test]
     fn struct_lit_shorthand_has_no_value() {
         // bare-name form - `value()` is `None`, `name()` still resolves
-        let Expr::StructLit(sl) = first_let_value("main() {\n    const p = Point { x, y };\n}\n")
+        let Expr::StructLit(sl) = first_let_value("main() {\n    let p = Point { x, y };\n}\n")
         else {
             panic!("value is a struct literal");
         };

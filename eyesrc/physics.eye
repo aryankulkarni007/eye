@@ -20,19 +20,19 @@ add_vectors(Vector2 a, Vector2 b) -> Vector2 {
 
 main() {
     -- Configure bounds and environment constants
-    const int32 max_height = 100;
-    const int32 gravity_y = 2;
-    var int32 frame_count = 0;
+    let int32 max_height = 100;
+    let int32 gravity_y = 2;
+    mut int32 frame_count = 0;
 
     -- Instantiate our particle using nested struct literal initialization
-    var Particle p = Particle {
+    mut Particle p = Particle {
         position: Vector2 { x: 10, y: 0 },
         velocity: Vector2 { x: 5, y: 10 },
         is_active: true
     };
 
     -- Get a reference to mutate our particle state ergonomically using '.'
-    var &Particle p_ref = &p;
+    mut &Particle p_ref = &p;
 
     print("Simulating particle physics setup...");
 
@@ -49,7 +49,7 @@ main() {
         p_ref.position = add_vectors(p_ref.position, p_ref.velocity);
 
         -- Modern expression assignment: cap height at boundary max_height
-        const int32 current_y = p_ref.position.y;
+        let int32 current_y = p_ref.position.y;
         p_ref.position.y = if current_y > max_height {
             max_height
         } else {
@@ -57,7 +57,7 @@ main() {
         };
 
         -- Check if particle hit the ground floor
-        const bool hit_ground = p_ref.position.y == max_height;
+        let bool hit_ground = p_ref.position.y == max_height;
         if hit_ground {
             p_ref.velocity.y = 0;
             p_ref.is_active = false;

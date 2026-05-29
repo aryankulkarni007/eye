@@ -7,32 +7,32 @@ structure Box {
 
 main() {
     -- integer
-    const int32 i = 42;
+    let int32 i = 42;
     print("int32      i = {}", i);
 
     -- float32 (printf promotes to double, %f works)
-    const float32 f32 = 1.5;
+    let float32 f32 = 1.5;
     print("float32    f32 = {}", f32);
 
     -- float64
-    const float64 f64 = 3.14159;
+    let float64 f64 = 3.14159;
     print("float64    f64 = {}", f64);
 
     -- bool (prints as 1 / 0 via %d)
-    const bool t = true;
-    const bool f = false;
+    let bool t = true;
+    let bool f = false;
     print("bool       t = {}  f = {}", t, f);
 
     -- char
-    const char c = 'A';
+    let char c = 'A';
     print("char       c = {}", c);
 
     -- string literal
     print("string     s = {}", "hello");
 
     -- reference to struct -> %p
-    var Box b = Box { n: 7 };
-    var &Box r = &b;
+    mut Box b = Box { n: 7 };
+    mut &Box r = &b;
     print("&Box       r = {}", r);
 
     -- mixed multi-arg in one call

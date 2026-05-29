@@ -5,6 +5,7 @@ use la_arena::Idx;
 use super::*;
 
 pub type StructId = Idx<Struct>;
+pub type UnionId = Idx<Union>;
 pub type EnumId = Idx<Enum>;
 pub type FnId = Idx<Function>;
 pub type FieldId = Idx<Field>;

@@ -8,12 +8,20 @@ impl<'a> CGen<'a> {
     pub(super) fn map_type_ref(&self, ty: &TypeRef) -> String {
         match ty {
             TypeRef::Path(name) => match name.as_str() {
+                "int8" => "int8_t".to_string(),
+                "int16" => "int16_t".to_string(),
                 "int32" => "int32_t".to_string(),
+                "int64" => "int64_t".to_string(),
+                "uint8" => "uint8_t".to_string(),
+                "uint16" => "uint16_t".to_string(),
+                "uint32" => "uint32_t".to_string(),
+                "uint64" => "uint64_t".to_string(),
                 "float32" => "float".to_string(),
                 "float64" => "double".to_string(),
                 "bool" => "bool".to_string(),
                 "char" => "char".to_string(),
                 "string" => "const char*".to_string(), // string literal base
+                "ptr" => "void*".to_string(),          // opaque untyped pointer
                 other => other.to_string(),
             },
             TypeRef::Ref(inner) => format!("{}*", self.map_type_ref(inner)),
@@ -46,14 +54,24 @@ impl<'a> CGen<'a> {
                     _ => return None,
                 };
 
-                let struct_def = self
+                // Field-typed lookup spans both products (structs) and unions
+                // - they share the field arena, so a union member resolves the
+                // same way.
+                let fields: Option<&[_]> = self
                     .hir
                     .structs
                     .iter()
                     .find(|(_, s)| s.name == struct_name)
-                    .map(|(_, s)| s)?;
+                    .map(|(_, s)| s.fields.as_slice())
+                    .or_else(|| {
+                        self.hir
+                            .unions
+                            .iter()
+                            .find(|(_, u)| u.name == struct_name)
+                            .map(|(_, u)| u.fields.as_slice())
+                    });
 
-                for &field_id in &struct_def.fields {
+                for &field_id in fields? {
                     let field = &self.hir.fields[field_id];
                     if field.name == *name {
                         return Some(field.ty.clone());
@@ -81,7 +99,13 @@ impl<'a> CGen<'a> {
     pub(super) fn spec_for_type(ty: &TypeRef) -> &'static str {
         match ty {
             TypeRef::Path(name) => match name.as_str() {
-                "int32" => "%d",
+                // int8/int16 default-promote to int, so %d is correct.
+                "int8" | "int16" | "int32" => "%d",
+                "int64" => "%lld",
+                // uint8/uint16 default-promote to int; %u reads the same small
+                // positive value. uint32 is unsigned int.
+                "uint8" | "uint16" | "uint32" => "%u",
+                "uint64" => "%llu",
                 // printf promotes float to double for variadics, so a single
                 // `%f` covers both surface types.
                 "float32" | "float64" => "%f",

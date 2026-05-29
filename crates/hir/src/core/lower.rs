@@ -244,9 +244,23 @@ impl<'a> LoweringCtx<'a> {
     fn lookup_field_type(&self, struct_ty: &TypeRef, field_name: &Text) -> TypeRef {
         match struct_ty {
             TypeRef::Path(name) => {
-                if let Some(&struct_id) = self.hir.items.structs.get(name) {
-                    let struct_def = &self.hir.structs[struct_id];
-                    for &field_id in &struct_def.fields {
+                // Structs and unions share the field arena, so a member of
+                // either resolves the same way - check both namespaces.
+                let fields = self
+                    .hir
+                    .items
+                    .structs
+                    .get(name)
+                    .map(|&id| self.hir.structs[id].fields.as_slice())
+                    .or_else(|| {
+                        self.hir
+                            .items
+                            .unions
+                            .get(name)
+                            .map(|&id| self.hir.unions[id].fields.as_slice())
+                    });
+                if let Some(fields) = fields {
+                    for &field_id in fields {
                         let field = &self.hir.fields[field_id];
                         if &field.name == field_name {
                             return field.ty.clone();
@@ -298,7 +312,7 @@ impl<'a> LoweringCtx<'a> {
                     .map(|t| SmolStr::from(t.text()))
                     .unwrap_or_default();
                 let ty = l.ty().map(|t| lower_type_ref(&t));
-                let mutable = matches!(l.kind(), Some(ast::LetKind::Var));
+                let mutable = matches!(l.kind(), Some(ast::LetKind::Mut));
                 let init = l.value().map(|e| self.lower_expr(&e));
 
                 // pat <-> local back-reference: allocate Pat::Missing first so
@@ -412,6 +426,20 @@ impl<'a> LoweringCtx<'a> {
                             }
                         };
                         fields.push(StructLitField { name: fname, value });
+                    }
+                }
+                // A union literal sets exactly one member (overlapping
+                // storage). More than one would silently overwrite; zero
+                // leaves the value uninitialized.
+                if let TypeRef::Path(name) = &ty {
+                    if self.hir.items.unions.contains_key(name) && fields.len() != 1 {
+                        self.diag(
+                            SyntaxNodePtr::new(sl.syntax()),
+                            format!(
+                                "union literal `{name}` must set exactly one field, found {}",
+                                fields.len()
+                            ),
+                        );
                     }
                 }
                 Expr::StructLit { ty, fields }
@@ -698,6 +726,19 @@ impl<'a> LoweringCtx<'a> {
                 expr_type = Some(deref_ty);
                 Expr::Deref { operand }
             }
+            ast::Expr::CastExpr(c) => {
+                let operand = c
+                    .operand()
+                    .map(|e| self.lower_expr(&e))
+                    .unwrap_or_else(|| self.alloc_expr(Expr::Missing, ptr));
+                let ty = c
+                    .ty()
+                    .map(|t| lower_type_ref(&t))
+                    .unwrap_or(TypeRef::Error);
+                // A cast's value is its target type.
+                expr_type = Some(ty.clone());
+                Expr::Cast { operand, ty }
+            }
         };
 
         // allocate the expression and record its type if known
@@ -875,6 +916,7 @@ fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId, ast::FnDef
                     params,
                     ret,
                     body: None,
+                    is_extern: false,
                 });
                 if hir.items.functions.contains_key(&name) || hir.items.structs.contains_key(&name)
                 {
@@ -885,6 +927,88 @@ fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId, ast::FnDef
                 }
                 hir.items.functions.insert(name, fn_id);
                 fn_asts.push((fn_id, f));
+            }
+            // A union mirrors struct collection exactly - same field list,
+            // separate arena + scope namespace.
+            ast::Item::UnionDef(u) => {
+                let name: Text = u
+                    .name()
+                    .map(|t| SmolStr::from(t.text()))
+                    .unwrap_or_default();
+                let mut fields = Vec::new();
+                if let Some(fl) = u.field_list() {
+                    for f in fl.fields() {
+                        let fname: Text = f
+                            .name()
+                            .map(|t| SmolStr::from(t.text()))
+                            .unwrap_or_default();
+                        let ty = match f.ty() {
+                            Some(t) => lower_type_ref(&t),
+                            None => TypeRef::Error,
+                        };
+                        let field_id = hir.fields.alloc(Field { name: fname, ty });
+                        fields.push(field_id);
+                    }
+                }
+                let union_id = hir.unions.alloc(Union {
+                    name: name.clone(),
+                    fields,
+                });
+                if hir.items.structs.contains_key(&name)
+                    || hir.items.unions.contains_key(&name)
+                    || hir.items.functions.contains_key(&name)
+                {
+                    hir.diagnostics.push(HirDiagnostic {
+                        ptr: SyntaxNodePtr::new(u.syntax()),
+                        msg: format!("duplicate item `{name}`"),
+                    });
+                }
+                hir.items.unions.insert(name, union_id);
+            }
+            // Each signature in an `extern` block becomes a bodyless
+            // [`Function`] flagged `is_extern`, registered in the fn namespace
+            // so calls resolve. No AST body, so nothing is pushed to `fn_asts`.
+            ast::Item::ExternBlock(eb) => {
+                for ef in eb.fns() {
+                    let name: Text = ef
+                        .name()
+                        .map(|t| SmolStr::from(t.text()))
+                        .unwrap_or_default();
+                    let mut params = Vec::new();
+                    if let Some(pl) = ef.param_list() {
+                        for param_ast in pl.params() {
+                            let pname = param_ast
+                                .name()
+                                .map(|t| SmolStr::from(t.text()))
+                                .unwrap_or_default();
+                            let pty = match param_ast.ty() {
+                                Some(t) => lower_type_ref(&t),
+                                None => TypeRef::Error,
+                            };
+                            params.push(Param {
+                                name: pname,
+                                ty: pty,
+                            });
+                        }
+                    }
+                    let ret = ef.ret_type().map(|t| lower_type_ref(&t));
+                    let fn_id = hir.functions.alloc(Function {
+                        name: name.clone(),
+                        params,
+                        ret,
+                        body: None,
+                        is_extern: true,
+                    });
+                    if hir.items.functions.contains_key(&name)
+                        || hir.items.structs.contains_key(&name)
+                    {
+                        hir.diagnostics.push(HirDiagnostic {
+                            ptr: SyntaxNodePtr::new(ef.syntax()),
+                            msg: format!("duplicate item `{name}`"),
+                        });
+                    }
+                    hir.items.functions.insert(name, fn_id);
+                }
             }
             // v0.2 EnumDef: collection deferred. Skipping leaves no item in
             // [`ItemScope`] for it, but the body lowering still walks the

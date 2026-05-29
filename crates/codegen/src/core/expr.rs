@@ -205,6 +205,11 @@ impl<'a> CGen<'a> {
                 self.gen_expr(*operand, body);
                 self.output.push(')');
             }
+            Expr::Cast { operand, ty } => {
+                let ty_str = self.map_type_ref(ty);
+                self.output.push_str(&format!("({})", ty_str));
+                self.gen_expr(*operand, body);
+            }
             Expr::Match { .. } => {
                 // Value-position match. It was hoisted into a `_matchN` temp by
                 // `hoist_matches` before the enclosing statement was emitted, so

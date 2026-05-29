@@ -151,6 +151,9 @@ impl<'a> CGen<'a> {
             Expr::Deref { operand } => {
                 self.collect_match_ids_rec(*operand, body, out);
             }
+            Expr::Cast { operand, .. } => {
+                self.collect_match_ids_rec(*operand, body, out);
+            }
             Expr::Match { scrut, .. } => {
                 self.collect_match_ids_rec(*scrut, body, out);
                 out.push(expr_idx);

@@ -2,7 +2,7 @@
 //! body driver.
 
 use super::CGen;
-use hir::core::{Body, Enum, Function, Struct};
+use hir::core::{Body, Enum, Function, Struct, Union};
 
 impl<'a> CGen<'a> {
     pub(super) fn gen_struct(&mut self, struct_def: &Struct) {
@@ -22,6 +22,23 @@ impl<'a> CGen<'a> {
             .push_str(&format!("}} {};\n\n", struct_def.name));
     }
 
+    // Same shape as `gen_struct`, emitting `union` for overlapping storage.
+    pub(super) fn gen_union(&mut self, union_def: &Union) {
+        self.output.push_str("typedef union {\n");
+        self.indent_level += 1;
+
+        for &field_id in &union_def.fields {
+            let field = &self.hir.fields[field_id];
+            self.push_indent();
+            let ty_str = self.map_type_ref(&field.ty);
+            self.output
+                .push_str(&format!("{} {};\n", ty_str, field.name));
+        }
+
+        self.indent_level -= 1;
+        self.output.push_str(&format!("}} {};\n\n", union_def.name));
+    }
+
     pub(super) fn gen_enum(&mut self, enum_def: &Enum) {
         self.output.push_str("typedef enum {\n");
         self.indent_level += 1;
@@ -37,6 +54,25 @@ impl<'a> CGen<'a> {
         // `_matchN` temp names are local to each C function.
         self.match_temps.clear();
         self.match_counter = 0;
+
+        // An extern fn is a bare prototype: signature then `;`, no body. The
+        // linker binds the symbol (libc for the v0.4 alloc/IO seam).
+        if r#fn.is_extern {
+            let ret_type = r#fn
+                .ret
+                .as_ref()
+                .map_or("void".to_string(), |t| self.map_type_ref(t));
+            self.output
+                .push_str(&format!("{} {}(", ret_type, r#fn.name));
+            for (i, param) in r#fn.params.iter().enumerate() {
+                if i > 0 {
+                    self.output.push_str(", ");
+                }
+                self.output.push_str(&self.map_type_ref(&param.ty));
+            }
+            self.output.push_str(");\n");
+            return;
+        }
 
         let ret_type = if r#fn.name == "main" {
             "int".to_string()

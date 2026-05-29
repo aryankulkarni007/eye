@@ -116,6 +116,17 @@ fn describe_expr(expr: &ast::Expr) -> String {
         ast::Expr::ContinueExpr(_) => "<continue>".to_string(),
         ast::Expr::RefExpr(_) => "<ref>".to_string(),
         ast::Expr::DerefExpr(_) => "<deref>".to_string(),
+        ast::Expr::CastExpr(c) => {
+            let operand = c
+                .operand()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            let ty = c
+                .ty()
+                .map(|t| describe_type_ref(&t))
+                .unwrap_or_else(|| "<missing>".to_string());
+            format!("({operand} as {ty})")
+        }
         ast::Expr::MatchExpr(_) => "<match>".to_string(),
     }
 }
@@ -140,8 +151,8 @@ fn dump_stmt(stmt: &ast::Stmt) {
     match stmt {
         ast::Stmt::LetStmt(l) => {
             let kw = match l.kind() {
-                Some(ast::LetKind::Const) => "const",
-                Some(ast::LetKind::Var) => "var",
+                Some(ast::LetKind::Let) => "let",
+                Some(ast::LetKind::Mut) => "mut",
                 None => "<missing>",
             };
             // a `let_stmt` type is optional (`ty?`): absent means the type
@@ -197,6 +208,28 @@ fn dump_ast(file: &ast::SourceFile) {
                 println!("enum {}", tok_text(e.name()));
                 for v in e.variants() {
                     println!("  | {}", tok_text(v.name()));
+                }
+            }
+            ast::Item::UnionDef(u) => {
+                println!("union {}", tok_text(u.name()));
+                if let Some(fl) = u.field_list() {
+                    for f in fl.fields() {
+                        let ty = f
+                            .ty()
+                            .map(|t| describe_type_ref(&t))
+                            .unwrap_or_else(|| "<missing>".to_string());
+                        println!("  field {ty} {}", tok_text(f.name()));
+                    }
+                }
+            }
+            ast::Item::ExternBlock(eb) => {
+                println!("extern");
+                for ef in eb.fns() {
+                    let ret = ef
+                        .ret_type()
+                        .map(|t| describe_type_ref(&t))
+                        .unwrap_or_else(|| "void".to_string());
+                    println!("  extern fn {}() -> {ret}", tok_text(ef.name()));
                 }
             }
         }

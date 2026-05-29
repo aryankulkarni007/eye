@@ -119,6 +119,10 @@ pub enum Expr {
     Deref {
         operand: ExprId,
     },
+    Cast {
+        operand: ExprId,
+        ty: TypeRef,
+    },
     Match {
         scrut: ExprId,
         arms: Vec<MatchArm>,
@@ -161,7 +165,7 @@ pub enum Resolution {
     Enum(EnumId),
     /// A specific variant of an enum. Produced either by qualified access
     /// (`Shape.Circle` lowers the whole `FieldExpr` to this) or by
-    /// type-directed lookup in a typed context (`const Shape sh = Circle;`).
+    /// type-directed lookup in a typed context (`let Shape sh = Circle;`).
     Variant {
         enum_id: EnumId,
         idx: u32,

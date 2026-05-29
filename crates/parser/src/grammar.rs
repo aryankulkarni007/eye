@@ -17,7 +17,7 @@
 //!
 //! block        := '{' (stmt)* expr? '}'
 //! stmt         := let_stmt | expr_stmt
-//! let_stmt     := ('const' | 'var') type_ref? Ident '=' expr ';'
+//! let_stmt     := ('let' | 'mut') type_ref? Ident '=' expr ';'
 //! expr_stmt    := expr ';'                        // or block-like expr w/o ';'
 //! expr         := pratt
 //! pratt        := prefix (infix prefix)*
@@ -72,6 +72,10 @@ pub(crate) fn source_file(p: &mut Parser) {
     while !p.at_eof() {
         if p.at(T![structure]) {
             struct_def(p);
+        } else if p.at(T![union]) {
+            union_def(p);
+        } else if p.at(T![extern]) {
+            extern_block(p);
         } else if p.at(T![enum]) {
             enum_def(p);
         } else if p.at(SyntaxKind::Ident) {
@@ -90,6 +94,47 @@ fn struct_def(p: &mut Parser) {
     field_list(p);
     p.expect(T![;], "expected ';' after struct definition");
     m.complete(p, SyntaxKind::StructDef);
+}
+
+// A union reuses the struct field-list verbatim; only the keyword and the
+// emitted node kind differ (overlapping storage instead of a product type).
+fn union_def(p: &mut Parser) {
+    let m = p.open();
+    p.advance(); // 'union'
+    p.expect(SyntaxKind::Ident, "expected a union name");
+    field_list(p);
+    p.expect(T![;], "expected ';' after union definition");
+    m.complete(p, SyntaxKind::UnionDef);
+}
+
+// `extern { sig; sig; }` - a batch of C function signatures with no bodies.
+// Each name enters the top-level namespace and resolves at link time.
+fn extern_block(p: &mut Parser) {
+    let m = p.open();
+    p.advance(); // 'extern'
+    p.expect(T!['{'], "expected '{' to open extern block");
+    while !p.at(T!['}']) && !p.at_eof() {
+        if p.at(SyntaxKind::Ident) {
+            extern_fn(p);
+        } else {
+            p.error_and_advance("expected an extern function signature");
+        }
+    }
+    p.expect(T!['}'], "expected '}' to close extern block");
+    m.complete(p, SyntaxKind::ExternBlock);
+}
+
+// A bodyless fn signature: `name(Type arg, ...) -> Ret;`. Mirrors `fn_def`
+// but terminates on `;` where a fn would open its block.
+fn extern_fn(p: &mut Parser) {
+    let m = p.open();
+    p.advance(); // function name
+    param_list(p);
+    if p.eat(T![->]) {
+        type_ref(p);
+    }
+    p.expect(T![;], "expected ';' after extern signature");
+    m.complete(p, SyntaxKind::ExternFn);
 }
 
 fn field_list(p: &mut Parser) {
@@ -204,7 +249,7 @@ fn block(p: &mut Parser) {
     let m = p.open();
     p.expect(T!['{'], "expected '{' to open block");
     while !p.at(T!['}']) && !p.at_eof() {
-        if p.at(T![const]) || p.at(T![var]) {
+        if p.at(T![let]) || p.at(T![mut]) {
             let_stmt(p);
         } else if at_expr_start(p) {
             // A block-like expression (`if`, `loop`, raw block) does not need
@@ -243,7 +288,7 @@ fn block(p: &mut Parser) {
 
 #[allow(dead_code)]
 fn stmt(p: &mut Parser) {
-    if p.at(T![const]) || p.at(T![var]) {
+    if p.at(T![let]) || p.at(T![mut]) {
         let_stmt(p);
     } else if at_expr_start(p) {
         expr_stmt(p);
@@ -254,19 +299,24 @@ fn stmt(p: &mut Parser) {
 
 /// `let_stmt` accepts three shapes:
 ///
-/// - inferred:    `const x = expr;`
-/// - explicit:    `var Point p = expr;`         (Ident then Ident)
-/// - explicit ref: `var &Point r = expr;`       (& then Ident then Ident)
+/// - inferred:    `let x = expr;`
+/// - explicit:    `mut Point p = expr;`         (Ident then Ident)
+/// - explicit ref: `mut &Point r = expr;`       (& then Ident then Ident)
 ///
 /// The pointer-suffix form `T*` is not yet disambiguated here; a future v0.3
 /// will look further ahead.
 fn let_stmt(p: &mut Parser) {
     let m = p.open();
-    p.advance(); // 'const' or 'var'
-    let has_type = matches!(
-        (p.nth0(), p.nth(1), p.nth(2)),
-        (SyntaxKind::Ident, SyntaxKind::Ident, _) | (T![&], SyntaxKind::Ident, SyntaxKind::Ident)
-    );
+    p.advance(); // 'let' or 'mut'
+    // A leading type is present when the tokens after `let`/`mut` read as
+    // `type name` rather than `name =`. A leading `&` can only begin a ref
+    // type (a binding name never starts with `&`). An `Ident` is a type if the
+    // next token is another `Ident` (`Point p`) or a postfix `*` (`Point* p`).
+    let has_type = matches!(p.nth0(), T![&])
+        || matches!(
+            (p.nth0(), p.nth(1)),
+            (SyntaxKind::Ident, SyntaxKind::Ident) | (SyntaxKind::Ident, T![*])
+        );
     if has_type {
         type_ref(p);
     }
@@ -388,6 +438,13 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
             p.expect(SyntaxKind::Ident, "expected field identifier after '.'");
             name_m.complete(p, SyntaxKind::NameRef);
             lhs = field_expr.complete(p, SyntaxKind::FieldExpr);
+        } else if p.at(T![as]) {
+            // `expr as Type` - a postfix cast. Binds as tightly as call/field,
+            // so `a + b as T` parses as `a + (b as T)`.
+            let cast = lhs.precede(p);
+            p.advance(); // 'as'
+            type_ref(p);
+            lhs = cast.complete(p, SyntaxKind::CastExpr);
         } else {
             break;
         }

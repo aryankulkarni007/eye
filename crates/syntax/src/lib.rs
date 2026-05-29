@@ -36,9 +36,9 @@ syntax_kinds! {
     Eof, Illegal,
     Ident,
     Int, Float, String, True, False, Char,
-    Const, Var, Structure, Enum,
+    Let, Mut, Structure, Enum, Union, Extern,
     If, Else, Loop, Break, Continue,
-    Match, Underscore,
+    Match, Underscore, As,
     Oparen, Cparen, Obrace, Cbrace, Obrack, Cbrack, Comma, Semicolon, Colon,
     Assign,
     Plus, Minus, Star, Slash, And, Or, Eq, Neq, Lt, Gt, Leq, Geq,
@@ -49,13 +49,15 @@ syntax_kinds! {
     SourceFile,
     StructDef, FieldList, Field,
     EnumDef, Variant,
+    UnionDef,
+    ExternBlock, ExternFn,
     FnDef, ParamList, Param, Block,
     IdentType, RefType, PtrType,
     LetStmt, ExprStmt,
     Literal, NameRef, CallExpr, ArgList,
     BinExpr, PrefixExpr, FieldExpr,
     AssignExpr, IfExpr, LoopExpr, BreakExpr, ContinueExpr,
-    RefExpr, DerefExpr,
+    RefExpr, DerefExpr, CastExpr,
     StructLit, StructLitFieldList, StructLitField,
     MatchExpr, MatchArmList, MatchArm,
     PathPat, BareIdentPat, WildcardPat,
@@ -95,10 +97,12 @@ impl From<TokenKind> for SyntaxKind {
             T::True => S::True,
             T::False => S::False,
             T::Char => S::Char,
-            T::Const => S::Const,
-            T::Var => S::Var,
+            T::Let => S::Let,
+            T::Mut => S::Mut,
             T::Structure => S::Structure,
             T::Enum => S::Enum,
+            T::Union => S::Union,
+            T::Extern => S::Extern,
             T::If => S::If,
             T::Else => S::Else,
             T::Loop => S::Loop,
@@ -106,6 +110,7 @@ impl From<TokenKind> for SyntaxKind {
             T::Continue => S::Continue,
             T::Match => S::Match,
             T::Underscore => S::Underscore,
+            T::As => S::As,
             T::Oparen => S::Oparen,
             T::Cparen => S::Cparen,
             T::Obrace => S::Obrace,
@@ -206,16 +211,19 @@ macro_rules! T {
     [>=]    => { $crate::SyntaxKind::Geq };
 
     // ---- keywords ----
-    [const]     => { $crate::SyntaxKind::Const };
-    [var]       => { $crate::SyntaxKind::Var };
+    [let]       => { $crate::SyntaxKind::Let };
+    [mut]       => { $crate::SyntaxKind::Mut };
     [structure] => { $crate::SyntaxKind::Structure };
     [enum]      => { $crate::SyntaxKind::Enum };
+    [union]     => { $crate::SyntaxKind::Union };
+    [extern]    => { $crate::SyntaxKind::Extern };
     [if]        => { $crate::SyntaxKind::If };
     [else]      => { $crate::SyntaxKind::Else };
     [loop]      => { $crate::SyntaxKind::Loop };
     [break]     => { $crate::SyntaxKind::Break };
     [continue]  => { $crate::SyntaxKind::Continue };
     [match]     => { $crate::SyntaxKind::Match };
+    [as]        => { $crate::SyntaxKind::As };
     [_]         => { $crate::SyntaxKind::Underscore };
 }
 
@@ -263,8 +271,8 @@ mod tests {
 
     #[test]
     fn t_macro_keywords() {
-        assert_eq!(T![const], SyntaxKind::Const);
-        assert_eq!(T![var], SyntaxKind::Var);
+        assert_eq!(T![let], SyntaxKind::Let);
+        assert_eq!(T![mut], SyntaxKind::Mut);
         assert_eq!(T![structure], SyntaxKind::Structure);
         assert_eq!(T![enum], SyntaxKind::Enum);
         assert_eq!(T![if], SyntaxKind::If);
@@ -304,7 +312,10 @@ mod tests {
         assert_eq!(SyntaxKind::from(TokenKind::Arrow), SyntaxKind::Arrow);
         assert_eq!(SyntaxKind::from(TokenKind::Farrow), SyntaxKind::Farrow);
         assert_eq!(SyntaxKind::from(TokenKind::Match), SyntaxKind::Match);
-        assert_eq!(SyntaxKind::from(TokenKind::Underscore), SyntaxKind::Underscore);
+        assert_eq!(
+            SyntaxKind::from(TokenKind::Underscore),
+            SyntaxKind::Underscore
+        );
     }
 
     /// `u16` round-trip through the rowan language binding. Picks new v0.2
