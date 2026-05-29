@@ -1,7 +1,7 @@
 # Eye — language and compiler status
 
 What the compiler ships today, known limitations, and where work is headed.
-For how to extend the pipeline, see [`docs/adding-features.md`](docs/adding-features.md).
+For how to extend the pipeline, see [`adding-features.md`](adding-features.md).
 For long-term language vision, see [`VISION.md`](VISION.md).
 
 ## Pipeline
@@ -31,7 +31,7 @@ incremental compilation, non-C backends.
 | Highlighting | Semantic tokens (lexer + CST classification) | Legend slots `METHOD`, `FALLBACK` reserved; not all contexts use distinct types | No `semanticTokens/range` |
 | Diagnostics | Parser errors on `didOpen` / `didChange` | No HIR diagnostics yet | — |
 | Protocol | Shutdown, `didClose`, `MethodNotFound` for unknown requests | No completion, hover, goto-def | — |
-| Docs | [`docs/editor-setup.md`](docs/editor-setup.md) | Client-specific JSON varies by extension | — |
+| Docs | [`editor-setup.md`](editor-setup.md) | Client-specific JSON varies by extension | — |
 
 Build: `cargo build -p eye-lsp`. Debug: `EYE_LSP_LOG=1`.
 

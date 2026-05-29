@@ -51,4 +51,4 @@ on stderr (safe for LSP — not stdout).
 
 ## Limitations
 
-See [`FUTURE.md`](../FUTURE.md) — *Editor support (eye-lsp)*.
+See [`FUTURE.md`](FUTURE.md) — *Editor support (eye-lsp)*.

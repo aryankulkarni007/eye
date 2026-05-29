@@ -1,8 +1,8 @@
 # Adding features to the Eye pipeline
 
 How to extend the compiler end-to-end: lexer through HIR lowering and C codegen.
-Read [`FUTURE.md`](../FUTURE.md) for what is already shipped and known limitations.
-Read [`VISION.md`](../VISION.md) before adding kernel syntax that might belong in stdlib.
+Read [`FUTURE.md`](FUTURE.md) for what is already shipped and known limitations.
+Read [`VISION.md`](VISION.md) before adding kernel syntax that might belong in stdlib.
 
 ## Workspace layout
 
@@ -242,7 +242,7 @@ Rules:
 - Name resolution and exhaustiveness belong here, not in the parser.
 - Populate `body.expr_types` when codegen or match lowering needs a type.
 - Add unit tests in `crates/hir/src/core/tests.rs`.
-- Record user-facing limitations in [`FUTURE.md`](../FUTURE.md).
+- Record user-facing limitations in [`FUTURE.md`](FUTURE.md).
 
 ## Adding codegen (C backend)
 
@@ -258,7 +258,7 @@ Rules:
 | `print.rs` | `print` intrinsic |
 
 Value-position `match` is hoisted from `gen_stmt` before the use site is emitted
-(see [`M5.md`](../M5.md)). If you add an expression form that can contain a
+(see [`M5.md`](M5.md)). If you add an expression form that can contain a
 match inline, update the hoist walk in `matches.rs`.
 
 Add regression tests in `crates/codegen/src/core/tests.rs`. For externally
@@ -277,7 +277,7 @@ Crate layout mirrors the compiler split: [`crates/lsp/src/`](../crates/lsp/src/)
 | `diagnostics.rs` | New diagnostic sources (e.g. HIR after v0.5) |
 | `server/` | New LSP methods |
 
-Tests live in each module’s `#[cfg(test)]` block. See [`docs/editor-setup.md`](editor-setup.md).
+Tests live in each module’s `#[cfg(test)]` block. See [`editor-setup.md`](editor-setup.md).
 
 ## Gotchas
 
