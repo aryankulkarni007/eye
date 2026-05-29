@@ -59,6 +59,7 @@ fn at_expr_start(p: &Parser) -> bool {
             | T![-]
             | T![&]
             | T![*]
+            | T!['[']
             | T![if]
             | T![loop]
             | T![break]
@@ -193,8 +194,18 @@ fn enum_def(p: &mut Parser) {
 }
 
 fn type_ref(p: &mut Parser) {
-    // parse the base type (either &ref or ident)
-    let mut m = if p.at(T![&]) {
+    // parse the base type (either &ref, [T; N] array, or ident)
+    let mut m = if p.at(T!['[']) {
+        // `[T; N]` fixed-size array. N is an expression in the grammar but
+        // restricted to an integer literal in lowering (no const-expr yet).
+        let m = p.open();
+        p.advance(); // '['
+        type_ref(p); // element type
+        p.expect(T![;], "expected ';' between array element type and length");
+        expr(p); // length
+        p.expect(T![']'], "expected ']' to close array type");
+        m.complete(p, SyntaxKind::ArrayType)
+    } else if p.at(T![&]) {
         let m = p.open();
         p.advance(); // '&'
         type_ref(p);
@@ -309,10 +320,11 @@ fn let_stmt(p: &mut Parser) {
     let m = p.open();
     p.advance(); // 'let' or 'mut'
     // A leading type is present when the tokens after `let`/`mut` read as
-    // `type name` rather than `name =`. A leading `&` can only begin a ref
-    // type (a binding name never starts with `&`). An `Ident` is a type if the
-    // next token is another `Ident` (`Point p`) or a postfix `*` (`Point* p`).
-    let has_type = matches!(p.nth0(), T![&])
+    // `type name` rather than `name =`. A leading `&` begins a ref type and a
+    // leading `[` begins an array type (a binding name never starts with
+    // either). An `Ident` is a type if the next token is another `Ident`
+    // (`Point p`) or a postfix `*` (`Point* p`).
+    let has_type = matches!(p.nth0(), T![&] | T!['['])
         || matches!(
             (p.nth0(), p.nth(1)),
             (SyntaxKind::Ident, SyntaxKind::Ident) | (SyntaxKind::Ident, T![*])
@@ -420,6 +432,9 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
     if p.at(T![match]) {
         return Some(match_expr(p));
     }
+    if p.at(T!['[']) {
+        return Some(array_lit(p));
+    }
 
     let mut lhs = atom(p)?;
     loop {
@@ -427,6 +442,13 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
             let call = lhs.precede(p);
             arg_list(p);
             lhs = call.complete(p, SyntaxKind::CallExpr);
+        } else if p.at(T!['[']) {
+            // postfix index `base[i]` - binds as tightly as call/field.
+            let index = lhs.precede(p);
+            p.advance(); // '['
+            expr(p);
+            p.expect(T![']'], "expected ']' to close index");
+            lhs = index.complete(p, SyntaxKind::IndexExpr);
         } else if p.at(T!['{']) && !p.no_struct_lit() {
             let lit = lhs.precede(p);
             struct_body(p);
@@ -460,7 +482,17 @@ fn if_expr(p: &mut Parser) -> CompletedMarker {
     p.set_no_struct_lit(prev);
     block(p);
     if p.eat(T![else]) {
-        block(p);
+        if p.at(T![if]) {
+            // `else if` desugars to `else { if ... }`: wrap the chained if in a
+            // synthetic Block so the else-branch stays a Block end-to-end
+            // (AST/HIR/codegen are unchanged). Codegen flattens the trivial
+            // `else { if }` back to `else if` so the C output does not nest.
+            let blk = p.open();
+            if_expr(p);
+            blk.complete(p, SyntaxKind::Block);
+        } else {
+            block(p);
+        }
     }
     m.complete(p, SyntaxKind::IfExpr)
 }
@@ -600,6 +632,28 @@ fn atom(p: &mut Parser) -> Option<CompletedMarker> {
         }
     };
     Some(m.complete(p, kind))
+}
+
+/// `[a, b, c]` array literal. Its own struct-lit context: a suppressed flag
+/// from an enclosing if/loop condition does not apply inside the elements.
+/// Trailing comma is allowed.
+fn array_lit(p: &mut Parser) -> CompletedMarker {
+    let m = p.open();
+    p.advance(); // '['
+    let prev = p.set_no_struct_lit(false);
+    while !p.at(T![']']) && !p.at_eof() {
+        if at_expr_start(p) {
+            expr(p);
+            if !p.eat(T![,]) {
+                break;
+            }
+        } else {
+            p.error_and_advance("expected an array element");
+        }
+    }
+    p.set_no_struct_lit(prev);
+    p.expect(T![']'], "expected ']' to close array literal");
+    m.complete(p, SyntaxKind::ArrayLit)
 }
 
 fn arg_list(p: &mut Parser) {

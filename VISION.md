@@ -65,3 +65,5 @@ Discriminating test: **a feature belongs in the kernel iff a supermacro provably
 ## Discipline that applies now
 
 The AST node set is forever-API. Ship substrate (union, FFI, machine types, casts), not features. Do **not** ship `for`, payload-enum syntax, or class syntax into v0.4-v0.9.
+
+For **near-term compiler scope, limitations, and decision forks** (match extensibility vs closed kernel, modules vs substrate hardening), see [`FUTURE.md`](FUTURE.md) — especially *Roadmap — v0.5* and *Future forks*.

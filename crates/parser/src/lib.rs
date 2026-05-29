@@ -561,6 +561,31 @@ main() {
         assert_eq!(parse.green.to_string(), src);
     }
 
+    /// Fixed-size array: typed `let` with an `[T; N]` annotation, an `[...]`
+    /// literal initializer, and a postfix index. Must round-trip byte-for-byte.
+    #[test]
+    fn array_decl_literal_and_index_parse_clean() {
+        let src = "main() {\n    let [int32; 3] xs = [1, 2, 3];\n    xs[0] = xs[1];\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+        let s = format!("{:#?}", parse.green);
+        assert!(s.contains("ArrayType"), "expected ArrayType in:\n{s}");
+        assert!(s.contains("ArrayLit"), "expected ArrayLit in:\n{s}");
+        assert!(s.contains("IndexExpr"), "expected IndexExpr in:\n{s}");
+    }
+
+    /// `else if` chaining. The chained `if` is wrapped in a synthetic Block
+    /// (the `else { if ... }` desugar), so the else-branch stays a Block; the
+    /// CST must still reproduce the source byte-for-byte and carry no errors.
+    #[test]
+    fn else_if_chain_parses_clean() {
+        let src = "main() {\n    if a { x } else if b { y } else { z }\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
     /// `if` used as a statement-position expression without a trailing `;`,
     /// followed by another statement - the block-like rule in `block`.
     #[test]
@@ -699,7 +724,8 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
     /// match-as-expression in a typed let.
     #[test]
     fn match_expr_as_let_value_parses_clean() {
-        let src = "main() {\n    let int32 r = match x {\n        A -> 1,\n        _ -> 0,\n    };\n}\n";
+        let src =
+            "main() {\n    let int32 r = match x {\n        A -> 1,\n        _ -> 0,\n    };\n}\n";
         let parse = parse_src(src);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(parse.green.to_string(), src);

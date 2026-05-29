@@ -3,7 +3,7 @@
 
 use syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
-use crate::{support, AstChildren, AstNode};
+use crate::{AstChildren, AstNode, support};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceFile {
@@ -290,12 +290,16 @@ pub enum TypeRef {
     IdentType(IdentType),
     RefType(RefType),
     PtrType(PtrType),
+    ArrayType(ArrayType),
 }
 impl AstNode for TypeRef {
     fn can_cast(kind: SyntaxKind) -> bool {
         matches!(
             kind,
-            SyntaxKind::IdentType | SyntaxKind::RefType | SyntaxKind::PtrType
+            SyntaxKind::IdentType
+                | SyntaxKind::RefType
+                | SyntaxKind::PtrType
+                | SyntaxKind::ArrayType
         )
     }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -303,6 +307,7 @@ impl AstNode for TypeRef {
             SyntaxKind::IdentType => TypeRef::IdentType(IdentType { syntax }),
             SyntaxKind::RefType => TypeRef::RefType(RefType { syntax }),
             SyntaxKind::PtrType => TypeRef::PtrType(PtrType { syntax }),
+            SyntaxKind::ArrayType => TypeRef::ArrayType(ArrayType { syntax }),
             _ => return None,
         };
         Some(res)
@@ -312,6 +317,7 @@ impl AstNode for TypeRef {
             TypeRef::IdentType(it) => it.syntax(),
             TypeRef::RefType(it) => it.syntax(),
             TypeRef::PtrType(it) => it.syntax(),
+            TypeRef::ArrayType(it) => it.syntax(),
         }
     }
 }
@@ -450,6 +456,8 @@ pub enum Expr {
     NameRef(NameRef),
     CallExpr(CallExpr),
     StructLit(StructLit),
+    ArrayLit(ArrayLit),
+    IndexExpr(IndexExpr),
     BinExpr(BinExpr),
     PrefixExpr(PrefixExpr),
     FieldExpr(FieldExpr),
@@ -471,6 +479,8 @@ impl AstNode for Expr {
                 | SyntaxKind::NameRef
                 | SyntaxKind::CallExpr
                 | SyntaxKind::StructLit
+                | SyntaxKind::ArrayLit
+                | SyntaxKind::IndexExpr
                 | SyntaxKind::BinExpr
                 | SyntaxKind::PrefixExpr
                 | SyntaxKind::FieldExpr
@@ -491,6 +501,8 @@ impl AstNode for Expr {
             SyntaxKind::NameRef => Expr::NameRef(NameRef { syntax }),
             SyntaxKind::CallExpr => Expr::CallExpr(CallExpr { syntax }),
             SyntaxKind::StructLit => Expr::StructLit(StructLit { syntax }),
+            SyntaxKind::ArrayLit => Expr::ArrayLit(ArrayLit { syntax }),
+            SyntaxKind::IndexExpr => Expr::IndexExpr(IndexExpr { syntax }),
             SyntaxKind::BinExpr => Expr::BinExpr(BinExpr { syntax }),
             SyntaxKind::PrefixExpr => Expr::PrefixExpr(PrefixExpr { syntax }),
             SyntaxKind::FieldExpr => Expr::FieldExpr(FieldExpr { syntax }),
@@ -513,6 +525,8 @@ impl AstNode for Expr {
             Expr::NameRef(it) => it.syntax(),
             Expr::CallExpr(it) => it.syntax(),
             Expr::StructLit(it) => it.syntax(),
+            Expr::ArrayLit(it) => it.syntax(),
+            Expr::IndexExpr(it) => it.syntax(),
             Expr::BinExpr(it) => it.syntax(),
             Expr::PrefixExpr(it) => it.syntax(),
             Expr::FieldExpr(it) => it.syntax(),
@@ -655,6 +669,33 @@ impl PtrType {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ArrayType {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for ArrayType {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ArrayType
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::ArrayType {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl ArrayType {
+    pub fn elem(&self) -> Option<TypeRef> {
+        support::child(&self.syntax)
+    }
+    pub fn len(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Literal {
     pub(crate) syntax: SyntaxNode,
 }
@@ -750,6 +791,57 @@ impl StructLit {
     }
     pub fn field_list(&self) -> Option<StructLitFieldList> {
         support::child(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ArrayLit {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for ArrayLit {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ArrayLit
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::ArrayLit {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl ArrayLit {
+    pub fn elems(&self) -> AstChildren<Expr> {
+        support::children(&self.syntax)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IndexExpr {
+    pub(crate) syntax: SyntaxNode,
+}
+impl AstNode for IndexExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::IndexExpr
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if syntax.kind() == SyntaxKind::IndexExpr {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+impl IndexExpr {
+    pub fn base(&self) -> Option<Expr> {
+        support::children(&self.syntax).nth(0)
+    }
+    pub fn index(&self) -> Option<Expr> {
+        support::children(&self.syntax).nth(1)
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

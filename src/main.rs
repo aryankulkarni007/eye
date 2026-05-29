@@ -83,6 +83,20 @@ fn describe_expr(expr: &ast::Expr) -> String {
             let fieldc = s.field_list().map(|fl| fl.fields().count()).unwrap_or(0);
             format!("struct-lit {} ({fieldc} fields)", tok_text(name))
         }
+        ast::Expr::ArrayLit(a) => {
+            format!("array-lit ({} elems)", a.elems().count())
+        }
+        ast::Expr::IndexExpr(ie) => {
+            let base = ie
+                .base()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            let index = ie
+                .index()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            format!("index {base}[{index}]")
+        }
         ast::Expr::BinExpr(b) => {
             let lhs = b
                 .lhs()
@@ -143,6 +157,17 @@ fn describe_type_ref(t: &ast::TypeRef) -> String {
             Some(inner) => format!("{}*", describe_type_ref(&inner)),
             None => "<missing>*".to_string(),
         },
+        ast::TypeRef::ArrayType(a) => {
+            let elem = a
+                .elem()
+                .map(|e| describe_type_ref(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            let len = a
+                .len()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            format!("[{elem}; {len}]")
+        }
     }
 }
 

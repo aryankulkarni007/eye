@@ -2,7 +2,7 @@
 
 -- libc signatures. names enter the global namespace, resolve at link.
 extern {
-    malloc(uint64 size) -> ptr;
+    malloc(usize size) -> ptr;
     free(ptr p);
 }
 

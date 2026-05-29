@@ -45,7 +45,7 @@ impl<'a> CGen<'a> {
                 i += 1;
             }
         }
-        self.output.push_str(&format!("\"{}\\n\"", rendered));
+        emit!(self, "\"{}\\n\"", rendered);
 
         for arg in value_args {
             self.output.push_str(", ");

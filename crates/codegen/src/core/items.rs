@@ -2,6 +2,7 @@
 //! body driver.
 
 use super::CGen;
+use super::types::CType;
 use hir::core::{Body, Enum, Function, Struct, Union};
 
 impl<'a> CGen<'a> {
@@ -12,14 +13,11 @@ impl<'a> CGen<'a> {
         for &field_id in &struct_def.fields {
             let field = &self.hir.fields[field_id];
             self.push_indent();
-            let ty_str = self.map_type_ref(&field.ty);
-            self.output
-                .push_str(&format!("{} {};\n", ty_str, field.name));
+            emitln!(self, "{} {};", CType::new(&field.ty), field.name);
         }
 
         self.indent_level -= 1;
-        self.output
-            .push_str(&format!("}} {};\n\n", struct_def.name));
+        emit!(self, "}} {};\n\n", struct_def.name);
     }
 
     // Same shape as `gen_struct`, emitting `union` for overlapping storage.
@@ -30,13 +28,11 @@ impl<'a> CGen<'a> {
         for &field_id in &union_def.fields {
             let field = &self.hir.fields[field_id];
             self.push_indent();
-            let ty_str = self.map_type_ref(&field.ty);
-            self.output
-                .push_str(&format!("{} {};\n", ty_str, field.name));
+            emitln!(self, "{} {};", CType::new(&field.ty), field.name);
         }
 
         self.indent_level -= 1;
-        self.output.push_str(&format!("}} {};\n\n", union_def.name));
+        emit!(self, "}} {};\n\n", union_def.name);
     }
 
     pub(super) fn gen_enum(&mut self, enum_def: &Enum) {
@@ -44,10 +40,10 @@ impl<'a> CGen<'a> {
         self.indent_level += 1;
         for variant in &enum_def.variants {
             self.push_indent();
-            self.output.push_str(&format!("{},\n", variant.name));
+            emitln!(self, "{},", variant.name);
         }
         self.indent_level -= 1;
-        self.output.push_str(&format!("}} {};\n\n", enum_def.name));
+        emit!(self, "}} {};\n\n", enum_def.name);
     }
 
     pub(super) fn gen_function(&mut self, r#fn: &Function) {
@@ -58,40 +54,29 @@ impl<'a> CGen<'a> {
         // An extern fn is a bare prototype: signature then `;`, no body. The
         // linker binds the symbol (libc for the v0.4 alloc/IO seam).
         if r#fn.is_extern {
-            let ret_type = r#fn
-                .ret
-                .as_ref()
-                .map_or("void".to_string(), |t| self.map_type_ref(t));
-            self.output
-                .push_str(&format!("{} {}(", ret_type, r#fn.name));
-            for (i, param) in r#fn.params.iter().enumerate() {
-                if i > 0 {
-                    self.output.push_str(", ");
-                }
-                self.output.push_str(&self.map_type_ref(&param.ty));
-            }
+            match &r#fn.ret {
+                Some(ret) => emit!(self, "{} {}(", CType::new(ret), r#fn.name),
+                None => emit!(self, "void {}(", r#fn.name),
+            };
+            self.comma_sep(r#fn.params.iter(), |this, param| {
+                emit!(this, "{}", CType::new(&param.ty));
+            });
             self.output.push_str(");\n");
             return;
         }
 
-        let ret_type = if r#fn.name == "main" {
-            "int".to_string()
+        if r#fn.name == "main" {
+            emit!(self, "int {}(", r#fn.name);
         } else {
-            r#fn.ret
-                .as_ref()
-                .map_or("void".to_string(), |t| self.map_type_ref(t))
+            match &r#fn.ret {
+                Some(ret) => emit!(self, "{} {}(", CType::new(ret), r#fn.name),
+                None => emit!(self, "void {}(", r#fn.name),
+            }
         };
 
-        self.output
-            .push_str(&format!("{} {}(", ret_type, r#fn.name));
-
-        for (i, param) in r#fn.params.iter().enumerate() {
-            if i > 0 {
-                self.output.push_str(", ");
-            }
-            let p_ty = self.map_type_ref(&param.ty);
-            self.output.push_str(&format!("{} {}", p_ty, param.name));
-        }
+        self.comma_sep(r#fn.params.iter(), |this, param| {
+            emit!(this, "{} {}", CType::new(&param.ty), param.name);
+        });
         self.output.push_str(") {\n");
         self.indent_level += 1;
 

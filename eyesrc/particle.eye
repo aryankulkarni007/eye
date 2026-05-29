@@ -13,9 +13,7 @@ main() {
     -- Control flow and field access
     mut int32 i = 0;
     loop {
-        if i > 10 {
-            break;
-        }
+        if i > 10 { break; }
 
         -- updating fields via pointer
         p_ref.x = p_ref.x + 1;

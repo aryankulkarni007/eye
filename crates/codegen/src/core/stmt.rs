@@ -2,6 +2,7 @@
 //! initializers and the statement-position match `switch`.
 
 use super::CGen;
+use super::types::CDeclarator;
 use hir::core::{Body, Expr, Pat, Stmt};
 
 impl<'a> CGen<'a> {
@@ -25,21 +26,22 @@ impl<'a> CGen<'a> {
                     self.output.push_str("const ");
                 }
 
-                let type_str = match ty {
-                    Some(t) => self.map_type_ref(t),
-                    // FIXME: change once we have type inference
-                    None => "/* EXPLICT TYPE MISSING */".to_string(),
-                };
                 let pat_node = &body.pats[*pat];
                 let local_idx = match pat_node {
                     Pat::Bind(id) => *id,
                     // syntactically impossible: only Bind comes from let-pat
                     // lowering. Variant/Wildcard live in match arms; Missing
-                    // means broken syntax. Skip rather than emit junk.
+                    // means broken syntax. Skip instead of emitting invalid C.
                     Pat::Missing | Pat::Variant { .. } | Pat::Wildcard => return,
                 };
-                let var_name = &body.locals[local_idx].name;
-                self.output.push_str(&format!("{} {}", type_str, var_name));
+                let var_name = body.locals[local_idx].name.clone();
+                // `c_declarator` keeps an array's `[N]` next to the name
+                // (`int xs[4]`); for every other type it is `<type> <name>`.
+                match ty {
+                    Some(t) => emit!(self, "{}", CDeclarator::new(t, &var_name)),
+                    // FIXME: change once we have type inference
+                    None => emit!(self, "/* EXPLICT TYPE MISSING */ {}", var_name),
+                }
 
                 if let Some(expr_idx) = init {
                     self.output.push_str(" = ");

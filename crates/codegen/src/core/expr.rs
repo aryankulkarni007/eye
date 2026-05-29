@@ -2,18 +2,38 @@
 //! reference to its hoisted `_matchN` temp (see [`super::matches`]).
 
 use super::CGen;
+use super::types::CType;
 use hir::core::{Body, Expr, ExprId, Literal, Resolution, TypeRef};
 
 impl<'a> CGen<'a> {
+    /// True if `expr` is an `if` that codegen renders as a C `if` statement
+    /// rather than a `(cond ? a : b)` ternary. The ternary form is taken only
+    /// when the if has an else branch and its then-block is a single tail
+    /// value with no statements - so anything else is statement-shaped. Used
+    /// to flatten `else { if }` into `else if` (a ternary cannot follow a bare
+    /// `else`, so those fall back to braces).
+    fn if_is_statement_shaped(&self, expr_idx: ExprId, body: &Body) -> bool {
+        let Expr::If {
+            then_branch,
+            else_branch,
+            ..
+        } = &body.exprs[expr_idx]
+        else {
+            return false;
+        };
+        let then_block = &body.blocks[*then_branch];
+        !(else_branch.is_some() && then_block.stmts.is_empty() && then_block.tail.is_some())
+    }
+
     pub(super) fn gen_expr(&mut self, expr_idx: ExprId, body: &Body) {
         match &body.exprs[expr_idx] {
             Expr::Missing => self.output.push_str("/* MISSING EXPR */"),
             Expr::Literal(literal) => match literal {
                 Literal::Int(val) => self.output.push_str(&val.to_string()),
                 Literal::Float(val) => self.output.push_str(val.as_str()),
-                Literal::String(val) => self.output.push_str(&format!("\"{}\"", val)),
+                Literal::String(val) => emit!(self, "\"{}\"", val),
                 Literal::Bool(val) => self.output.push_str(if *val { "true" } else { "false" }),
-                Literal::Char(val) => self.output.push_str(&format!("'{}'", val)),
+                Literal::Char(val) => emit!(self, "'{}'", val),
             },
             Expr::Path(resolution) => match resolution {
                 Resolution::Local(id) => self.output.push_str(&body.locals[*id].name),
@@ -31,15 +51,11 @@ impl<'a> CGen<'a> {
                 }
             },
             Expr::StructLit { ty, fields } => {
-                let ty_str = self.map_type_ref(ty);
-                self.output.push_str(&format!("({}){{ ", ty_str));
-                for (i, field) in fields.iter().enumerate() {
-                    if i > 0 {
-                        self.output.push_str(", ");
-                    }
-                    self.output.push_str(&format!(".{} = ", field.name));
-                    self.gen_expr(field.value, body);
-                }
+                emit!(self, "({}){{ ", CType::new(ty));
+                self.comma_sep(fields.iter(), |this, field| {
+                    emit!(this, ".{} = ", field.name);
+                    this.gen_expr(field.value, body);
+                });
                 self.output.push_str(" }");
             }
             Expr::Call { callee, args } => {
@@ -51,13 +67,21 @@ impl<'a> CGen<'a> {
                 }
                 self.gen_expr(*callee, body);
                 self.output.push('(');
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        self.output.push_str(", ");
-                    }
-                    self.gen_expr(*arg, body);
-                }
+                self.comma_sep(args.iter().copied(), |this, arg| this.gen_expr(arg, body));
                 self.output.push(')');
+            }
+            Expr::ArrayLit(elems) => {
+                // `{a, b, c}` - a C brace-enclosed initializer list. The
+                // supported array path uses this in declaration initializers.
+                self.output.push('{');
+                self.comma_sep(elems.iter().copied(), |this, e| this.gen_expr(e, body));
+                self.output.push('}');
+            }
+            Expr::Index { base, index } => {
+                self.gen_expr(*base, body);
+                self.output.push('[');
+                self.gen_expr(*index, body);
+                self.output.push(']');
             }
             Expr::Field { base, name } => {
                 self.gen_expr(*base, body);
@@ -67,20 +91,20 @@ impl<'a> CGen<'a> {
                 }
 
                 if is_pointer_like {
-                    self.output.push_str(&format!("->{}", name));
+                    emit!(self, "->{}", name);
                 } else {
-                    self.output.push_str(&format!(".{}", name));
+                    emit!(self, ".{}", name);
                 }
             }
             Expr::Binary { op, lhs, rhs } => {
                 self.output.push('(');
                 self.gen_expr(*lhs, body);
-                self.output.push_str(&format!(" {} ", op));
+                emit!(self, " {} ", op);
                 self.gen_expr(*rhs, body);
                 self.output.push(')');
             }
             Expr::Unary { op, operand } => {
-                self.output.push_str(&format!("{}", op));
+                emit!(self, "{}", op);
                 self.gen_expr(*operand, body);
             }
             Expr::Block(block_id) => {
@@ -157,21 +181,35 @@ impl<'a> CGen<'a> {
                     self.output.push('}');
 
                     if let Some(else_id) = else_branch {
-                        self.output.push_str(" else {\n");
-                        self.indent_level += 1;
                         let else_block = &body.blocks[*else_id];
-                        for &stmt_idx in &else_block.stmts {
-                            let stmt = &body.stmts[stmt_idx];
-                            self.gen_stmt(stmt, body);
-                        }
-                        if let Some(tail) = else_block.tail {
-                            self.push_indent();
+
+                        // Flatten a desugared `else { if ... }` (the parser's
+                        // `else if` form) back to `else if (...)` when the
+                        // chained if renders as a statement. The braces-wrapped
+                        // fallback handles value-shaped (ternary) inner ifs,
+                        // which cannot follow a bare `else`.
+                        if else_block.stmts.is_empty()
+                            && let Some(tail) = else_block.tail
+                            && self.if_is_statement_shaped(tail, body)
+                        {
+                            self.output.push_str(" else ");
                             self.gen_expr(tail, body);
-                            self.output.push_str(";\n");
+                        } else {
+                            self.output.push_str(" else {\n");
+                            self.indent_level += 1;
+                            for &stmt_idx in &else_block.stmts {
+                                let stmt = &body.stmts[stmt_idx];
+                                self.gen_stmt(stmt, body);
+                            }
+                            if let Some(tail) = else_block.tail {
+                                self.push_indent();
+                                self.gen_expr(tail, body);
+                                self.output.push_str(";\n");
+                            }
+                            self.indent_level -= 1;
+                            self.push_indent();
+                            self.output.push('}');
                         }
-                        self.indent_level -= 1;
-                        self.push_indent();
-                        self.output.push('}');
                     }
                 }
             }
@@ -206,8 +244,7 @@ impl<'a> CGen<'a> {
                 self.output.push(')');
             }
             Expr::Cast { operand, ty } => {
-                let ty_str = self.map_type_ref(ty);
-                self.output.push_str(&format!("({})", ty_str));
+                emit!(self, "({})", CType::new(ty));
                 self.gen_expr(*operand, body);
             }
             Expr::Match { .. } => {

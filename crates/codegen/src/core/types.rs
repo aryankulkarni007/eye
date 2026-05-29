@@ -3,33 +3,95 @@
 
 use super::CGen;
 use hir::core::{Body, Expr, ExprId, Resolution, TypeRef};
+use std::fmt;
 
-impl<'a> CGen<'a> {
-    pub(super) fn map_type_ref(&self, ty: &TypeRef) -> String {
-        match ty {
+pub(super) struct CType<'a> {
+    ty: &'a TypeRef,
+}
+
+impl<'a> CType<'a> {
+    pub(super) fn new(ty: &'a TypeRef) -> Self {
+        Self { ty }
+    }
+}
+
+impl fmt::Display for CType<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.ty {
             TypeRef::Path(name) => match name.as_str() {
-                "int8" => "int8_t".to_string(),
-                "int16" => "int16_t".to_string(),
-                "int32" => "int32_t".to_string(),
-                "int64" => "int64_t".to_string(),
-                "uint8" => "uint8_t".to_string(),
-                "uint16" => "uint16_t".to_string(),
-                "uint32" => "uint32_t".to_string(),
-                "uint64" => "uint64_t".to_string(),
-                "float32" => "float".to_string(),
-                "float64" => "double".to_string(),
-                "bool" => "bool".to_string(),
-                "char" => "char".to_string(),
-                "string" => "const char*".to_string(), // string literal base
-                "ptr" => "void*".to_string(),          // opaque untyped pointer
-                other => other.to_string(),
+                "int8" => f.write_str("int8_t"),
+                "int16" => f.write_str("int16_t"),
+                "int32" => f.write_str("int32_t"),
+                "int64" => f.write_str("int64_t"),
+                "uint8" => f.write_str("uint8_t"),
+                "uint16" => f.write_str("uint16_t"),
+                "uint32" => f.write_str("uint32_t"),
+                "uint64" => f.write_str("uint64_t"),
+                // pointer-width integers: the libc/FFI seam (malloc, memcpy,
+                // strlen, sizeof, indexing) traffics in size_t/ptrdiff_t.
+                // Width is platform-defined, so these map to the C library's
+                // pointer-width types rather than fixed-width integers.
+                "usize" => f.write_str("size_t"),
+                "isize" => f.write_str("ptrdiff_t"),
+                "float32" => f.write_str("float"),
+                "float64" => f.write_str("double"),
+                "bool" => f.write_str("bool"),
+                "char" => f.write_str("char"),
+                "string" => f.write_str("const char*"),
+                "ptr" => f.write_str("void*"),
+                other => f.write_str(other),
             },
-            TypeRef::Ref(inner) => format!("{}*", self.map_type_ref(inner)),
-            TypeRef::Ptr(inner) => format!("{}*", self.map_type_ref(inner)),
-            TypeRef::Error => "void* /* ERROR TY */".to_string(),
+            TypeRef::Ref(inner) | TypeRef::Ptr(inner) => write!(f, "{}*", CType::new(inner)),
+            // WARNING: step-1 array support intentionally treats arrays in
+            // type-only positions (cast, return, param) as decayed `elem*`.
+            // This is only correct for the current one-dimensional local-array
+            // scope. Multi-dimensional arrays need pointer-to-array
+            // declarators, not `T**`.
+            TypeRef::Array { elem, .. } => write!(f, "{}*", CType::new(elem)),
+            TypeRef::Error => f.write_str("void* /* ERROR TY */"),
         }
     }
+}
 
+pub(super) struct CDeclarator<'a> {
+    ty: &'a TypeRef,
+    name: &'a str,
+}
+
+impl<'a> CDeclarator<'a> {
+    pub(super) fn new(ty: &'a TypeRef, name: &'a str) -> Self {
+        Self { ty, name }
+    }
+
+    fn fmt_with_name(&self, f: &mut fmt::Formatter<'_>, ty: &TypeRef, name: &str) -> fmt::Result {
+        match ty {
+            TypeRef::Array { elem, len } => {
+                struct NestedName<'a> {
+                    name: &'a str,
+                    len: u64,
+                }
+
+                impl fmt::Display for NestedName<'_> {
+                    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        write!(f, "{}[{}]", self.name, self.len)
+                    }
+                }
+
+                let nested = NestedName { name, len: *len };
+                self.fmt_with_name(f, elem, &nested.to_string())
+            }
+            _ => write!(f, "{} {}", CType::new(ty), name),
+        }
+    }
+}
+
+impl fmt::Display for CDeclarator<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt_with_name(f, self.ty, self.name)
+    }
+}
+
+impl<'a> CGen<'a> {
     pub(super) fn get_expr_type(&self, expr_idx: ExprId, body: &Body) -> Option<TypeRef> {
         // check the explicit type map
         if let Some(ty) = body.expr_types.get(expr_idx) {
@@ -46,9 +108,9 @@ impl<'a> CGen<'a> {
                 let parent_ty = self.get_expr_type(*base, body)?;
 
                 let struct_name = match &parent_ty {
-                    TypeRef::Path(n) => n.clone(),
+                    TypeRef::Path(n) => n,
                     TypeRef::Ref(inner) | TypeRef::Ptr(inner) => match inner.as_ref() {
-                        TypeRef::Path(n) => n.clone(),
+                        TypeRef::Path(n) => n,
                         _ => return None,
                     },
                     _ => return None,
@@ -57,27 +119,21 @@ impl<'a> CGen<'a> {
                 // Field-typed lookup spans both products (structs) and unions
                 // - they share the field arena, so a union member resolves the
                 // same way.
-                let fields: Option<&[_]> = self
+                let field_id = self
                     .hir
+                    .items
                     .structs
-                    .iter()
-                    .find(|(_, s)| s.name == struct_name)
-                    .map(|(_, s)| s.fields.as_slice())
+                    .get(struct_name)
+                    .and_then(|&id| self.hir.structs[id].field_index.get(name).copied())
                     .or_else(|| {
                         self.hir
+                            .items
                             .unions
-                            .iter()
-                            .find(|(_, u)| u.name == struct_name)
-                            .map(|(_, u)| u.fields.as_slice())
+                            .get(struct_name)
+                            .and_then(|&id| self.hir.unions[id].field_index.get(name).copied())
                     });
 
-                for &field_id in fields? {
-                    let field = &self.hir.fields[field_id];
-                    if field.name == *name {
-                        return Some(field.ty.clone());
-                    }
-                }
-                None
+                field_id.map(|id| self.hir.fields[id].ty.clone())
             }
             Expr::Ref { operand } => {
                 // &expr has type Ref(inner_type)
@@ -88,6 +144,15 @@ impl<'a> CGen<'a> {
                 // *expr has the inner type
                 let op_ty = self.get_expr_type(*operand, body)?;
                 match op_ty {
+                    TypeRef::Ref(inner) | TypeRef::Ptr(inner) => Some(*inner),
+                    _ => None,
+                }
+            }
+            Expr::Index { base, .. } => {
+                // base[i] has the element/pointee type of the base.
+                let base_ty = self.get_expr_type(*base, body)?;
+                match base_ty {
+                    TypeRef::Array { elem, .. } => Some(*elem),
                     TypeRef::Ref(inner) | TypeRef::Ptr(inner) => Some(*inner),
                     _ => None,
                 }
@@ -106,6 +171,9 @@ impl<'a> CGen<'a> {
                 // positive value. uint32 is unsigned int.
                 "uint8" | "uint16" | "uint32" => "%u",
                 "uint64" => "%llu",
+                // C99 length modifiers: %zu for size_t, %td for ptrdiff_t.
+                "usize" => "%zu",
+                "isize" => "%td",
                 // printf promotes float to double for variadics, so a single
                 // `%f` covers both surface types.
                 "float32" | "float64" => "%f",
@@ -117,7 +185,8 @@ impl<'a> CGen<'a> {
                 // does not silently drop the placeholder.
                 _ => "%d",
             },
-            TypeRef::Ref(_) | TypeRef::Ptr(_) => "%p",
+            // refs/pointers and decayed arrays print as addresses.
+            TypeRef::Ref(_) | TypeRef::Ptr(_) | TypeRef::Array { .. } => "%p",
             TypeRef::Error => "%d",
         }
     }

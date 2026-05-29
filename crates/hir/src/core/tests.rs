@@ -250,6 +250,116 @@ main() {
     );
 }
 
+#[test]
+fn call_expr_records_user_function_return_type() {
+    let hir = lower(
+        "\
+answer() -> int32 {
+    42
+}
+
+main() {
+    let int32 x = answer();
+}
+",
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        hir.diagnostics
+    );
+    let main_id = *hir.items.functions.get("main").unwrap();
+    let body_id = hir.functions[main_id].body.expect("main has body");
+    let body = &hir.bodies[body_id];
+
+    let call_id = body
+        .exprs
+        .iter()
+        .find_map(|(id, expr)| matches!(expr, Expr::Call { .. }).then_some(id))
+        .expect("main contains a call");
+
+    assert_eq!(
+        body.expr_types.get(call_id),
+        Some(&TypeRef::Path("int32".into()))
+    );
+}
+
+#[test]
+fn call_expr_records_extern_function_return_type() {
+    let hir = lower(
+        "\
+extern {
+    strlen(ptr s) -> usize;
+}
+
+main() {
+    let usize n = strlen(\"abc\" as ptr);
+}
+",
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        hir.diagnostics
+    );
+    let main_id = *hir.items.functions.get("main").unwrap();
+    let body_id = hir.functions[main_id].body.expect("main has body");
+    let body = &hir.bodies[body_id];
+
+    let call_id = body
+        .exprs
+        .iter()
+        .find_map(|(id, expr)| matches!(expr, Expr::Call { .. }).then_some(id))
+        .expect("main contains a call");
+
+    assert_eq!(
+        body.expr_types.get(call_id),
+        Some(&TypeRef::Path("usize".into()))
+    );
+}
+
+#[test]
+fn explicit_let_initializer_type_mismatch_is_diagnosed() {
+    let hir = lower(
+        "\
+answer() -> int32 {
+    42
+}
+
+main() {
+    let string x = answer();
+}
+",
+    );
+    assert!(
+        hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("let initializer type mismatch")
+                && d.msg.contains("expected string")
+                && d.msg.contains("got int32")),
+        "expected explicit let mismatch diagnostic, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+#[test]
+fn explicit_let_unknown_initializer_type_does_not_diagnose_mismatch() {
+    let hir = lower(
+        "\
+main() {
+    let int32 x = unknown();
+}
+",
+    );
+    assert!(
+        !hir.diagnostics
+            .iter()
+            .any(|d| d.msg.contains("let initializer type mismatch")),
+        "unknown initializer type should not cascade into mismatch: {:?}",
+        hir.diagnostics
+    );
+}
+
 // ---- v0.3 match lowering ----
 
 /// Walk the HIR for the `main` body and return the first `Expr::Match`
@@ -445,6 +555,93 @@ main() {
             .any(|d| d.msg.contains("match scrutinee type is not a known enum")),
         "expected non-enum diag, got: {:?}",
         hir.diagnostics
+    );
+}
+
+/// `[T; N]` lowers to `TypeRef::Array` with the literal length, an `[...]`
+/// initializer to `Expr::ArrayLit`, and `xs[i]` to `Expr::Index`.
+#[test]
+fn array_type_literal_and_index_lower() {
+    let hir = lower(
+        "\
+main() {
+    let [int32; 3] xs = [1, 2, 3];
+    let int32 a = xs[0];
+}
+",
+    );
+    let main_id = *hir.items.functions.get("main").unwrap();
+    let body_id = hir.functions[main_id].body.expect("main has body");
+    let body = &hir.bodies[body_id];
+
+    // the `xs` local carries an Array type with the parsed length.
+    let array_local = body.locals.iter().find_map(|(_, l)| match &l.ty {
+        Some(TypeRef::Array { elem, len }) => Some((elem.clone(), *len)),
+        _ => None,
+    });
+    let (elem, len) = array_local.expect("xs local has an Array type");
+    assert_eq!(len, 3, "array length parsed from literal");
+    assert_eq!(*elem, TypeRef::Path("int32".into()), "element type");
+
+    // both an ArrayLit and an Index expression were produced.
+    assert!(
+        body.exprs
+            .iter()
+            .any(|(_, e)| matches!(e, Expr::ArrayLit(v) if v.len() == 3)),
+        "expected a 3-element ArrayLit"
+    );
+    assert!(
+        body.exprs
+            .iter()
+            .any(|(_, e)| matches!(e, Expr::Index { .. })),
+        "expected an Index expr"
+    );
+}
+
+/// `[T; N]` currently requires `N` to be an integer literal. A name or other
+/// expression is reserved for future compile-time constants and must not lower
+/// silently as length 0.
+#[test]
+fn non_integer_literal_array_len_emits_diagnostic() {
+    let hir = lower(
+        "\
+main() {
+    let int32 n = 3;
+    let [int32; n] xs = [1, 2, 3];
+}
+",
+    );
+
+    assert_eq!(hir.diagnostics.len(), 1, "{:?}", hir.diagnostics);
+    assert!(
+        hir.diagnostics[0]
+            .msg
+            .contains("array length must be an integer literal"),
+        "unexpected diagnostic: {}",
+        hir.diagnostics[0].msg
+    );
+}
+
+/// A typed array binding must initialize exactly the declared number of
+/// elements. C accepts short initializers and zero-fills the rest, but Eye
+/// reports the mismatch explicitly.
+#[test]
+fn array_decl_initializer_len_mismatch_emits_diagnostic() {
+    let hir = lower(
+        "\
+main() {
+    let [int32; 3] xs = [1, 2];
+}
+",
+    );
+
+    assert_eq!(hir.diagnostics.len(), 1, "{:?}", hir.diagnostics);
+    assert!(
+        hir.diagnostics[0]
+            .msg
+            .contains("array initializer length mismatch"),
+        "unexpected diagnostic: {}",
+        hir.diagnostics[0].msg
     );
 }
 

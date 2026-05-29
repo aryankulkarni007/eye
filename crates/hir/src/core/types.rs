@@ -12,5 +12,8 @@ pub enum TypeRef {
     Path(Text),
     Ref(Box<TypeRef>), // &T
     Ptr(Box<TypeRef>), // *T
+    // [T; N] fixed-size array. `len` is a concrete element count parsed from an
+    // integer literal (no const-expr yet).
+    Array { elem: Box<TypeRef>, len: u64 },
     Error,
 }

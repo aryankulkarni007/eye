@@ -5,13 +5,15 @@
 //! at its [`BodyId`].
 
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use super::*;
 
 #[derive(Debug)]
 pub struct Struct {
     pub name: Text,
-    pub fields: Vec<FieldId>,
+    pub fields: SmallVec<[FieldId; 4]>,
+    pub field_index: FxHashMap<Text, FieldId>,
 }
 
 /// A union - overlapping storage. Structurally identical to [`Struct`]; the
@@ -20,13 +22,15 @@ pub struct Struct {
 #[derive(Debug)]
 pub struct Union {
     pub name: Text,
-    pub fields: Vec<FieldId>,
+    pub fields: SmallVec<[FieldId; 4]>,
+    pub field_index: FxHashMap<Text, FieldId>,
 }
 
 #[derive(Debug)]
 pub struct Enum {
     pub name: Text,
-    pub variants: Vec<Variant>,
+    pub variants: SmallVec<[Variant; 4]>,
+    pub variant_index: FxHashMap<Text, u32>,
 }
 
 #[derive(Debug)]
@@ -43,7 +47,7 @@ pub struct Field {
 #[derive(Debug)]
 pub struct Function {
     pub name: Text,
-    pub params: Vec<Param>,
+    pub params: SmallVec<[Param; 4]>,
     pub ret: Option<TypeRef>,
     /// Body lives in its own arena keyed by [`FnId`] on [`HIR`].
     pub body: Option<BodyId>,

@@ -3,7 +3,9 @@
 //! ahead of their enclosing statement, then referenced at the use site.
 
 use super::CGen;
+use super::types::CType;
 use hir::core::{Body, Expr, ExprId, Pat};
+use smallvec::SmallVec;
 
 impl<'a> CGen<'a> {
     /// Emit a `switch` for a match. With `temp = Some(name)` each arm assigns
@@ -26,10 +28,8 @@ impl<'a> CGen<'a> {
             match &body.pats[arm.pat] {
                 Pat::Wildcard => self.output.push_str("default:\n"),
                 Pat::Variant { enum_id, idx } => {
-                    let label = self.hir.enums[*enum_id].variants[*idx as usize]
-                        .name
-                        .clone();
-                    self.output.push_str(&format!("case {}:\n", label));
+                    let label = &self.hir.enums[*enum_id].variants[*idx as usize].name;
+                    emitln!(self, "case {}:", label);
                 }
                 // HIR guarantees only Variant/Wildcard survive in arms on a
                 // clean lowering, and codegen only runs when hir.diagnostics is
@@ -71,7 +71,7 @@ impl<'a> CGen<'a> {
             if let Some(tail) = block.tail {
                 self.push_indent();
                 if let Some(name) = temp {
-                    self.output.push_str(&format!("{} = ", name));
+                    emit!(self, "{} = ", name);
                 }
                 self.gen_expr(tail, body);
                 self.output.push_str(";\n");
@@ -82,7 +82,7 @@ impl<'a> CGen<'a> {
         } else {
             self.push_indent();
             if let Some(name) = temp {
-                self.output.push_str(&format!("{} = ", name));
+                emit!(self, "{} = ", name);
             }
             self.gen_expr(body_expr, body);
             self.output.push_str(";\n");
@@ -98,68 +98,37 @@ impl<'a> CGen<'a> {
             // The match type is the first arm body's type (recorded in HIR).
             // When absent (e.g. a call-typed arm), fall back to int32 with a
             // visible note - documented v0.3 limitation, never `void*`.
-            let c_type = match body.expr_types.get(mid) {
-                Some(ty) => self.map_type_ref(ty),
-                None => "int32_t /* match temp type unknown */".to_string(),
-            };
-
             self.push_indent();
-            self.output.push_str(&format!("{} {};\n", c_type, name));
+            match body.expr_types.get(mid) {
+                Some(ty) => emitln!(self, "{} {};", CType::new(ty), name),
+                None => emitln!(self, "int32_t /* match temp type unknown */ {};", name),
+            }
             self.gen_match(mid, body, Some(&name));
             self.match_temps.insert(mid, name);
         }
     }
 
-    fn collect_match_ids(&self, expr_idx: ExprId, body: &Body) -> Vec<ExprId> {
-        let mut ids = Vec::new();
+    fn collect_match_ids(&self, expr_idx: ExprId, body: &Body) -> SmallVec<[ExprId; 4]> {
+        let mut ids = SmallVec::new();
         self.collect_match_ids_rec(expr_idx, body, &mut ids);
         ids
     }
 
-    fn collect_match_ids_rec(&self, expr_idx: ExprId, body: &Body, out: &mut Vec<ExprId>) {
+    fn collect_match_ids_rec(
+        &self,
+        expr_idx: ExprId,
+        body: &Body,
+        out: &mut SmallVec<[ExprId; 4]>,
+    ) {
         let expr = &body.exprs[expr_idx];
         match expr {
-            Expr::Missing | Expr::Literal(_) | Expr::Path(_) | Expr::Break | Expr::Continue => {}
-            Expr::Binary { lhs, rhs, .. } => {
-                self.collect_match_ids_rec(*lhs, body, out);
-                self.collect_match_ids_rec(*rhs, body, out);
-            }
-            Expr::Unary { operand, .. } => {
-                self.collect_match_ids_rec(*operand, body, out);
-            }
-            Expr::Call { callee, args } => {
-                self.collect_match_ids_rec(*callee, body, out);
-                args.iter().for_each(|arg| {
-                    self.collect_match_ids_rec(*arg, body, out);
-                });
-            }
-            Expr::StructLit { fields, .. } => {
-                fields.iter().for_each(|field| {
-                    self.collect_match_ids_rec(field.value, body, out);
-                });
-            }
-            Expr::Field { base, .. } => {
-                self.collect_match_ids_rec(*base, body, out);
-            }
-            Expr::Assign { lhs, rhs } => {
-                self.collect_match_ids_rec(*lhs, body, out);
-                self.collect_match_ids_rec(*rhs, body, out);
-            }
-            Expr::Ref { operand } => {
-                self.collect_match_ids_rec(*operand, body, out);
-            }
-            Expr::Deref { operand } => {
-                self.collect_match_ids_rec(*operand, body, out);
-            }
-            Expr::Cast { operand, .. } => {
-                self.collect_match_ids_rec(*operand, body, out);
-            }
             Expr::Match { scrut, .. } => {
                 self.collect_match_ids_rec(*scrut, body, out);
                 out.push(expr_idx);
             }
             // Block boundaries: do NOT recurse into these
             Expr::If { .. } | Expr::Loop { .. } | Expr::Block(_) => {}
+            _ => expr.for_each_child_expr(|child| self.collect_match_ids_rec(child, body, out)),
         }
     }
 }

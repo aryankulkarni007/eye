@@ -2,6 +2,8 @@ use super::*;
 use ast::{AstNode, SourceFile};
 use hir::core::lower_source_file;
 use lexer::{Lexer, SourceText};
+use smallvec::SmallVec;
+use thin_vec::thin_vec;
 
 fn emit(src: &str) -> String {
     let source = SourceText::new(src.to_string());
@@ -54,7 +56,7 @@ fn user_fn_call_emits_every_argument_in_order() {
 
     let callee_fn = hir.functions.alloc(Function {
         name: "add".into(),
-        params: Vec::new(),
+        params: SmallVec::new(),
         ret: None,
         body: None,
         is_extern: false,
@@ -67,7 +69,7 @@ fn user_fn_call_emits_every_argument_in_order() {
     let a3 = body.exprs.alloc(Expr::Literal(Literal::Int(3)));
     let call = body.exprs.alloc(Expr::Call {
         callee,
-        args: vec![a1, a2, a3],
+        args: thin_vec![a1, a2, a3],
     });
     let call_stmt = body.stmts.alloc(Stmt::Expr(call));
     body.block.push(call_stmt);
@@ -75,7 +77,7 @@ fn user_fn_call_emits_every_argument_in_order() {
 
     let main_fn = hir.functions.alloc(Function {
         name: "main".into(),
-        params: Vec::new(),
+        params: SmallVec::new(),
         ret: None,
         body: Some(body_id),
         is_extern: false,
@@ -254,6 +256,121 @@ main() {
     );
 }
 
+/// Pointer-width integers map to the platform-defined libc types `size_t` /
+/// `ptrdiff_t` (the FFI seam: malloc, sizeof, indexing) and pick the C99
+/// length-modified printf specifiers `%zu` / `%td`.
+#[test]
+fn pointer_width_integers_map_to_size_types_and_specifiers() {
+    let src = "\
+main() {
+    let usize a = 1;
+    let isize b = 2;
+    print(\"{}\", a);
+    print(\"{}\", b);
+}
+";
+    let c = emit(src);
+
+    assert!(c.contains("size_t a"), "expected `size_t a`, got:\n{c}");
+    assert!(
+        c.contains("ptrdiff_t b"),
+        "expected `ptrdiff_t b`, got:\n{c}"
+    );
+    assert!(
+        c.contains("#include <stddef.h>"),
+        "expected `<stddef.h>` include for size_t/ptrdiff_t, got:\n{c}"
+    );
+    assert!(
+        c.contains("\"%zu\\n\""),
+        "expected `%zu` for usize, got:\n{c}"
+    );
+    assert!(
+        c.contains("\"%td\\n\""),
+        "expected `%td` for isize, got:\n{c}"
+    );
+}
+
+/// `else if` lowers flat: a statement-position chain emits C `} else if (`
+/// rather than nesting `else { if ... }` braces (the parser desugars to the
+/// nested form; codegen flattens it back). A value-position chain folds into
+/// a chained ternary.
+#[test]
+fn else_if_chain_lowers_flat_and_ternary() {
+    let src = "\
+pick(int32 n) {
+    if n < 0 {
+        print(\"neg\");
+    } else if n == 0 {
+        print(\"zero\");
+    } else {
+        print(\"pos\");
+    }
+}
+
+main() {
+    let int32 g = if 1 == 0 { 10 } else if 1 == 1 { 20 } else { 30 };
+    print(\"{}\", g);
+}
+";
+    let c = emit(src);
+
+    // statement-position chain: flat `else if`, no nested `else {` wrapper.
+    assert!(
+        c.contains("} else if ("),
+        "expected flat `else if`, got:\n{c}"
+    );
+    // the statement chain has one `else if` arm; it must be flat, with no
+    // `else { if ... }` nesting from the desugar leaking through. (The
+    // value-position chain is a ternary, so it contributes no `else if`.)
+    assert_eq!(
+        c.matches("else if (").count(),
+        1,
+        "expected one flattened `else if` arm, got:\n{c}"
+    );
+    // value-position chain folds into a chained ternary.
+    assert!(
+        c.contains("? 10 :") && c.contains("? 20 : 30"),
+        "expected chained ternary, got:\n{c}"
+    );
+}
+
+/// Fixed-size arrays: `[T; N]` declarations keep the `[N]` next to the name
+/// (`T name[N]`, not a prefix type), `[...]` lowers to a `{...}` initializer,
+/// indexing lowers to `a[i]` (rvalue and lvalue), and `mut` drops the `const`.
+#[test]
+fn fixed_array_decl_literal_and_index() {
+    let src = "\
+main() {
+    let [int32; 3] xs = [10, 20, 30];
+    mut [int32; 2] ys = [1, 2];
+    ys[0] = xs[2];
+    print(\"{}\", xs[1]);
+}
+";
+    let c = emit(src);
+
+    // declarator: size after the name, element type before it.
+    assert!(
+        c.contains("const int32_t xs[3] = {10, 20, 30}"),
+        "expected array declarator + initializer, got:\n{c}"
+    );
+    // `mut` array is non-const and mutable.
+    assert!(
+        c.contains("int32_t ys[2] = {1, 2}") && !c.contains("const int32_t ys"),
+        "expected non-const mut array, got:\n{c}"
+    );
+    // index as lvalue and rvalue.
+    assert!(
+        c.contains("ys[0] = xs[2]"),
+        "expected index assignment, got:\n{c}"
+    );
+    // element type drives the print specifier through the index.
+    assert!(
+        c.contains("printf(\"%d\\n\", xs[1])"),
+        "expected %d for int32 element, got:\n{c}"
+    );
+}
+
 /// `as` casts lower to a C cast `(T)operand`. The cast binds tighter than a
 /// binary `+`, so `a + b as int64` emits `(a + (int64_t)b)`.
 #[test]
@@ -303,9 +420,18 @@ main() {
         "expected `typedef union`, got:\n{c}"
     );
     // one-member designated init, and per-member specifiers resolved.
-    assert!(c.contains(".i = 42"), "expected designated union init, got:\n{c}");
-    assert!(c.contains("%lld"), "int64 member should print %lld, got:\n{c}");
-    assert!(c.contains("%f"), "float64 member should print %f, got:\n{c}");
+    assert!(
+        c.contains(".i = 42"),
+        "expected designated union init, got:\n{c}"
+    );
+    assert!(
+        c.contains("%lld"),
+        "int64 member should print %lld, got:\n{c}"
+    );
+    assert!(
+        c.contains("%f"),
+        "float64 member should print %f, got:\n{c}"
+    );
 }
 
 /// An `extern` block lowers to bare C prototypes (no body), with `ptr` mapping

@@ -9,8 +9,16 @@ arena-backed HIR, and a stateless code generator.
 .eye source  -->  lexer  -->  rowan CST  -->  typed AST  -->  HIR  -->  C  -->  clang  -->  native binary
 ```
 
-See `FUTURE.md` for the current feature surface. See `docs/` for design
-notes and the `eye.ungram` grammar definition.
+## Documentation
+
+| File | Purpose |
+|------|---------|
+| [`FUTURE.md`](FUTURE.md) | **Status ledger** — what ships per version (v0.1–v0.4), limitations, oversights, v0.5 roadmap, future forks |
+| [`VISION.md`](VISION.md) | Long-term language vision (kernel vs stdlib, supermacros) — not current implementation |
+| [`docs/adding-features.md`](docs/adding-features.md) | How to extend the pipeline (lexer → HIR → codegen) |
+| [`docs/editor-setup.md`](docs/editor-setup.md) | Configure `eye-lsp` in VS Code / Cursor |
+| [`M5.md`](M5.md) | Historical design brief for v0.3 match codegen hoist |
+| [`crates/ast/eye.ungram`](crates/ast/eye.ungram) | Grammar source; run `cargo run -p xtask -- codegen` after edits |
 
 ## Layout
 
@@ -24,6 +32,7 @@ notes and the `eye.ungram` grammar definition.
 | `crates/ast`        | Generated typed AST over the CST                   |
 | `crates/hir`        | Name resolution + arena-allocated HIR              |
 | `crates/codegen`    | HIR -> C transpile                                 |
+| `crates/lsp`        | `eye-lsp` language server (semantic tokens + parser diags) |
 | `crates/xtask`      | Codegen helpers (regenerating AST from ungrammar)  |
 | `eyesrc/`           | End-to-end sample programs                         |
 | `tests/`            | Workspace-level integration tests                  |
@@ -84,6 +93,7 @@ cargo test --workspace
 cargo test -p eye-parser
 cargo test -p eye-hir
 cargo test -p eye-codegen
+cargo test -p eye-lsp
 
 # a single test by substring
 cargo test -p eye-codegen print_format_specifiers

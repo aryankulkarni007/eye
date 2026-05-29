@@ -1,252 +1,213 @@
-# Eye - completed features
+# Eye — language and compiler status
 
-Tracks what the compiler can already do. Roadmap and scoping for the next
-version live elsewhere (PR descriptions, branch READMEs).
+What the compiler ships today, known limitations, and where work is headed.
+For how to extend the pipeline, see [`docs/adding-features.md`](docs/adding-features.md).
+For long-term language vision, see [`VISION.md`](VISION.md).
 
 ## Pipeline
 
-- Lossless rowan CST -> typed AST -> arena HIR -> C transpile -> clang.
-- Source-mapped diagnostics at lexer, parser, and HIR layers.
-- Per-file output: `<file>.c` written next to source, native binary alongside.
-- Auto-format generated C through `clang-format` when available.
+```
+.eye source → lexer → rowan CST → typed AST → HIR → C → clang → native binary
+```
 
-## Driver
+- Lossless CST, typed AST, arena HIR, C transpile, clang link.
+- Source-mapped diagnostics at lexer, parser, and HIR. The driver exits before
+  codegen if any stage reports errors.
+- Per-file output: `<file>.c` next to source, native binary alongside.
+- Optional `clang-format` on generated C.
 
-- `eye <file.eye>` builds and writes the binary.
-- Internal dumps gated behind clap flags: `--dump-cst`, `--dump-ast`,
-  `--dump-symbols`, `--dump-hir`.
+HIR lowering lives in [`crates/hir/src/core/lower/`](crates/hir/src/core/lower/).
+Codegen lives in [`crates/codegen/src/core/`](crates/codegen/src/core/). Both are
+split by concern (same pattern as rust-analyzer-style crates).
 
-## Lexer
+**Not implemented:** separate typechecker pass, multi-file modules, optimizations,
+incremental compilation, non-C backends.
 
-- Logos-backed, byte-range tokens.
-- Interned identifiers and string literals (`Interner` / `Symbol`).
-- Line/column resolution for diagnostic spans.
-- Trivia preserved: whitespace, `--` line comments, `---` doc comments.
+## Editor support (`eye-lsp`)
 
-## Parser
+| Area | Shipped | Limitations | Oversights |
+|------|---------|-------------|------------|
+| Transport | stdio LSP via `lsp-server` | — | — |
+| Highlighting | Semantic tokens (lexer + CST classification) | Legend slots `METHOD`, `FALLBACK` reserved; not all contexts use distinct types | No `semanticTokens/range` |
+| Diagnostics | Parser errors on `didOpen` / `didChange` | No HIR diagnostics yet | — |
+| Protocol | Shutdown, `didClose`, `MethodNotFound` for unknown requests | No completion, hover, goto-def | — |
+| Docs | [`docs/editor-setup.md`](docs/editor-setup.md) | Client-specific JSON varies by extension | — |
 
-- Pratt expression parser; error-resilient with synthesised holes.
-- Items: `structure`, `fn` (named via call-form), `enum` (assignment form
-  `enum X = A | B ;`; leading `|` on the first variant is always optional
-  (accepted inline or multi-line, stylistic only); `|` is mandatory
-  between subsequent variants; empty variant list rejected), `union`
-  (`union X { T a, T b, };` - struct field-list grammar verbatim,
-  overlapping storage), `extern` block (`extern { sig; sig; }` - bodyless
-  C signatures `name(T arg, ...) -> Ret;`, each entering the global fn
-  namespace, resolved at link).
-- Statements: `let`/`mut` binding with optional type (the type heuristic reads
-  both `Ident name` and postfix-pointer `Ident* name` forms), expression
-  statements, trailing tail expression in blocks.
-- Expressions: literals, paths, calls, field access, struct literals
-  (positional, named, shorthand, mixed), binops, prefix `-` / `!` / `*` / `&`,
-  `if`/`else`, `loop` / `break` / `continue`, assignment, block expressions,
-  `expr as Type` casts (postfix, binds tighter than binary operators).
-- Types: identifier path, `&T` reference, `T*` raw pointer, `ptr` (opaque
-  untyped pointer - C `void*`; bridged to/from typed `T*` via `as`). `ptr`
-  opacity (no deref/arith/field) is currently enforced by the C backend -
-  those ops are errors on `void*` - rather than by an Eye-side check.
+Build: `cargo build -p eye-lsp`. Debug: `EYE_LSP_LOG=1`.
 
-## AST
+---
 
-- Generated from `eye.ungram` via `xtask`.
-- Typed wrappers over rowan green nodes; preserved trivia.
+## Completed features by version
 
-## HIR
+### v0.1 — core surface
 
-- Arena-allocated structs, unions, enums, fields, functions, locals, pats,
-  exprs, stmts, blocks (la-arena). `Function::is_extern` marks bodyless
-  signatures collected from `extern` blocks.
-- Item scope with duplicate-name diagnostics.
-- Lexical scope stack for locals; name resolution to
-  `Local` / `Fn` / `Struct` / `Enum` / `Unresolved`.
-- `expr_types` side table populated for struct literals, refs, derefs, locals
-  via let-type, fn params - enough to drive codegen decisions today.
-- Source map from HIR nodes back to syntax pointers for diagnostics.
+| Area | Shipped | Limitations | Oversights |
+|------|---------|-------------|------------|
+| Items | `structure`, `fn` (call-form name), fields | Single file; flat `ItemScope` | — |
+| Lets | `let` / `mut`, optional type, struct literal shorthand | **No type inference** — untyped `let` leaves `ty: None`; codegen emits `/* EXPLICT TYPE MISSING */` until v0.5 | No HIR test for untyped `let` + enum variant |
+| Control flow | `if` / `else`, `loop` / `break` / `continue` | `break` / `continue` store no optional value | — |
+| Expressions | literals, paths, calls, fields, binops, blocks, tail expr | Call results have no `expr_types` entry | — |
+| `print` | Builtin → `printf`, format from HIR type or literal | Builtin only | — |
+| Driver | `eye <file.eye>`, dump flags | Hard stop on HIR diagnostics | — |
 
-## Codegen (C backend)
+**Samples:** `eyesrc/main.eye`, `design.eye`, `physics.eye`  
+**E2E:** `main_eye_compiles_runs_and_prints_expected_output`, `arithmetic_expression_evaluates_correctly`, `print_eye_covers_every_format_specifier`
 
-- `int8`/`int16`/`int32`/`int64`, `uint8`/`uint16`/`uint32`/`uint64`,
-  `float32`, `float64`, `bool`, `char`, `string` map to fixed-width C types
-  (signed/unsigned ints to the `<stdint.h>` `intN_t`/`uintN_t` forms);
-  refs/pointers lower to `T*`. `print` picks `%d`/`%lld`/`%u`/`%llu` by width
-  and signedness.
-- Structs lower to `typedef struct { ... } Name;`.
-- Unions lower to `typedef union { ... } Name;`; a union member's type drives
-  its `print` specifier the same as a struct field (field-type lookup spans
-  both, since they share the field arena). A union literal must set exactly
-  one member (enforced in lowering with a diagnostic - overlapping storage
-  means a second field would silently overwrite the first).
-- Enums lower to `typedef enum { ... } Name;`.
-- `extern` signatures lower to bare C prototypes emitted before every
-  definition (so a call site sees them regardless of source order); the
-  linker binds the symbol (libc for the alloc/IO seam, no link flags needed).
-  `ptr` maps to `void*`. Note: declaring a libc builtin (`malloc`/`free`)
-  draws a benign clang redeclaration warning - `uint64` vs the builtin's
-  `size_t`, ABI-identical on 64-bit; a future `usize` type would silence it.
-- Functions: params, return types, tail expression as implicit `return`.
-- Statements: `let`/`mut` binding, expression statements.
-- Expressions: literals, paths, calls (every arg emitted), struct literals
-  (compound literal form), field access with auto-deref to `->` on `&T`/`T*`
-  bases, binops, prefix unops, blocks with tail value, `if`/`else` (both
-  statement and ternary-expression forms), `loop` lowered to `while(true)`,
-  `break`, `continue`, `&x`, `*x`, `x as T` (C cast `(T)x`; the cast's value
-  type is its target, so it drives field access, `print` specifiers, and
-  match temps).
-- `print(fmt, args...)` builtin lowers to `printf` with type-directed format
-  specifiers: `%d` / `%f` / `%s` / `%c` / `%p` selected per arg from the HIR
-  type (or literal kind when the arg has no recorded type).
+### v0.2 — references and parameters
 
-## Tests
+| Area | Shipped | Limitations | Oversights |
+|------|---------|-------------|------------|
+| Types | `&T`, `T*` | `TypeRef` remains `Path(name)` in HIR; codegen resolves by name | — |
+| Functions | `ParamList`, return types | — | `T*` in let-type position not fully disambiguated in parser |
+| Expressions | `&`, `*`, assignment, ref parameters | One level of auto-deref in field lookup | — |
 
-- Parser snapshot test plus targeted unit tests per construct.
-- HIR lowering tests for scoping, items, expressions, tail expressions,
-  references.
-- Codegen regression tests for call args, nested field access, references,
-  and printf format specifiers.
-- End-to-end build-and-run tests over the `eyesrc/` sample programs.
+**Sample:** `eyesrc/particle.eye`
+
+### v0.3 — enums and match
+
+| Area | Shipped | Limitations | Oversights |
+|------|---------|-------------|------------|
+| Enums | `enum X = A \| B ;`, flat variant index, cross-enum name collision error | Tagless C enums; bare variant names are global in C output | — |
+| Variant access | `Shape.Circle` and bare `Circle` when unique | Enum type in value position → diagnostic + `Expr::Missing` | — |
+| `match` | Parse, lower, exhaustiveness, duplicate / unreachable arms | No payloads, guards, or-patterns, or bindings in patterns | Match inside ternary-`if` not hoisted (see [`M5.md`](M5.md)) |
+| Codegen | Statement `switch`; value-position `_matchN` hoist | Match temp falls back to `int32` when first arm has no recorded type | Block-bodied match arms documented but not required for M6 fixture |
+| | | Non-enum scrutinee: diagnostic; exhaustiveness skipped | Match-in-ternary intentionally untested |
+
+**Spec fixture:** `eyesrc/v03.eye`  
+**E2E:** `v03_eye_lowers_match_and_prints_expected_output`  
+**Detail:** milestone archive at [Archive — v0.3 milestones](#archive--v03-milestones) below.
+
+### v0.4 — kernel substrate
+
+Aligned with [`VISION.md`](VISION.md): machine types, casts, FFI, union, arrays —
+not sum types, `for`, or class syntax.
+
+| Area | Shipped | Limitations | Oversights |
+|------|---------|-------------|------------|
+| Integers | `int8`…`int64`, `uint8`…`uint64`, `usize` / `isize` | `usize` width is platform-defined | — |
+| Casts | `expr as Type` | C cast semantics; no Eye-side cast safety | — |
+| FFI | `extern { ... }`, `ptr` → `void*` | Linker binds symbols; `uint64` vs `size_t` on libc can warn — use `usize` for `size_t` params | `ptr` misuse diagnosed by clang on `void*`, not in Eye HIR |
+| Union | `union X { ... }`, one field per literal | Overlapping storage — second field in literal is a lowering error | — |
+| Arrays | `[T; N]`, `[...]` literal, `base[i]` rvalue and lvalue | Length must be integer literal (no const expr yet); **1D local arrays** are the supported path; in cast / return / param positions arrays decay to `elem*` | Multi-dim, whole-array assign, pointer arithmetic, indexing a bare array literal: not specified |
+
+**Samples:** `eyesrc/v04.eye`, `ffi.eye`, `arrays.eye`  
+**E2E:** `v04_eye_lowers_primitives_and_casts`, `cast_expr_compiles_and_truncates`, `sized_integer_types_compile_and_print`, `ffi_eye_links_libc_and_lowers_union`, `arrays_eye_lowers_fixed_arrays_and_indexing`
+
+---
+
+## Cross-cutting limitations
+
+These apply across the versions above and motivate v0.5.
+
+| Topic | State |
+|-------|--------|
+| Type inference | No inference for untyped `let`; annotate types or wait for v0.5 |
+| Call types | `expr_types` does not record call return types (affects match hoist temps) |
+| HIR types | `TypeRef::Path(name)` only; no `StructId` on types until codegen |
+| Semantics | Checks live in lowering, not a separate typecheck pass |
+| Scope | One source file per compile; duplicate names → diagnostic and shadow |
+| Match | See v0.3 row; sum types belong in stdlib per vision, not kernel syntax yet |
+
+---
+
+## Roadmap — v0.5 (active)
+
+**Theme:** typing hygiene and documentation accuracy — no new surface syntax.
+
+| ID | Deliverable |
+|----|-------------|
+| D1 | This doc set accurate (FUTURE, adding-features, README, M5 banner) |
+| T1 | `let` inference from initializer when type is omitted |
+| T2 | Call return types — user `fn` from `Function::ret`, `extern` from signature |
+| T3 | Match hoist temp uses real type; `int32` fallback only when unavoidable |
+| T4 | Codegen: fix `EXPLICT` → `EXPLICIT`; drop placeholder for inferred lets |
+| T5 | Tests: untyped `let` + variant; typed match temp; optional `eyesrc` fixture |
+
+**Out of scope for v0.5:** modules, payload enums, `for` / `while` syntax, supermacros.
+
+---
+
+## Future forks
+
+No default path is chosen. Pick a fork before opening the next version scope.
+See also [`VISION.md`](VISION.md) hinges on match extensibility and supermacro bootstrap.
+
+### Fork A — Substrate hardening (vision-aligned, low syntax risk)
+
+- Enforce the documented narrow array surface in HIR **or** extend array ABI with explicit milestones.
+- Const array lengths (literals → named constants → minimal const-eval).
+- Eye-side `ptr` restrictions before codegen emits `void*`.
+
+### Fork B — Match and sum types (vision hinge 1)
+
+| Option | Tradeoff |
+|--------|----------|
+| **B1 Closed kernel** | Richer `match` in core — fast, but locks match in the unoverwriteable kernel |
+| **B2 Extensible match** | Stdlib registers pattern lowerings — enables stdlib sum types; large design |
+| **B3 Stdlib-only sum types** | No new kernel syntax; manual union + tag until macros exist |
+
+Defer until decided: payload enums, guards, or-patterns, match bindings.
+
+### Fork C — Compiler scale-out
+
+| Option | Tradeoff |
+|--------|----------|
+| **C1 Multi-file modules** | Real programs; multiplies scope and tests |
+| **C2 Separate typecheck pass** | Cleaner `lower/`; refactor cost |
+| **C3 Early supermacro engine** | Stdlib-first features; very large (hinge 2) |
+
+### Fork D — Control-flow polish (low priority)
+
+- Block-bodied match arms, match-in-ternary hoist, `break` with value.
+- `while` / `for` as syntax vs stdlib over `loop` + `if` + `break` (vision prefers stdlib).
+
+### Fork E — Horizon (~v10)
+
+Supermacros, privilege rings, stable AST API for extensions — vision only.
+
+**Suggested sequence:** finish v0.5 → Fork A → decide Fork B before payload-enum or match-syntax work.
+
+---
 
 ## Working sample programs
 
-- `eyesrc/main.eye` - struct, let, field access, print.
-- `eyesrc/design.eye` - loops, if, assignment, mutation through a ref.
-- `eyesrc/particle.eye` - reference parameter, field mutation via auto-deref.
-- `eyesrc/physics.eye` - nested structs, conditional expressions, mixed
-  primitive `print` formatting.
-- `eyesrc/v04.eye` - sized/unsigned integer primitives and `as` casts
-  (truncation, int->float promotion, widen/narrow roundtrip).
-- `eyesrc/ffi.eye` - `extern` block binding libc `malloc`/`free`, the `ptr`
-  opaque pointer bridged to `Point*` via `as`, and a `union` with typed
-  members.
+| File | Exercises |
+|------|-----------|
+| `eyesrc/main.eye` | struct, let, field access, print |
+| `eyesrc/design.eye` | loops, if, assignment, mutation through ref |
+| `eyesrc/particle.eye` | reference parameter, field mutation |
+| `eyesrc/physics.eye` | nested structs, conditionals, mixed `print` |
+| `eyesrc/print.eye` | every `print` format specifier |
+| `eyesrc/v03.eye` | enums, match (statement + value position) |
+| `eyesrc/v04.eye` | sized / unsigned ints, `as` casts |
+| `eyesrc/ffi.eye` | `extern`, `ptr`, `union`, libc link |
+| `eyesrc/arrays.eye` | `[T; N]`, literals, indexing, `mut` arrays |
 
-## Roadmap - v0.3 (enums + match)
+## Test map
 
-Goal: variant access (qualified and bare-in-typed-context), match
-expressions with exhaustiveness. No payloads, no guards, no or-patterns,
-no bindings.
+| Layer | Location | Notes |
+|-------|----------|-------|
+| Parser | `crates/parser` snapshots + unit tests | CST round-trip |
+| HIR | `crates/hir/src/core/tests.rs` | 21+ lowering tests |
+| Codegen | `crates/codegen/src/core/tests.rs` | match hoist, arrays, print |
+| LSP | `crates/lsp` lib tests | Semantic tokens, CST roles, document store, parser diags |
+| E2E | `tests/e2e.rs` | 10 driver build-and-run tests |
 
-Authoritative source spec: `eyesrc/v03.eye`.
+**Documented gaps:** untyped `let` + enum variant; match-in-ternary; call-typed match arm body.
 
-### Locked design
+---
 
-- Variant access: `Shape.Circle` qualified form always works. Bare `Circle`
-  also works anywhere as long as the name resolves uniquely to one variant
-  across every enum in the module. Two enums claiming the same variant
-  name is a hard decl-time error (collision is also unsafe for the C
-  backend since enum constants are global).
-- Match: Rust-shaped block, comma-separated arms, `->` arrow, `_` wildcard.
-  Match is an expression. Assignment is a statement. Trailing comma optional.
-- Exhaustiveness check in HIR; hard error on missing variant unless `_`
-  catches it.
-- Codegen Strategy A: any non-statement-position match is hoisted - emit
-  `Type _matchN;` decl and `switch(scrut) { case ...: _matchN = ...; break; }`
-  at the nearest enclosing statement; substitute `_matchN` at the use site.
-  Uniform rule, no GCC statement-expression extension.
+## Archive — v0.3 milestones
 
-### Milestones
+Historical checklist for v0.3 (all complete). Algorithm detail for match hoist:
+[`M5.md`](M5.md).
 
-- [x] M1 - enum decl shape `enum X = A | B ;`. Leading `|` on the first
-      variant is always optional (stylistic only, accepted inline or
-      multi-line). `|` mandatory between subsequent variants. Empty
-      variant list rejected. Grammar + parser + AST regen.
-- [x] M2 - variant access codegen.
-  - HIR: `Resolution::Variant { enum_id, idx }` added. `ItemScope.variants`
-    flat index registers every variant by bare name at enum-decl time. A
-    collision across enums emits a hard error diagnostic; the first enum
-    wins the slot so codegen can keep emitting bare C enum constants
-    safely.
-  - HIR: `resolve()` checks the variant index after locals/fns/structs/
-    enums, so bare `Rectangle` resolves to `Resolution::Variant` anywhere
-    in expression position without an expected-type hint.
-  - HIR: `Shape.Circle` short-circuits in `FieldExpr` lowering by
-    AST-inspecting the base before `lower_expr` runs, so the qualified
-    form still works and bypasses the bare-enum NameRef diagnostic.
-  - HIR: bare enum name in expression position (`Shape` alone) raises an
-    "enum type, not a value" diagnostic and lowers to `Expr::Missing`.
-    Unknown variant after `Enum.X` raises "enum `E` has no variant `X`".
-  - Codegen: `Resolution::Variant` emits the C enum constant name.
-    `Resolution::Enum` arm is now `unreachable!()` (HIR rejects it).
-  - **Known limitation:** untyped `let x = Rectangle;` still trips the
-    existing "EXPLICIT TYPE MISSING" codegen placeholder; v0.3 does not
-    add inference for untyped `let`. Workaround: annotate the type.
-- [x] M3 - match expression parse.
-  - Lexer: `match` keyword token; bare `_` is its own `Underscore` token
-    (logos `priority = 3` wins the tie with the ident regex, while `_foo`
-    still lexes as a single `Ident`).
-  - Syntax: `Match`, `Underscore` token kinds; `MatchExpr`, `MatchArmList`,
-    `MatchArm`, `PathPat`, `BareIdentPat`, `WildcardPat` node kinds;
-    `T![match]` and `T![_]` arms added.
-  - Ungrammar: `MatchExpr = 'match' scrut:Expr arm_list:MatchArmList`,
-    `MatchArmList = '{' arms:MatchArm* '}'`,
-    `MatchArm = pat:Pat '->' body:Expr ','?`,
-    `Pat = PathPat | BareIdentPat | WildcardPat`.
-    Path-shaped patterns wrap `NameRef` children (`qualifier`/`name`) so
-    the structural generator can emit positional accessors.
-  - Parser: `match_expr` in `lhs`; scrutinee parses under `set_no_struct_lit(true)`
-    so `match sh { ... }` does not absorb the arm block as a struct literal,
-    mirroring `if_expr`. Arm list clears the gate so arm bodies may be
-    struct literals. `match` joins `if`/`loop` in the block-like statement
-    rule so a statement-position match needs no trailing `;`. `,` between
-    arms is mandatory; only the final arm before `}` may omit it - the
-    diagnostic recovers and keeps parsing.
-  - AST: regenerated via `cargo xtask codegen`. `ast::Expr::MatchExpr`
-    added to the lowering switch in HIR as a `Missing` stub - real
-    lowering and codegen land in M4 and M5.
-  - Tests: nine new parser tests cover every pattern form, scrutinee
-    struct-lit suppression, match-as-let-value, block-like statement
-    placement, trailing-comma both shapes, arm-body struct literals, empty
-    arm list, missing-arrow recovery, and missing-comma recovery. All CST
-    round-trip byte-for-byte.
-- [x] M4 - match HIR + exhaustiveness.
-  - HIR: `Expr::Match { scrut, arms: Vec<MatchArm> }` with
-    `MatchArm { pat, body }`. `Pat` gains `Variant { enum_id, idx }` and
-    `Wildcard` siblings alongside the existing `Bind`/`Missing` let-pat
-    forms; match arms never route through let-pat lowering so no stray
-    `Local` is allocated.
-  - Pattern lowering (`lower_match_pat`): `WildcardPat` -> `Pat::Wildcard`.
-    `PathPat` resolves the qualifier against `items.enums`, errors out on
-    cross-enum patterns when the scrutinee enum is known, then looks up
-    the variant. `BareIdentPat` resolves strictly against the scrutinee
-    enum's variant list when known (spec: no bindings); falls back to the
-    global variant index only when scrutinee type is unknown. Any
-    unresolved pat becomes `Pat::Missing` so coverage cannot be silently
-    satisfied by a typo.
-  - Scrutinee type comes from `expr_types`; if it isn't a known enum the
-    pass emits "match scrutinee type is not a known enum" and skips
-    exhaustiveness (arms still lower so the user keeps typing).
-  - Exhaustiveness: tracks a `covered[]` bitmap over the scrutinee enum's
-    variants and a `saw_wildcard` flag. After all arms, if no wildcard
-    and any variant uncovered, emits a single diagnostic listing every
-    missing name. Duplicate arms emit "duplicate match arm for variant
-    `X`". Arms after `_` emit "unreachable match arm after `_` wildcard".
-  - Match expression type mirrors `if`: the first arm body's recorded type.
-  - Codegen + driver: `Expr::Match` carries an "M5" placeholder in
-    codegen so the build stays green; `src/main.rs` dump rendering
-    already had the AST-side arm from M3.
-  - Tests: eight HIR unit tests cover qualified + bare + wildcard
-    lowering, scrutinee type pinning, missing-variant exhaustiveness,
-    duplicate-arm, unreachable-after-wildcard, cross-enum pattern,
-    unknown-variant, and non-enum scrutinee diagnostics.
-- [x] M5 - match codegen hoist.
-  - Strategy A: `hoist_matches` walks a statement's inline expression subtree
-    in post-order, and for each value-position match synthesises a
-    `Type _matchN;` decl + assigning `switch` at the nearest enclosing
-    statement, then substitutes `_matchN` at the use site. The walk stops at
-    block boundaries (`if`/`loop`/block bodies, match arms) so nested matches
-    hoist into their own scope.
-  - Match-in-statement-position lowers directly to a `switch` with no temp and
-    no trailing `;`. Wildcard arm -> `default:`; variant arm -> `case <name>:`.
-  - Temp type comes from the HIR-recorded first-arm-body type; absent (e.g. a
-    call-typed arm) falls back to `int32_t` with a visible comment, never
-    `void*`. Counter resets per function so names stay `_match0`, `_match1`.
-  - Codegen split by concern to match HIR: `core.rs` keeps the `CGen` aggregate
-    + `gen_all`; `core/{types,items,stmt,expr,print,matches,tests}.rs` hold the
-    method groups.
-  - Tests: five codegen unit tests pin the four layouts (statement-position,
-    value-position hoist + read order, wildcard -> default, two-matches
-    counter) plus the per-function counter reset.
-- [x] M6 - v0.3 end-to-end test.
-  - `eyesrc/v03.eye` exercises a statement-position match plus two
-    value-position matches (one exhaustive, one with a wildcard) returning into
-    typed `let`s.
-  - `tests/e2e.rs::v03_eye_lowers_match_and_prints_expected_output` `include_str!`s
-    the fixture and asserts stdout `0\n1\nboxy\n4\n0\n`.
+**Goal:** variant access, `match` with exhaustiveness. No payloads, guards, or-patterns, bindings.  
+**Spec:** `eyesrc/v03.eye`
+
+- [x] **M1** — `enum X = A | B ;` grammar, parser, AST.
+- [x] **M2** — variant access: `Resolution::Variant`, flat index, `FieldExpr` shortcut for `E.V`, collision diagnostics.
+- [x] **M3** — `match` parse: `match` / `_` tokens, `MatchExpr` / patterns in ungrammar, struct-lit suppression on scrutinee.
+- [x] **M4** — HIR `Expr::Match`, `lower_match_pat`, exhaustiveness bitmap, duplicate / unreachable arms.
+- [x] **M5** — codegen Strategy A: statement `switch`, value hoist `_matchN`, `core/*` split by concern.
+- [x] **M6** — e2e `v03_eye_lowers_match_and_prints_expected_output`.

@@ -262,6 +262,27 @@ fn ffi_eye_links_libc_and_lowers_union() {
     );
 }
 
+/// Fixed-size arrays end-to-end: `[T; N]` declarations, `[...]` literals, and
+/// indexing (rvalue + lvalue), including a `usize` element type. Source lives
+/// in `eyesrc/arrays.eye`.
+#[test]
+fn arrays_eye_lowers_fixed_arrays_and_indexing() {
+    let source = include_str!("../eyesrc/arrays.eye");
+    let (out, _) = run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "10\n40\n1\n99\n3\n30\n200\n",
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// Driver should refuse non-`.eye` input rather than overwriting an
 /// arbitrary file with generated C.
 #[test]

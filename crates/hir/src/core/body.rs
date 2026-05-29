@@ -6,6 +6,7 @@ use ast::{BinOp, UnaryOp};
 use la_arena::{Arena, ArenaMap};
 use smol_str::SmolStr;
 use syntax::SyntaxNodePtr;
+use thin_vec::ThinVec;
 
 use super::*;
 
@@ -16,7 +17,7 @@ pub struct Body {
     pub pats: Arena<Pat>,
     pub locals: Arena<Local>,
     /// Top-level statements of the fn body, in source order.
-    pub block: Vec<StmtId>,
+    pub block: ThinVec<StmtId>,
     /// Optional tail expression of the body block (none for v0.1).
     pub tail: Option<ExprId>,
     pub source_map: BodySourceMap,
@@ -42,7 +43,7 @@ pub struct Local {
 
 #[derive(Debug)]
 pub struct Block {
-    pub stmts: Vec<StmtId>,
+    pub stmts: ThinVec<StmtId>,
     pub tail: Option<ExprId>,
 }
 
@@ -89,11 +90,18 @@ pub enum Expr {
     },
     Call {
         callee: ExprId,
-        args: Vec<ExprId>,
+        args: ThinVec<ExprId>,
+    },
+    /// `[a, b, c]` array literal.
+    ArrayLit(ThinVec<ExprId>),
+    /// `base[index]` - element access on an array or pointer.
+    Index {
+        base: ExprId,
+        index: ExprId,
     },
     StructLit {
         ty: TypeRef,
-        fields: Vec<StructLitField>,
+        fields: ThinVec<StructLitField>,
     },
     Field {
         base: ExprId,
@@ -125,9 +133,52 @@ pub enum Expr {
     },
     Match {
         scrut: ExprId,
-        arms: Vec<MatchArm>,
+        arms: ThinVec<MatchArm>,
     },
     Block(BlockId),
+}
+
+impl Expr {
+    /// Visit direct expression-id children stored on this expression. Block
+    /// contents live behind [`BlockId`] and are intentionally left to callers
+    /// that have access to the surrounding [`Body`].
+    pub fn for_each_child_expr(&self, mut f: impl FnMut(ExprId)) {
+        match self {
+            Expr::Missing
+            | Expr::Literal(_)
+            | Expr::Path(_)
+            | Expr::Break
+            | Expr::Continue
+            | Expr::Block(_) => {}
+            Expr::Binary { lhs, rhs, .. } | Expr::Assign { lhs, rhs } => {
+                f(*lhs);
+                f(*rhs);
+            }
+            Expr::Unary { operand, .. }
+            | Expr::Ref { operand }
+            | Expr::Deref { operand }
+            | Expr::Cast { operand, .. } => f(*operand),
+            Expr::Call { callee, args } => {
+                f(*callee);
+                args.iter().copied().for_each(f);
+            }
+            Expr::ArrayLit(elems) => elems.iter().copied().for_each(f),
+            Expr::Index { base, index } => {
+                f(*base);
+                f(*index);
+            }
+            Expr::StructLit { fields, .. } => {
+                fields.iter().map(|field| field.value).for_each(f);
+            }
+            Expr::Field { base, .. } => f(*base),
+            Expr::If { cond, .. } => f(*cond),
+            Expr::Loop { .. } => {}
+            Expr::Match { scrut, arms } => {
+                f(*scrut);
+                arms.iter().map(|arm| arm.body).for_each(f);
+            }
+        }
+    }
 }
 
 #[derive(Debug)]

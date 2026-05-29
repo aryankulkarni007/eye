@@ -13,7 +13,8 @@
 //! - [`items`]: module-level item signatures + the [`ItemScope`].
 //! - [`types`]: [`TypeRef`], the HIR-time (unresolved) type representation.
 //! - [`body`]: the per-fn body IR ([`Body`], [`Expr`], [`Stmt`], [`Pat`], ...).
-//! - [`lower`]: the lowering logic and entry point [`lower_source_file`].
+//! - [`lower`]: the lowering logic and entry point [`lower_source_file`],
+//!   split into `lower/{scopes,ctx,types,collect,fn_body,stmt,pat,expr}`.
 //!
 //! This file holds only the top-level [`HIR`] aggregate and re-exports every
 //! submodule so the public path stays `hir::core::*`.

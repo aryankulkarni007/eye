@@ -1,4 +1,4 @@
-// The eye grammar - v0.2 subset
+// The Eye grammar (v0.4 surface: through enums, match, FFI, union, arrays)
 //
 // This file is the source of truth for `cargo xtask codegen`, which
 // regenerates crates/ast/src/generated.rs from it.
@@ -48,7 +48,7 @@ LetStmt = ty:TypeRef? name:'ident' '=' value:Expr ';'
 ExprStmt = Expr ';'
 
 // --- TYPE SYSTEM UPDATES ---
-TypeRef = IdentType | RefType | PtrType
+TypeRef = IdentType | RefType | PtrType | ArrayType
 
 IdentType = name:'ident'
 
@@ -56,11 +56,15 @@ RefType = '&' inner:TypeRef
 
 PtrType = inner:TypeRef '*'
 
+ArrayType = '[' elem:TypeRef ';' len:Expr ']'
+
 Expr =
   Literal
   | NameRef
   | CallExpr
   | StructLit
+  | ArrayLit
+  | IndexExpr
   | BinExpr
   | PrefixExpr
   | FieldExpr
@@ -81,6 +85,10 @@ NameRef = name:'ident'
 CallExpr = callee:Expr ArgList
 
 ArgList = '(' args:Expr* ')'
+
+ArrayLit = '[' elems:Expr* ']'
+
+IndexExpr = base:Expr '[' index:Expr ']'
 
 BinExpr = lhs:Expr rhs:Expr
 
