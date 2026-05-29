@@ -9,7 +9,11 @@ fn emit(src: &str) -> String {
     let source = SourceText::new(src.to_string());
     let tokens = Lexer::new(&source).tokenize().tokens;
     let parse = parser::parse(&tokens, &source);
-    assert!(parse.errors.is_empty(), "parse errors: {:?}", parse.errors);
+    assert!(
+        parse.diagnostics.is_empty(),
+        "parse diagnostics: {:?}",
+        parse.diagnostics
+    );
     let file = SourceFile::cast(parse.green).expect("root is SourceFile");
     let hir = lower_source_file(file);
     assert!(

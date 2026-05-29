@@ -11,8 +11,8 @@
 //! headroom that typical input never reallocates; past that it grows only by
 //! amortized doubling. The real guarantee is per-item: [`Event`] is `Copy` POD
 //! - no `String`/`Box`/`Vec` inside any variant, so no event ever allocates.
-//!   Diagnostic messages live out-of-band in a sibling [`Vec<ParseError>`] and
-//!   are `&'static str`; events carry only an [`ErrorIdx`]. [`Marker`] open,
+//!   Diagnostic messages live out-of-band in a sibling [`Vec<ParseDiagnostic>`] and
+//!   are `&'static str`; events carry only a [`DiagnosticIdx`]. [`Marker`] open,
 //!   complete and abandon all mutate the buffer in place.
 
 use std::cell::Cell;
@@ -31,9 +31,9 @@ use token::Token;
 
 mod grammar;
 
-/// Index into the sibling [`Vec<ParseError>`]. Keeps [`Event`] POD.
+/// Index into the sibling [`Vec<ParseDiagnostic>`]. Keeps [`Event`] POD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ErrorIdx(u32);
+pub struct DiagnosticIdx(u32);
 
 /// A parse event. `Copy` and pointer-free so the whole stream is one flat
 /// buffer of POD slots.
@@ -51,16 +51,16 @@ enum Event {
     /// Consume one non-trivia token from the stream.
     Advance,
     /// A diagnostic was recorded; no effect on tree shape.
-    Error(ErrorIdx),
+    Diagnostic(DiagnosticIdx),
     /// An abandoned `Open`, or an `Open` already consumed as a forward
     /// parent. Skipped by [`build_tree`].
     Tombstone,
 }
 
-/// A parser diagnostic. `msg` is `&'static str` so [`ParseError`] never
+/// A parser diagnostic. `msg` is `&'static str` so [`ParseDiagnostic`] never
 /// allocates.
 #[derive(Debug, Clone)]
-pub struct ParseError {
+pub struct ParseDiagnostic {
     pub msg: &'static str,
     pub range: TextRange,
 }
@@ -68,7 +68,7 @@ pub struct ParseError {
 /// The finished parse: a lossless CST plus every diagnostic.
 pub struct Parse {
     pub green: SyntaxNode,
-    pub errors: ThinVec<ParseError>,
+    pub diagnostics: ThinVec<ParseDiagnostic>,
 }
 
 /// How many lookahead probes the parser may make without consuming a token
@@ -82,7 +82,7 @@ pub struct Parser<'t> {
     /// Raw index of the next non-trivia token (the parser's logical cursor).
     pos: usize,
     events: Vec<Event>,
-    errors: ThinVec<ParseError>,
+    diagnostics: ThinVec<ParseDiagnostic>,
     /// Reset on every [`advance`](Parser::advance); decremented on every
     /// lookahead. Hitting zero means the grammar is spinning.
     fuel: Cell<u32>,
@@ -103,7 +103,7 @@ impl<'t> Parser<'t> {
             // (Advance per token, Open + Close per node); 2x is generous
             // headroom so typical input fills this without reallocating
             events: Vec::with_capacity(tokens.len() * 2),
-            errors: ThinVec::new(),
+            diagnostics: ThinVec::new(),
             fuel: Cell::new(FUEL),
             no_struct_lit: Cell::new(false),
         };
@@ -192,15 +192,15 @@ impl<'t> Parser<'t> {
         }
     }
 
-    /// Record a diagnostic anchored at the cursor. Emits an [`Event::Error`]
+    /// Record a diagnostic anchored at the cursor. Emits an [`Event::Diagnostic`]
     /// but does not move the cursor.
     pub fn error(&mut self, msg: &'static str) {
-        let idx = ErrorIdx(self.errors.len() as u32);
-        self.errors.push(ParseError {
+        let idx = DiagnosticIdx(self.diagnostics.len() as u32);
+        self.diagnostics.push(ParseDiagnostic {
             msg,
             range: self.cursor_range(),
         });
-        self.events.push(Event::Error(idx));
+        self.events.push(Event::Diagnostic(idx));
     }
 
     /// Recovery: wrap the unexpected current token in an `ErrorNode` and
@@ -223,8 +223,8 @@ impl<'t> Parser<'t> {
         }
     }
 
-    fn finish(self) -> (Vec<Event>, ThinVec<ParseError>) {
-        (self.events, self.errors)
+    fn finish(self) -> (Vec<Event>, ThinVec<ParseDiagnostic>) {
+        (self.events, self.diagnostics)
     }
 
     /// Suppress (or re-enable) struct-literal recognition by the postfix loop.
@@ -301,7 +301,7 @@ impl CompletedMarker {
 pub fn parse(tokens: &[Token], source: &SourceText) -> Parse {
     let mut p = Parser::new(tokens);
     crate::grammar::source_file(&mut p);
-    let (events, errors) = p.finish();
+    let (events, diagnostics) = p.finish();
     let green = build_tree(tokens, events, source);
     // the CST is lossless: it must reproduce the source byte-for-byte
     debug_assert_eq!(
@@ -309,7 +309,7 @@ pub fn parse(tokens: &[Token], source: &SourceText) -> Parse {
         source.as_str(),
         "CST round-trip mismatch - build_tree dropped or duplicated text"
     );
-    Parse { green, errors }
+    Parse { green, diagnostics }
 }
 
 /// Walks the event stream and the raw token stream together, driving a
@@ -372,7 +372,7 @@ fn build_tree(tokens: &[Token], mut events: Vec<Event>, source: &SourceText) -> 
                 builder.token(EyeLang::kind_to_raw(kind), text);
                 raw += 1;
             }
-            Event::Error(_) | Event::Tombstone => {}
+            Event::Diagnostic(_) | Event::Tombstone => {}
         }
     }
 
@@ -406,9 +406,9 @@ main() {
 ";
 
     #[test]
-    fn well_formed_input_has_no_errors() {
+    fn well_formed_input_has_no_diagnostics() {
         let parse = parse_src(SAMPLE);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
     }
 
     #[test]
@@ -422,7 +422,7 @@ main() {
     fn malformed_input_still_produces_a_tree() {
         // a struct missing its name is recovered, not fatal
         let parse = parse_src("structure { };");
-        assert!(!parse.errors.is_empty(), "expected a diagnostic");
+        assert!(!parse.diagnostics.is_empty(), "expected a diagnostic");
         // the tree still round-trips even through error recovery
         assert_eq!(parse.green.to_string(), "structure { };");
     }
@@ -432,7 +432,7 @@ main() {
         // a mix of arithmetic, comparison, logical and prefix operators
         let src = "main() {\n    let x = -1 + 2 * 3 == 7 && a || b;\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -440,7 +440,7 @@ main() {
     fn struct_lit_shorthand_form_parses_clean() {
         let src = "main() {\n    mut Point p = Point { x, y };\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -448,7 +448,7 @@ main() {
     fn struct_lit_explicit_form_parses_clean() {
         let src = "main() {\n    mut Point p = Point { x: x, y: y };\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -456,7 +456,7 @@ main() {
     fn struct_lit_mixed_forms_parses_clean() {
         let src = "main() {\n    mut Point p = Point { x, y: 0 };\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -464,7 +464,7 @@ main() {
     fn field_access_expression_parses_clean_and_round_trips() {
         let src = "main() {\n    print(\"{}\", p.x);\n    print(\"{}\", p.y);\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -474,7 +474,7 @@ main() {
         // `FieldExpr(FieldExpr(a, b), c)` rather than two siblings.
         let src = "main() {\n    print(\"{}\", a.b.c);\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -492,7 +492,7 @@ main() {
     fn fn_def_with_return_type_and_tail_expr() {
         let src = "add(int32 a, int32 b) -> int32 { a + b }\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -500,7 +500,7 @@ main() {
     fn empty_param_list_still_parses() {
         let src = "main() {\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
     }
 
     /// Waterfall enum body: `enum Shape = | A | B | C ;`.
@@ -508,7 +508,7 @@ main() {
     fn enum_def_waterfall_form_parses_clean() {
         let src = "enum Shape =\n| Square\n| Circle\n| Triangle\n;\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -518,7 +518,7 @@ main() {
     fn ref_type_and_ref_expr_parse_clean() {
         let src = "main() {\n    mut pt = Point { 10, 20 };\n    mut &Point pt_ref = &pt;\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -527,7 +527,7 @@ main() {
     fn deref_expr_parses_clean() {
         let src = "main() {\n    mut x = *p;\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -536,7 +536,7 @@ main() {
     fn positional_struct_lit_parses_clean() {
         let src = "main() {\n    mut pt = Point { 10, 20 };\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -546,7 +546,7 @@ main() {
     fn assign_expr_to_name_and_field_parse_clean() {
         let src = "main() {\n    counter = counter + 1;\n    pt.x = 15;\n    pt_ref.y = 30;\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -557,7 +557,7 @@ main() {
     fn if_expr_as_value_parses_clean() {
         let src = "main() {\n    let max = if x > counter { x } else { counter };\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -567,7 +567,7 @@ main() {
     fn array_decl_literal_and_index_parse_clean() {
         let src = "main() {\n    let [int32; 3] xs = [1, 2, 3];\n    xs[0] = xs[1];\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
         let s = format!("{:#?}", parse.green);
         assert!(s.contains("ArrayType"), "expected ArrayType in:\n{s}");
@@ -577,12 +577,12 @@ main() {
 
     /// `else if` chaining. The chained `if` is wrapped in a synthetic Block
     /// (the `else { if ... }` desugar), so the else-branch stays a Block; the
-    /// CST must still reproduce the source byte-for-byte and carry no errors.
+    /// CST must still reproduce the source byte-for-byte and carry no diagnostics.
     #[test]
     fn else_if_chain_parses_clean() {
         let src = "main() {\n    if a { x } else if b { y } else { z }\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -592,7 +592,7 @@ main() {
     fn if_as_stmt_without_semicolon_parses_clean() {
         let src = "main() {\n    if counter > 10 { break; }\n    counter = counter + 1;\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -601,7 +601,7 @@ main() {
     fn loop_with_break_and_continue_parses_clean() {
         let src = "main() {\n    loop {\n        if done { break; }\n        if skip { continue; }\n        counter = counter + 1;\n    }\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -611,7 +611,7 @@ main() {
     fn break_with_value_parses_clean() {
         let src = "main() {\n    loop { break 42; }\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -622,7 +622,7 @@ main() {
     fn assign_is_right_assoc_and_below_addition() {
         let src = "main() {\n    a = b + c;\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
 
         // SourceFile > FnDef > Block > ExprStmt > AssignExpr > {NameRef, BinExpr}
         fn find_kind(node: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
@@ -648,7 +648,7 @@ main() {
     fn struct_lit_inside_call_inside_if_condition() {
         let src = "main() {\n    if foo(Bar { x: 0 }) { ok }\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -658,7 +658,7 @@ main() {
     fn if_with_bare_name_condition_does_not_eat_block_as_struct_lit() {
         let src = "main() {\n    if cond { ok }\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         // the if's body block must be an IfExpr > Block, not a StructLit
         let s = format!("{:#?}", parse.green);
         assert!(s.contains("IfExpr"));
@@ -672,10 +672,10 @@ main() {
     fn double_ref_type_in_let_binding_currently_misparses() {
         // `mut &&Point p = &q;` - the heuristic sees `&` + `&` and decides
         // there is no type, so `&&Point` parses as a logical-and prefix
-        // (which itself errors). Expect at least one diagnostic.
+        // and produces at least one diagnostic.
         let parse = parse_src("main() {\n    mut &&Point p = &q;\n}\n");
         assert!(
-            !parse.errors.is_empty(),
+            !parse.diagnostics.is_empty(),
             "nested-ref type-form should fail until the heuristic learns it"
         );
     }
@@ -689,7 +689,7 @@ main() {
         let src = "\
 enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r = match sh {\n        Circle -> 1,\n        Shape.Rectangle -> 2,\n        _ -> 0,\n    };\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
 
         // verify Pat variants are all present in the CST
@@ -709,7 +709,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
     fn match_scrutinee_does_not_eat_arm_list_as_struct_lit() {
         let src = "main() {\n    match sh {\n        _ -> 0,\n    };\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         let dump = format!("{:#?}", parse.green);
         assert!(dump.contains("MatchExpr"));
         // the only StructLit-shaped node in the tree must be absent: the
@@ -727,7 +727,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         let src =
             "main() {\n    let int32 r = match x {\n        A -> 1,\n        _ -> 0,\n    };\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -738,7 +738,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
     fn cast_expr_parses_clean_and_binds_tight() {
         let src = "main() {\n    let uint8 b = x as uint8;\n    let int32 c = a + b as int32;\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -748,7 +748,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
     fn union_def_parses_clean() {
         let src = "union Bits {\n    int64 i,\n    float64 f,\n};\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -758,7 +758,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
     fn extern_block_parses_clean() {
         let src = "extern {\n    malloc(uint64 size) -> ptr;\n    free(ptr p);\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -768,7 +768,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
     fn let_binding_with_postfix_pointer_type_parses() {
         let src = "main() {\n    mut Point* p = q as Point*;\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -779,7 +779,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         let src =
             "main() {\n    match x {\n        _ -> 0,\n    }\n    counter = counter + 1;\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -790,7 +790,11 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         let without_comma = "main() {\n    match x {\n        A -> 1,\n        B -> 2\n    };\n}\n";
         for src in [with_comma, without_comma] {
             let parse = parse_src(src);
-            assert!(parse.errors.is_empty(), "{src:?} -> {:?}", parse.errors);
+            assert!(
+                parse.diagnostics.is_empty(),
+                "{src:?} -> {:?}",
+                parse.diagnostics
+            );
             assert_eq!(parse.green.to_string(), src);
         }
     }
@@ -803,7 +807,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
     fn match_with_empty_arm_list_parses_without_diagnostic() {
         let src = "main() {\n    match x { };\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
         let dump = format!("{:#?}", parse.green);
         assert!(dump.contains("MatchArmList"));
@@ -819,7 +823,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
     fn match_arm_body_can_be_a_struct_literal() {
         let src = "main() {\n    let Point r = match x {\n        _ -> Point { x: 0, y: 0 },\n    };\n}\n";
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 
@@ -830,9 +834,9 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         let src = "main() {\n    match x {\n        A -> 1\n        B -> 2,\n    };\n}\n";
         let parse = parse_src(src);
         assert!(
-            parse.errors.iter().any(|e| e.msg.contains("','")),
+            parse.diagnostics.iter().any(|e| e.msg.contains("','")),
             "expected a missing-comma diagnostic; got {:?}",
-            parse.errors
+            parse.diagnostics
         );
         // both arms still recover into the tree
         let dump = format!("{:#?}", parse.green);
@@ -852,7 +856,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         let src = "main() {\n    match x {\n        A 1,\n        _ -> 0,\n    };\n}\n";
         let parse = parse_src(src);
         assert!(
-            !parse.errors.is_empty(),
+            !parse.diagnostics.is_empty(),
             "expected a diagnostic for the missing '->'"
         );
         // recovery still preserves the input text byte-for-byte
@@ -865,7 +869,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
     fn design_eye_parses_clean_and_round_trips() {
         let src = include_str!("../../../eyesrc/design.eye");
         let parse = parse_src(src);
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
     }
 }

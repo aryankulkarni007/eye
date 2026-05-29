@@ -4,7 +4,7 @@
 //! - [`legend`]: semantic token legend and server capabilities
 //! - [`documents`]: open buffer store
 //! - [`highlight`]: semantic token computation (CST + lexer)
-//! - [`diagnostics`]: parser errors as LSP diagnostics
+//! - [`diagnostics`]: parser diagnostics as LSP diagnostics
 //! - [`server`]: JSON-RPC loop
 
 pub mod diagnostics;

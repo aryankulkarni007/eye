@@ -1,8 +1,6 @@
 //! CST-guided classification for identifiers and type names.
 
-use ast::{
-    AstNode, Block, ExternFn, Expr, Item, MatchArm, MatchExpr, SourceFile, Stmt, TypeRef,
-};
+use ast::{AstNode, Block, Expr, ExternFn, Item, MatchArm, MatchExpr, SourceFile, Stmt, TypeRef};
 use syntax::{SyntaxNode, SyntaxToken};
 use text_size::TextRange;
 

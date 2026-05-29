@@ -36,23 +36,23 @@ pub fn handle_notification(
             let uri = params.text_document.uri.to_string();
             documents.close(&uri);
             let notification = publish_diagnostics_notification(&params.text_document.uri, vec![]);
-            connection.sender.send(Message::Notification(notification))?;
+            connection
+                .sender
+                .send(Message::Notification(notification))?;
         }
         _ => {}
     }
     Ok(())
 }
 
-fn publish_parse_diagnostics(
-    connection: &Connection,
-    uri: &Url,
-    text: &str,
-) -> anyhow::Result<()> {
+fn publish_parse_diagnostics(connection: &Connection, uri: &Url, text: &str) -> anyhow::Result<()> {
     let source = SourceText::new(text.to_string());
     let lexed = Lexer::new(&source).tokenize();
     let parse = parse(&lexed.tokens, &source);
     let diags = parser_diagnostics(text, &parse);
     let notification = publish_diagnostics_notification(uri, diags);
-    connection.sender.send(Message::Notification(notification))?;
+    connection
+        .sender
+        .send(Message::Notification(notification))?;
     Ok(())
 }

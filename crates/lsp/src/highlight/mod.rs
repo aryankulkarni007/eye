@@ -131,7 +131,9 @@ add(int32 a, int32 b) -> int32 {
 
     #[test]
     fn union_extern_as_keywords() {
-        let tokens = compute_semantic_tokens("union U { int32 a, }; extern { f() -> int32; } as x = 0;").unwrap();
+        let tokens =
+            compute_semantic_tokens("union U { int32 a, }; extern { f() -> int32; } as x = 0;")
+                .unwrap();
         let keyword_count = tokens
             .data
             .iter()

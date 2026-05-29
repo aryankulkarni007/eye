@@ -283,6 +283,122 @@ fn arrays_eye_lowers_fixed_arrays_and_indexing() {
     );
 }
 
+/// `--dump-ast` is the user-facing typed-AST smoke test. Keep it aligned with
+/// the current syntax surface, including params, returns, externs, unions,
+/// arrays, casts, indexing, assignment, control flow, refs/derefs, and match.
+#[test]
+fn dump_ast_covers_current_surface_without_opaque_placeholders() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = manifest.join("target").join("e2e-fixtures").join(format!(
+        "case-{}",
+        FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+
+    let src_path = dir.join("dump.eye");
+    std::fs::write(
+        &src_path,
+        "\
+structure Point {
+    int32 x,
+    int32 y,
+};
+
+union Bits {
+    int32 i,
+    float32 f,
+};
+
+enum Shape = Circle | Square | Other;
+
+extern {
+    print(string fmt, int32 value);
+}
+
+id(int32 value) -> int32 {
+    value
+}
+
+main() {
+    let Point p = Point { x: 1, y: 2 };
+    mut [int32; 3] xs = [10, 20, 30];
+    let int32 sides = match Square {
+        Shape.Circle -> 1,
+        Square -> 2,
+        _ -> 3,
+    };
+    xs[1] = id(sides) as int32;
+    let &Point rp = &p;
+    let int32 y = p.y;
+    let &int32 ry = &y;
+    let int32 z = *ry;
+    loop {
+        if z > 0 {
+            break;
+        } else {
+            continue;
+        }
+    };
+}
+",
+    )
+    .expect("write source");
+
+    let out = Command::new(DRIVER)
+        .arg(&src_path)
+        .arg("--dump-ast")
+        .output()
+        .expect("invoke driver");
+    assert!(
+        out.status.success(),
+        "driver failed: {}\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "structure Point",
+        "union Bits",
+        "enum Shape",
+        "extern fn print(string fmt, int32 value) -> void",
+        "fn id(int32 value) -> int32",
+        "tail name value",
+        "fn main() -> void",
+        "let Point p = Point { x: Int(1), y: Int(2) }",
+        "mut [int32; Int(3)] xs = [Int(10), Int(20), Int(30)]",
+        "let int32 sides = match name Square { Shape.Circle -> Int(1), Square -> Int(2), _ -> Int(3) }",
+        "expr (index name xs[Int(1)] = (name id(name sides) as int32))",
+        "let &Point rp = &name p",
+        "let int32 y = name p.y",
+        "let &int32 ry = &name y",
+        "let int32 z = *name ry",
+        "expr loop { 0 stmt(s); tail if (name z Gt Int(0)) { 1 stmt(s); tail <none> } else { 1 stmt(s); tail <none> } }",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "missing AST dump fragment `{expected}` in:\n{stdout}"
+        );
+    }
+
+    for stale in [
+        "<assign>",
+        "<if>",
+        "<loop>",
+        "<break>",
+        "<continue>",
+        "<ref>",
+        "<deref>",
+        "<match>",
+    ] {
+        assert!(
+            !stdout.contains(stale),
+            "stale placeholder `{stale}` remained in AST dump:\n{stdout}"
+        );
+    }
+}
+
 /// Driver should refuse non-`.eye` input rather than overwriting an
 /// arbitrary file with generated C.
 #[test]

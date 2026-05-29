@@ -1,8 +1,6 @@
 //! Parser diagnostics as LSP `publishDiagnostics` payloads.
 
-use lsp_types::{
-    notification::Notification, Diagnostic, DiagnosticSeverity, Position, Range, Url,
-};
+use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url, notification::Notification};
 use parser::Parse;
 use text_size::TextRange;
 
@@ -11,7 +9,7 @@ use lexer::SourceText;
 pub fn parser_diagnostics(source: &str, parse: &Parse) -> Vec<Diagnostic> {
     let text = SourceText::new(source.to_string());
     parse
-        .errors
+        .diagnostics
         .iter()
         .map(|err| Diagnostic {
             range: text_range_to_lsp(&text, err.range),
