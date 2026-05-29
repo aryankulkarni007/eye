@@ -11,33 +11,33 @@ arena-backed HIR, and a stateless code generator.
 
 ## Documentation
 
-| File | Purpose |
-|------|---------|
-| [`FUTURE.md`](FUTURE.md) | **Status ledger** — what ships per version (v0.1–v0.4), limitations, oversights, v0.5 roadmap, future forks |
-| [`VISION.md`](VISION.md) | Long-term language vision (kernel vs stdlib, supermacros) — not current implementation |
-| [`adding-features.md`](adding-features.md) | How to extend the pipeline (lexer → HIR → codegen) |
-| [`editor-setup.md`](editor-setup.md) | Configure `eye-lsp` in VS Code / Cursor |
-| [`MATCH.md`](MATCH.md) | Kernel-scope design note for `match` as discrete discriminant dispatch |
-| [`LSP.md`](LSP.md) | Capability audit for the current `eye-lsp` server |
-| [`M5.md`](M5.md) | Historical design brief for v0.3 match codegen hoist |
-| [`crates/ast/eye.ungram`](../crates/ast/eye.ungram) | Grammar source; run `cargo run -p xtask -- codegen` after edits |
+| File                                             | Purpose                                                                                                     |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| [`FUTURE.md`](docs/FUTURE.md)                    | **Status ledger** — what ships per version (v0.1–v0.4), limitations, oversights, v0.5 roadmap, future forks |
+| [`VISION.md`](docs/VISION.md)                    | Long-term language vision (kernel vs stdlib, supermacros) — not current implementation                      |
+| [`adding-features.md`](docs/adding-features.md)  | How to extend the pipeline (lexer → HIR → codegen)                                                          |
+| [`editor-setup.md`](docs/editor-setup.md)        | Configure `eye-lsp` in VS Code / Cursor                                                                     |
+| [`MATCH.md`](docs/ATCH.md)                       | Kernel-scope design note for `match` as discrete discriminant dispatch                                      |
+| [`LSP.md`](docs/LSP.md)                          | Capability audit for the current `eye-lsp` server                                                           |
+| [`M5.md`](docs/M5.md)                            | Historical design brief for v0.3 match codegen hoist                                                        |
+| [`crates/ast/eye.ungram`](crates/ast/eye.ungram) | Grammar source; run `cargo run -p xtask -- codegen` after edits                                             |
 
 ## Layout
 
-| Path                | Purpose                                            |
-|---------------------|----------------------------------------------------|
-| `src/main.rs`       | `eye` binary - driver wiring the pipeline together |
-| `crates/token`      | Static token kinds and `T![...]` macro             |
-| `crates/lexer`      | Logos-based lexer, interner, source-text helpers   |
-| `crates/syntax`     | `SyntaxKind` + rowan-typed `SyntaxNode`/`Token`    |
-| `crates/parser`     | Pratt parser, error recovery, snapshot tests       |
-| `crates/ast`        | Generated typed AST over the CST                   |
-| `crates/hir`        | Name resolution + arena-allocated HIR              |
-| `crates/codegen`    | HIR -> C transpile                                 |
-| `crates/lsp`        | `eye-lsp` language server (semantic tokens + parser diags) |
-| `crates/xtask`      | Codegen helpers (regenerating AST from ungrammar)  |
-| `eyesrc/`           | End-to-end sample programs                         |
-| `tests/`            | Workspace-level integration tests                  |
+| Path             | Purpose                                                    |
+| ---------------- | ---------------------------------------------------------- |
+| `src/main.rs`    | `eye` binary - driver wiring the pipeline together         |
+| `crates/token`   | Static token kinds and `T![...]` macro                     |
+| `crates/lexer`   | Logos-based lexer, interner, source-text helpers           |
+| `crates/syntax`  | `SyntaxKind` + rowan-typed `SyntaxNode`/`Token`            |
+| `crates/parser`  | Pratt parser, error recovery, snapshot tests               |
+| `crates/ast`     | Generated typed AST over the CST                           |
+| `crates/hir`     | Name resolution + arena-allocated HIR                      |
+| `crates/codegen` | HIR -> C transpile                                         |
+| `crates/lsp`     | `eye-lsp` language server (semantic tokens + parser diags) |
+| `crates/xtask`   | Codegen helpers (regenerating AST from ungrammar)          |
+| `eyesrc/`        | End-to-end sample programs                                 |
+| `tests/`         | Workspace-level integration tests                          |
 
 ## Prerequisites
 
