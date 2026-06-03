@@ -39,6 +39,32 @@ fn run_program(source: &str) -> (std::process::Output, PathBuf) {
     (out, dir)
 }
 
+/// Compile `source` expecting the driver to REJECT it, returning the driver's
+/// captured output. Asserts a non-zero exit (no binary is produced) so a test
+/// can inspect the diagnostic on stderr. The counterpart to [`run_program`],
+/// which asserts success.
+fn compile_expect_failure(source: &str) -> std::process::Output {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = manifest.join("target").join("e2e-fixtures").join(format!(
+        "case-{}",
+        FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+
+    let src_path = dir.join("prog.eye");
+    std::fs::write(&src_path, source).expect("write source");
+
+    let out = Command::new(DRIVER)
+        .arg(&src_path)
+        .output()
+        .expect("invoke driver");
+    assert!(
+        !out.status.success(),
+        "driver unexpectedly accepted the program"
+    );
+    out
+}
+
 /// The canonical v0.1 program. Captures every node kind the language ships
 /// with: struct def, fn def, typed and inferred lets, struct literal with
 /// shorthand, field access, `print` lowering.
@@ -410,6 +436,137 @@ fn v06_eye_runs_operators_and_prints_expected_output() {
     assert_eq!(lines[9], "grouped    14");
 }
 
+/// Track 2 vertical slice: a straight-line program lowered HIR -> MIR -> C.
+/// Locks the Segment 1 seam (Let/Binary/Call/Literal); an output assertion, not
+/// a C-text one (codegen makes no decisions, so output is the oracle - R1).
+#[test]
+fn mir_path_compiles_and_runs_straight_line_slice() {
+    let (out, _) = run_program("main() {\n    let int32 x = 1 + 2;\n    print(\"{}\", x);\n}\n");
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n");
+}
+
+/// Track 2 Segment 2: statement-position control flow. Exercises `loop`,
+/// statement `if`, `break`, `match` -> tag-dispatch, `Assign`, enum values, and
+/// a value-returning function (the `add` helper, compiled but not called - locks
+/// `Return` emission). The `match` arm `Stop -> break` proves the break targets
+/// the enclosing loop: the emitter renders the match as an `if`/`else if` chain,
+/// not a C `switch` (which would capture the `break` for the switch and loop
+/// forever). An output assertion (R1).
+#[test]
+fn mir_path_lowers_loop_match_break_and_value_return() {
+    let (out, _) = run_program(
+        "enum Sig = Stop | Go;\n\
+         \n\
+         add(int32 a, int32 b) -> int32 { a + b }\n\
+         \n\
+         main() {\n\
+         \x20   mut int32 i = 0;\n\
+         \x20   mut Sig s = Go;\n\
+         \x20   loop {\n\
+         \x20       match s {\n\
+         \x20           Stop -> break,\n\
+         \x20           Go -> print(\"{}\", i),\n\
+         \x20       };\n\
+         \x20       i = i + 1;\n\
+         \x20       if i >= 3 { s = Stop; }\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n1\n2\n");
+}
+
+/// Track 2 Segment 2: the control-flow branches the break test above does not
+/// reach - `if`/`else`, `continue`, a `match` wildcard arm (`default`), and
+/// compound assignment (`+=`, `-=`). Output assertion (R1).
+#[test]
+fn mir_path_lowers_else_continue_default_and_compound_assign() {
+    let (out, _) = run_program(
+        "enum Tag = A | B;\n\
+         \n\
+         main() {\n\
+         \x20   mut int32 n = 0;\n\
+         \x20   loop {\n\
+         \x20       n += 1;\n\
+         \x20       if n >= 4 { break; }\n\
+         \x20       if n == 2 {\n\
+         \x20           continue;\n\
+         \x20       } else {\n\
+         \x20           let Tag t = B;\n\
+         \x20           match t {\n\
+         \x20               A -> print(\"a\"),\n\
+         \x20               _ -> print(\"b\"),\n\
+         \x20           };\n\
+         \x20       }\n\
+         \x20       n -= 0;\n\
+         \x20       print(\"{}\", n);\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "b\n1\nb\n3\n");
+}
+
+/// Track 2 Segment 3, the REDESIGN I3 acid test. A value-position `match` nested
+/// inside the `then` branch of a value-position `if`, bound to a `let`. Lowering
+/// emits the match *in place* against the if-temp, assigning it per arm inside
+/// the branch - the shape the deleted `TernaryMatch` ban once rejected (hoisting
+/// the match out of the branch would run it even when the condition is false).
+/// Also exercises a general `Call` (`sides(shape)`) and a value-`match` as a
+/// function-body tail (`sides`). Output assertion (R1); mirrors `eyesrc/wierd.eye`.
+#[test]
+fn mir_path_acid_test_value_match_nested_in_if_branch() {
+    let (out, _) = run_program(
+        "enum Shape = Circle | Square | Triangle;\n\
+         \n\
+         sides(Shape s) -> int32 {\n\
+         \x20   match s {\n\
+         \x20       Circle -> 0,\n\
+         \x20       Square -> 4,\n\
+         \x20       Triangle -> 3,\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         main() {\n\
+         \x20   let Shape shape = Square;\n\
+         \x20   let int32 result =\n\
+         \x20       if sides(shape) > 3 {\n\
+         \x20           match shape {\n\
+         \x20               Circle -> 100,\n\
+         \x20               Square -> 200,\n\
+         \x20               Triangle -> 300,\n\
+         \x20           }\n\
+         \x20       } else {\n\
+         \x20           0\n\
+         \x20       };\n\
+         \x20   print(\"{}\", result);\n\
+         }\n",
+    );
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "200\n");
+}
+
 /// Driver should refuse non-`.eye` input rather than overwriting an
 /// arbitrary file with generated C.
 #[test]
@@ -456,4 +613,111 @@ fn arrays_eye_runs_value_semantics_and_prints_expected_output() {
     assert_eq!(lines[4], "sumref     6");
     assert_eq!(lines[5], "grid       3");
     assert_eq!(lines[6], "usize      200");
+}
+
+/// Track 2 Segment 4, the REDESIGN I5 short-circuit proof. `&&`/`||` must lower
+/// to control flow, not to an eager `RValue::Binary`: the right-hand operand
+/// runs only when the left does not already decide the result. The operands
+/// here have an observable side effect (each prints), so eager evaluation would
+/// show up as extra output. `sidet() || sidef()` must print only `T` (the `||`
+/// is already true, so `sidef` never runs); `sidef() && sidet()` must print only
+/// `F` (the `&&` is already false, so `sidet` never runs). The regression would
+/// be invisible without a side-effecting operand, which no corpus program had.
+#[test]
+fn mir_path_short_circuits_or_and_and_skipping_side_effects() {
+    let (out, _) = run_program(
+        "sidef() -> bool { print(\"F\"); false }\n\
+         sidet() -> bool { print(\"T\"); true }\n\
+         \n\
+         main() {\n\
+         \x20   let bool a = sidet() || sidef();\n\
+         \x20   print(\"a={}\", a);\n\
+         \x20   let bool b = sidef() && sidet();\n\
+         \x20   print(\"b={}\", b);\n\
+         }\n",
+    );
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // No stray `F` before `a=1` and no stray `T` before `b=0`: the
+    // short-circuited operand was not evaluated.
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "T\na=1\nF\nb=0\n");
+}
+
+/// Track 2 Segment 4: structs, references, and pointers. Source is
+/// `eyesrc/example.eye`, which exercises struct literals (shorthand and
+/// explicit), field access via `.` and via a pointer (`d.x` -> `d->x`), a
+/// `malloc(...) as Vec3*` cast of a call result, a deref lvalue (`*d = ...`) and
+/// a deref operand (`print_vec(*d)`), plus arrays of field reads. Output oracle
+/// (R1).
+#[test]
+fn mir_path_runs_struct_pointer_and_deref() {
+    let (out, _) = run_program(include_str!("../eyesrc/example.eye"));
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "(2, 2, 2)\n(2, 2, 2)\n(6, 6)\n",
+    );
+}
+
+/// Track 2 Segment 4: same-block shadowing compiles and runs. Eye allows
+/// `let x = 1; let x = 2;` in one block (the second binding wins). The emitter
+/// suffixes every non-parameter local with its `LocalId` (`x_0`, `x_1`), so the
+/// two declarations never collide in one C scope. (Naming locals by their bare
+/// source name - as the deleted HIR-walk emitter did - would emit two
+/// `const int32_t x;` and fail to compile, an I2/totality violation.) Prints the
+/// second binding. Output assertion (R1).
+#[test]
+fn mir_path_allows_same_block_shadowing() {
+    let (out, _) = run_program(
+        "main() {\n\
+         \x20   let int32 x = 1;\n\
+         \x20   let int32 x = 2;\n\
+         \x20   print(\"{}\", x);\n\
+         }\n",
+    );
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n");
+}
+
+/// Track 2 cutover (I2): the three corpus programs that relied on the
+/// unresolved-name accident are now rejected with a clean `use of undeclared
+/// name` diagnostic instead of emitting verbatim C. `bubblesort`/`file` call
+/// undeclared libc (variadic `printf`, `FILE*`-typed `fopen`/`fgets`); `floodfill`
+/// uses the bare `return;` keyword. MIR is a resolved IR with no node for any of
+/// these, so the rejection moved upstream to HIR lowering. This pins that they
+/// fail cleanly (a diagnostic, never a codegen panic); they are restored when the
+/// deferred features land - Rust-style FFI for the libc calls, early-return for
+/// `return;` (see docs/DEFER.md).
+#[test]
+fn cutover_rejects_undeclared_name_programs() {
+    for src in [
+        include_str!("../eyesrc/bubblesort.eye"),
+        include_str!("../eyesrc/file.eye"),
+        include_str!("../eyesrc/floodfill.eye"),
+    ] {
+        let out = compile_expect_failure(src);
+        let rendered = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            rendered.contains("use of undeclared name"),
+            "expected an undeclared-name diagnostic, got:\n{rendered}"
+        );
+    }
 }

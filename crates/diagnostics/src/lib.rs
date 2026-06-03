@@ -186,6 +186,13 @@ impl<K> Sink<K> {
     pub fn extend(&mut self, other: Sink<K>) {
         self.entries.extend(other.entries);
     }
+
+    /// Keep only entries whose kind satisfies `keep`. Used at the binary edge to
+    /// suppress a specific diagnostic under a feature flag without modifying the
+    /// pass that produced it.
+    pub fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) {
+        self.entries.retain(|(_, kind)| keep(kind));
+    }
 }
 
 impl<K: Diagnostic + 'static> Sink<K> {

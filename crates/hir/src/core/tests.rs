@@ -1223,10 +1223,13 @@ fn array_struct_field_is_rejected() {
     );
 }
 
-/// L1: a value-position match in a ternary-shaped `if` branch is rejected
-/// rather than emitting broken C.
+/// REDESIGN I3: a value-position match in a ternary-shaped `if` branch lowers
+/// clean. The HIR ban (`UnsupportedError::TernaryMatch`) that rejected this
+/// shape was deleted at the Track 2 cutover; MIR lowers the nested match in
+/// place inside the branch (proven end-to-end by the e2e acid test on
+/// `eyesrc/wierd.eye`). This guards that nothing reintroduces the ban.
 #[test]
-fn match_in_ternary_branch_is_rejected() {
+fn match_in_ternary_branch_is_accepted() {
     let hir = lower(
         "enum Color = Red | Blue;\n\
          pick(Color c) -> int32 {\n\
@@ -1235,10 +1238,8 @@ fn match_in_ternary_branch_is_rejected() {
          }\n",
     );
     assert!(
-        diags(&hir)
-            .iter()
-            .any(|e| matches!(e, HirError::Unsupported(UnsupportedError::TernaryMatch))),
-        "expected an unhoisted-match diagnostic, got: {:?}",
+        diags(&hir).is_empty(),
+        "value-position ternary match must lower clean, got: {:?}",
         hir.diagnostics
     );
 }
@@ -1280,5 +1281,86 @@ fn array_literal_return_coercion_keeps_length_check() {
             .any(|e| matches!(e, HirError::Type(TypeError::ReturnTypeMismatch { .. }))),
         "a wrong-length literal return must still error, got: {:?}",
         bad.diagnostics
+    );
+}
+
+/// Track 2 cutover (I2): every reachable name in value position that does not
+/// denote a value is rejected in HIR, so MIR's lowering of a `Path` is
+/// `unreachable!` for the non-value resolutions. Covers the full `Resolution`
+/// set: an undeclared name (call callee, bare value, struct-literal shorthand),
+/// a struct type name, a function name, and the `print`/`len` intrinsics outside
+/// callee position. Values (a local, an enum variant) and valid callees (a
+/// function call, `print(...)`) must stay clean.
+#[test]
+fn non_value_name_uses_are_rejected() {
+    let resolve_err = |src: &str| -> Vec<ResolveError> {
+        let hir = lower(src);
+        hir.diagnostics
+            .entries()
+            .iter()
+            .filter_map(|(_, e)| match e {
+                HirError::Resolve(r) => Some(r.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    use ResolveError::*;
+    let has = |src: &str, pred: fn(&ResolveError) -> bool| resolve_err(src).iter().any(pred);
+
+    // Undeclared name: call callee, bare value, and struct-literal shorthand.
+    assert!(
+        has("main() {\n    printf(\"x\");\n}\n", |e| matches!(
+            e,
+            UnresolvedName { .. }
+        )),
+        "undeclared call must be rejected"
+    );
+    assert!(
+        has("main() {\n    let int32 x = nope;\n}\n", |e| matches!(
+            e,
+            UnresolvedName { .. }
+        )),
+        "bare undeclared value must be rejected"
+    );
+    assert!(
+        has(
+            "structure P { int32 x, };\nmain() {\n    let P p = P { x };\n}\n",
+            |e| matches!(e, UnresolvedName { .. })
+        ),
+        "undeclared shorthand field must be rejected"
+    );
+    // A struct type name as a value (and so a struct as a callee, `P()`).
+    assert!(
+        has(
+            "structure P { int32 x, };\nmain() {\n    let int32 y = P;\n}\n",
+            |e| matches!(e, StructNameAsValue { .. })
+        ),
+        "struct name in value position must be rejected"
+    );
+    // A function name as a value (Eye has no function pointers).
+    assert!(
+        has(
+            "f() -> int32 { 1 }\nmain() {\n    let int32 y = f;\n}\n",
+            |e| matches!(e, FnAsValue { .. })
+        ),
+        "function name as a value must be rejected"
+    );
+    // The `print`/`len` intrinsics outside callee position are undeclared.
+    assert!(
+        has("main() {\n    let int32 p = print;\n}\n", |e| matches!(
+            e,
+            UnresolvedName { .. }
+        )),
+        "bare `print` value must be rejected"
+    );
+
+    // Controls: real values and valid callees stay clean.
+    assert!(
+        resolve_err("f() -> int32 { 1 }\nmain() {\n    print(\"{}\", f());\n}\n").is_empty(),
+        "a function call and `print(...)` are valid, not errors"
+    );
+    assert!(
+        resolve_err("enum E = A | B;\nmain() {\n    let E y = A;\n}\n").is_empty(),
+        "an enum variant is a value, not an error"
     );
 }

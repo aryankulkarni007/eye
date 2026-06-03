@@ -12,6 +12,7 @@ structure Human {
     int32 age,
 };
 
+
 decide(Coin coin) -> bool {
     match coin {
         Head -> true,

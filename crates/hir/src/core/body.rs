@@ -198,7 +198,7 @@ pub struct StructLitField {
     pub value: ExprId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Literal {
     Int(u128),
     Float(SmolStr),

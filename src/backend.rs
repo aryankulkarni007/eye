@@ -6,13 +6,14 @@ use std::{
     thread,
 };
 
-use codegen::core::CGen;
+use codegen::core::gen_mir;
 use hir::core::HIR;
 
 pub fn emit_and_compile(input_path: &Path, hir: &HIR) -> anyhow::Result<()> {
+    // Track 2 is cut over: codegen lowers HIR to MIR, then mechanically prints
+    // MIR to C. The old HIR-walk emitter is deleted.
     println!("generating c code...");
-    let generator = CGen::new(hir);
-    let mut generated_c = generator.gen_all();
+    let mut generated_c = gen_mir(hir);
 
     println!("formatting c code...");
     generated_c = format_with_clang_format(generated_c);
@@ -29,6 +30,7 @@ pub fn emit_and_compile(input_path: &Path, hir: &HIR) -> anyhow::Result<()> {
         .arg("-o")
         .arg(&binary_path)
         .arg("-O2")
+        .arg("-Wno-parentheses-equality") // NOTE: <- suppress the pedantic parens warning
         .status();
 
     match compile_status {

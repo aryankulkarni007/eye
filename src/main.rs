@@ -14,8 +14,8 @@ fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
     let input_path: &Path = cli.input.as_path();
 
-    // Validate input extension so we never overwrite a non-eye source when
-    // deriving the C output path below.
+    // validate input extension so we never overwrite a non-eye source when
+    // deriving the c output path below.
     if input_path.extension().and_then(|e| e.to_str()) != Some("eye") {
         eprintln!(
             "error: expected a `.eye` source file, got `{}`",

@@ -1,8 +1,40 @@
 # MIR: Mid-Level IR
 
-Status: DESIGN, NOT BUILT. This is Track 2 of `REDESIGN.md`. It is the high-risk,
-high-value refactor and runs after the diagnostics track (Track 1). This
-document is the handoff for a future session.
+Status: BUILT (Track 2 of `REDESIGN.md`, the high-risk, high-value refactor;
+runs after the diagnostics track). Cut over on branch `track2-mir`: codegen
+lowers HIR to MIR, then mechanically prints MIR to C. The old HIR-walk emitter
+and the `EYE_MIR` flag are deleted; MIR is the only path.
+
+- Segment 0-1: the `mir` crate, schema, and straight-line lowering + a minimal
+  emitter (the `let int32 x = 1 + 2; print` slice).
+- Segment 2: statement-position control flow (`if`/`loop`/`break`/`continue`/
+  `return`/statement-`match`/assign).
+- Segment 3: value-position `if`/`match` lowered in place (the acid test below)
+  and a general direct `Call`.
+- Segment 4: the full expression surface (`Unary`/`Index`/`Field`/`ArrayLit`/
+  `StructLit`/`Ref`/`Deref`/`Cast` + place projections) in `mir::lower`, the
+  dumb-printer emitter (struct/union/array-wrapper typedefs, `.data[]` vs
+  `->data[]` indexing, `.`/`->` field access, a total `place_type` recovery, and
+  per-`LocalId` local naming so same-block shadows cannot collide), and the
+  `&&`/`||` short-circuit rewrite (lowered to control flow, REDESIGN I5).
+- Segment 5 (cutover): MIR made the default and the HIR-walk emitter deleted
+  (`CGen` + `hoist_values`/`gen_match`/`gen_if_statement`/`get_expr_type` and the
+  38 C-text-pinned unit tests); the `TernaryMatch` ban deleted, so `wierd.eye`
+  compiles by default (REDESIGN I3). The unresolved-name accident was closed by
+  moving rejection upstream: a name in value position that does not denote a
+  value is now a hard `R`-class diagnostic, not verbatim C - an undeclared name
+  (libc call, the bare `return` keyword) is `UnresolvedName`, a struct/function
+  name used as a value is `StructNameAsValue`/`FnAsValue` (completing the
+  existing `EnumNameAsValue`). The `NameRef` lowering arm and MIR's `Path`
+  lowering are both exhaustive over `Resolution`, so every reachable `Path`
+  denotes a value and MIR's non-value `Path` arms are checked-`unreachable!`.
+  This satisfies I2 (a well-typed HIR can no longer reach a codegen `todo!()`).
+  Of the 21 `eyesrc` programs, 18 compile and run;
+  `raytracer` was rewritten to declare its libc externs (ABI-compatible) and now
+  runs too; `bubblesort`/`file`/`floodfill` are rejected with a clean diagnostic,
+  pending deferred features - see `docs/DEFER.md`.
+
+Plan: `~/.claude/plans/noble-tickling-parnas.md`.
 
 ## Purpose
 
@@ -48,6 +80,15 @@ This is why MIR succeeds where hoisting failed: hoisting tried to pull the match
 statement sequence within the correct block. No ban is needed. Codegen prints
 this structurally with no decisions.
 
+Built (Segment 3). `mir::lower::lower_into` realizes exactly this: a value
+`if`/`match` declares a typed temp, then the control-flow statement assigns the
+temp in each branch (recursively, so the nested match assigns its own temp inside
+the branch). `eyesrc/wierd.eye` is the worked example above; it compiles and runs
+(`200`). The `check_unhoisted_matches` ban (formerly
+`crates/hir/src/core/lower/stmt.rs`) and `UnsupportedError::TernaryMatch` were
+deleted at the Segment 5 cutover, so this shape is now accepted by default
+(REDESIGN I3).
+
 ## Core transformation
 
 HIR -> MIR does two things:
@@ -66,9 +107,13 @@ HIR -> MIR does two things:
    lowers to `t0 = f(); t1 = g(); t2 = t0 + t1`. And the short-circuit operators
    `&&` and `||` must NOT lower to `RValue::Binary` (its operands are both
    evaluated eagerly). They lower to control flow, the same in-place treatment
-   as the match example: `cond && rhs` becomes a temp assigned `false` by
-   default, then `if cond { <lower rhs into temp> }`. This is the operator half
-   of the conditional-context problem NOTES.md flagged alongside the `if` half.
+   as the match example. Built shape (`mir::lower::lower_into`), with `t` the
+   result temp: `a && b` becomes `t = a; if (t) { t = b }`; `a || b` becomes
+   `t = a; if (t) {} else { t = b }`. The `||` form puts `b` in the `else`, so no
+   negation is needed, and `b` lowers into the branch block's own buffer so its
+   prerequisite temps never run unless the branch is taken (this is exactly where
+   I5 lives or dies). This is the operator half of the conditional-context
+   problem NOTES.md flagged alongside the `if` half.
 
 ## Schema sketch
 
@@ -103,7 +148,9 @@ enum RValue {
     Use(Operand),
     Binary(BinOp, Operand, Operand),   // arithmetic/comparison only; NOT && ||
     Unary(UnaryOp, Operand),
-    Call { callee: Operand, args: Vec<Operand> },
+    Call { func: FnId, args: Vec<Operand> },   // direct call; built as FnId, not
+                                               // the speculative callee: Operand
+                                               // (Eye has no fn-pointer type)
     Ref(Place),
     Deref(Operand),
     Cast(Operand, Type),
@@ -131,9 +178,16 @@ Each MIR construct maps to one C form, no decisions:
 - `Let` -> `T x;` or `T x = <rvalue>;`
 - `Assign` -> `<place> = <rvalue>;`
 - `If` -> `if (<cond>) { ... } else { ... }`
-- `Loop` -> `while (1) { ... }`
-- `Switch` -> `switch (<scrut>) { case <tag>: ...; break; ... }`
+- `Loop` -> `while (true) { ... }`
+- `Switch` -> an `if (<scrut> == <tag>) { ... } else if ... else { <default> }`
+  chain, NOT a C `switch`. A C `switch` would capture a `break` that a match arm
+  intends for an enclosing loop (the arm and the `break` would share the same
+  `switch` scope); the `if`/`else-if` chain leaves `break`/`continue` bound to
+  the loop. `<scrut>` is a trivial operand, so re-evaluating it per arm has no
+  side effect. (Built Segment 2: `crates/codegen/src/core/mir_emit.rs::gen_switch`.)
 - `RValue::Binary` -> `a op b` (operands trivial, no recursion)
+- `RValue::Call` -> `func(arg, ...)` (the `FnId` resolves to the function name;
+  args are trivial operands). (Built Segment 3.)
 - `Return` -> `return <operand>;`
 
 This replaces codegen's current HIR walk, `hoist_matches`, the `match_temps`
@@ -176,14 +230,32 @@ not enshrined. This is a typeck/MIR boundary decision and is also recorded in
 the Track 3 type-check doc and in `DIAGNOSTICS.md` (Type class). Confirm before
 building MIR, because it determines whether MIR may assume complete types.
 
+Measured (Track 2 Segment 0, 2026-06-03): the `int32` match/if temp-type
+fallback fires zero times across the eyesrc corpus. The old HIR-walk emitter's
+`ArrayLit` bare-brace fallback was deleted at the Segment 5 cutover (the MIR
+emitter `unreachable!`s on a non-array `ArrayLit` instead - R2); every array
+program in the corpus takes the typed wrapper path and runs correctly.
+Implication: converting the remaining fallback to a hard `Type` diagnostic in
+Track 3 is free for the current corpus. Track 2 keeps the fallback, quarantined
+behind a single `mir_type_of` accessor so the flip is one line.
+
+Re-measured Segment 3. The value-`if`/`match` arm of `lower_operand` added a new
+`mir_type_of` call site that the Segment 0 measurement predates. Instrumenting
+the fallback branch with a temporary `eprintln!` and running `wierd.eye` and
+`test.eye` (the two programs that exercise the new call site) produced no output:
+the fallback fires zero times on either. The zero-fires claim holds, by
+measurement, for the Segment 3 call site.
+
 ## Invariants restated
 
 - I2 Total back half. `lower_body` and codegen are total. Any well-typed HIR
   lowers to valid MIR; any MIR emits valid C. Neither rejects, neither emits
   diagnostics.
-- I3 Acid test. The schema represents the currently-banned nested value-matches
-  (see worked example). When MIR lands, `check_unhoisted_matches` and the
-  `Unsupported::UnhoistedMatch` diagnostic (see `DIAGNOSTICS.md`) are deleted.
+- I3 Acid test. The schema represents the formerly-banned nested value-matches
+  (see worked example). `lower_into` lowers them in place and `wierd.eye` runs.
+  The `check_unhoisted_matches`/`collect_branch_matches` ban and
+  `UnsupportedError::TernaryMatch` were deleted at the Segment 5 cutover, so the
+  shape is accepted by default.
 - I4 Neutrality. The value model is target-neutral: trivial operands, neutral
   ops, neutral `Type` (reuse `TypeRef`). No C-isms (no fallthrough semantics, no
   C-specific type quirks) leak into MIR.

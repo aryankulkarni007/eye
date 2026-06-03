@@ -18,10 +18,14 @@
 //! element type must be complete before the array that contains it, so nested
 //! arrays are emitted innermost-first).
 
-use super::CGen;
-use super::types::CType;
-use hir::core::TypeRef;
+use hir::core::{HIR, TypeRef};
 use rustc_hash::FxHashSet;
+
+pub(super) struct ArrayWrapper {
+    pub(super) elem: TypeRef,
+    pub(super) len: u64,
+    pub(super) name: String,
+}
 
 /// Mangle a type into a fragment of a C identifier. Injective: two distinct
 /// Eye types never produce the same fragment, so they never collide on one
@@ -59,14 +63,18 @@ pub(super) fn array_wrapper_name(elem: &TypeRef, len: u64) -> String {
 
 /// Walk a type, registering every array node it contains. Innermost-first
 /// (post-order) so a nested array's wrapper is emitted before the wrapper that
-/// embeds it. Pushes `(elem, len)` for each distinct wrapper, deduped by name.
-fn collect(ty: &TypeRef, seen: &mut FxHashSet<String>, ordered: &mut Vec<(TypeRef, u64)>) {
+/// embeds it. Pushes each distinct wrapper, deduped by name.
+fn collect(ty: &TypeRef, seen: &mut FxHashSet<String>, ordered: &mut Vec<ArrayWrapper>) {
     match ty {
         TypeRef::Array { elem, len } => {
             collect(elem, seen, ordered);
             let name = array_wrapper_name(elem, *len);
-            if seen.insert(name) {
-                ordered.push((elem.as_ref().clone(), *len));
+            if seen.insert(name.clone()) {
+                ordered.push(ArrayWrapper {
+                    elem: elem.as_ref().clone(),
+                    len: *len,
+                    name,
+                });
             }
         }
         TypeRef::Ref(inner) | TypeRef::Ptr(inner) => collect(inner, seen, ordered),
@@ -74,70 +82,54 @@ fn collect(ty: &TypeRef, seen: &mut FxHashSet<String>, ordered: &mut Vec<(TypeRe
     }
 }
 
-impl<'a> CGen<'a> {
-    /// Emit a `typedef struct { T data[N]; }` for every distinct array type
-    /// used anywhere in the program. Runs after structs/unions/enums (so an
-    /// array of a struct sees the struct complete) and before functions.
-    pub(super) fn gen_array_typedefs(&mut self) {
-        let mut seen = FxHashSet::default();
-        let mut ordered: Vec<(TypeRef, u64)> = Vec::new();
+/// Collect every distinct array type used anywhere in the program, innermost
+/// first (so a nested array's wrapper is emitted before the wrapper embedding
+/// it). Drives the MIR emitter's array-wrapper typedef pass: the type universe
+/// is fixed by the program, independent of codegen.
+pub(super) fn collect_program_arrays(hir: &HIR) -> Vec<ArrayWrapper> {
+    let mut seen = FxHashSet::default();
+    let mut ordered = Vec::new();
 
-        // Struct and union field types (array fields are rejected in lowering,
-        // but walking them is harmless and keeps this exhaustive).
-        for (_id, field) in self.hir.fields.iter() {
-            collect(&field.ty, &mut seen, &mut ordered);
+    // Struct and union field types (array fields are rejected in lowering,
+    // but walking them is harmless and keeps this exhaustive).
+    for (_id, field) in hir.fields.iter() {
+        collect(&field.ty, &mut seen, &mut ordered);
+    }
+    // Function signatures.
+    for (_id, r#fn) in hir.functions.iter() {
+        for param in &r#fn.params {
+            collect(&param.ty, &mut seen, &mut ordered);
         }
-        // Function signatures.
-        for (_id, r#fn) in self.hir.functions.iter() {
-            for param in &r#fn.params {
-                collect(&param.ty, &mut seen, &mut ordered);
-            }
-            if let Some(ret) = &r#fn.ret {
-                collect(ret, &mut seen, &mut ordered);
-            }
+        if let Some(ret) = &r#fn.ret {
+            collect(ret, &mut seen, &mut ordered);
         }
-        // Body-local types: declared local types, cast/struct-literal target
-        // types, and every recovered expression type (covers array literals).
-        for (_id, body) in self.hir.bodies.iter() {
-            for (_lid, local) in body.locals.iter() {
-                if let Some(ty) = &local.ty {
-                    collect(ty, &mut seen, &mut ordered);
-                }
-            }
-            for (_eid, expr) in body.exprs.iter() {
-                match expr {
-                    hir::core::Expr::Cast { ty, .. } | hir::core::Expr::StructLit { ty, .. } => {
-                        collect(ty, &mut seen, &mut ordered);
-                    }
-                    _ => {}
-                }
-            }
-            for (_sid, stmt) in body.stmts.iter() {
-                if let hir::core::Stmt::Let { ty: Some(ty), .. } = stmt {
-                    collect(ty, &mut seen, &mut ordered);
-                }
-            }
-            for (_eid, ty) in body.expr_types.iter() {
+    }
+    // Body-local types: declared local types, cast/struct-literal target
+    // types, and every recovered expression type (covers array literals).
+    for (_id, body) in hir.bodies.iter() {
+        for (_lid, local) in body.locals.iter() {
+            if let Some(ty) = &local.ty {
                 collect(ty, &mut seen, &mut ordered);
             }
         }
-
-        if ordered.is_empty() {
-            return;
+        for (_eid, expr) in body.exprs.iter() {
+            match expr {
+                hir::core::Expr::Cast { ty, .. } | hir::core::Expr::StructLit { ty, .. } => {
+                    collect(ty, &mut seen, &mut ordered);
+                }
+                _ => {}
+            }
         }
-        self.output
-            .push_str("// fixed-array value wrappers (struct-wrap representation)\n");
-        for (elem, len) in ordered {
-            emit!(
-                self,
-                "typedef struct {{ {} data[{}]; }} {};\n",
-                CType::new(&elem),
-                len,
-                array_wrapper_name(&elem, len)
-            );
+        for (_sid, stmt) in body.stmts.iter() {
+            if let hir::core::Stmt::Let { ty: Some(ty), .. } = stmt {
+                collect(ty, &mut seen, &mut ordered);
+            }
         }
-        self.output.push('\n');
+        for (_eid, ty) in body.expr_types.iter() {
+            collect(ty, &mut seen, &mut ordered);
+        }
     }
+    ordered
 }
 
 #[cfg(test)]

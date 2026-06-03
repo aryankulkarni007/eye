@@ -33,7 +33,12 @@ impl<'a> LoweringCtx<'a> {
     /// initializer) rather than the enclosing node. Falls back to `default`
     /// when the expression has no recorded pointer.
     pub(super) fn expr_ptr(&self, id: ExprId, default: SyntaxNodePtr) -> SyntaxNodePtr {
-        self.body.source_map.expr.get(id).cloned().unwrap_or(default)
+        self.body
+            .source_map
+            .expr
+            .get(id)
+            .cloned()
+            .unwrap_or(default)
     }
 
     pub(super) fn text(token: Option<SyntaxToken>) -> Text {

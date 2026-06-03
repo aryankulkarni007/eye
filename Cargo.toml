@@ -8,9 +8,10 @@ members = [
     "crates/parser",
     "crates/ast",
     "crates/hir",
+    "crates/mir",
     "crates/xtask",
     "crates/codegen",
-    "crates/lsp"
+    "crates/lsp",
 ]
 
 [workspace.package]
@@ -46,6 +47,7 @@ syntax = { path = "crates/syntax", package = "eye-syntax" }
 parser = { path = "crates/parser", package = "eye-parser" }
 ast = { path = "crates/ast", package = "eye-ast" }
 hir = { path = "crates/hir", package = "eye-hir" }
+mir = { path = "crates/mir", package = "eye-mir" }
 codegen = {path = "crates/codegen", package = "eye-codegen"}
 lsp = { path = "crates/lsp", package = "eye-lsp" }
 

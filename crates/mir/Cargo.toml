@@ -1,0 +1,20 @@
+[package]
+name = "eye-mir"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "mir"
+
+[dependencies]
+hir.workspace = true
+ast.workspace = true
+la-arena.workspace = true
+rustc-hash.workspace = true
+smol_str.workspace = true
+smallvec.workspace = true
+thin-vec.workspace = true
+
+[dev-dependencies]
+lexer.workspace = true
+parser.workspace = true

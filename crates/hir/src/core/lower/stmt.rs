@@ -6,9 +6,7 @@ use thin_vec::ThinVec;
 
 use super::LoweringCtx;
 use super::types::lower_type_ref;
-use crate::core::{
-    Block, BlockId, ExprId, Local, Pat, Stmt, StmtId, Text, TypeError, TypeRef, UnsupportedError,
-};
+use crate::core::{Block, BlockId, ExprId, Local, Pat, Stmt, StmtId, Text, TypeError, TypeRef};
 
 impl<'a> LoweringCtx<'a> {
     pub(super) fn lower_block(&mut self, block: ast::Block) -> BlockId {
@@ -178,19 +176,50 @@ impl<'a> LoweringCtx<'a> {
     /// A literal array initializer takes its element type from its elements,
     /// which default integer literals to `int32`. When the `let` declares the
     /// array type (e.g. `[usize; 2] = [100, 200]`), that type wins: re-type the
-    /// literal onto the declared type so its wrapper matches the binding. C
-    /// converts the element constants inside the brace initializer.
+    /// literal onto the declared type so its wrapper matches the binding.
     fn record_array_init_override(&mut self, declared: Option<&TypeRef>, init: Option<ExprId>) {
-        let Some(init_id) = init else {
+        let (Some(declared), Some(init_id)) = (declared, init) else {
             return;
         };
-        let Some(declared @ TypeRef::Array { .. }) = declared else {
+        self.coerce_array_literal_type(declared, init_id);
+    }
+
+    /// Re-type an array literal - and recursively every nested array literal -
+    /// onto a declared array type so each level's wrapper matches it. Without
+    /// the recursion only the outer literal is re-typed, leaving inner literals
+    /// at their `int32` default (e.g. `[[usize; 2]; 2] = [[1, 0], [0, 1]]`
+    /// would emit a `usize` outer wrapper holding `int32` inner wrappers - a C
+    /// type error). C converts the element constants inside the brace
+    /// initializer. Each level is length-guarded: a literal whose length
+    /// disagrees with the declared length keeps its own type so the existing
+    /// length diagnostic still fires rather than the wrapper being reshaped
+    /// around the wrong element count. Shared by the `let`, return, and
+    /// call-argument coercion sites, all of which face the same nesting.
+    pub(super) fn coerce_array_literal_type(&mut self, declared: &TypeRef, init_id: ExprId) {
+        let TypeRef::Array {
+            elem,
+            len: declared_len,
+        } = declared
+        else {
             return;
         };
         if !matches!(self.body.exprs[init_id], crate::core::Expr::ArrayLit(_)) {
             return;
         }
+        let Some(TypeRef::Array { len: lit_len, .. }) = self.body.expr_types.get(init_id) else {
+            return;
+        };
+        if lit_len != declared_len {
+            return;
+        }
+        let crate::core::Expr::ArrayLit(elems) = &self.body.exprs[init_id] else {
+            return;
+        };
+        let elems: ThinVec<ExprId> = elems.clone();
         self.body.expr_types.insert(init_id, declared.clone());
+        for e in elems {
+            self.coerce_array_literal_type(elem, e);
+        }
     }
 
     /// Cross-arm result-type consistency for every value-position `match` in the
@@ -265,72 +294,6 @@ impl<'a> LoweringCtx<'a> {
         }
     }
 
-    /// L1: a value-position `match` inside a ternary-shaped `if` branch cannot
-    /// be hoisted. Codegen renders such an `if` as `cond ? a : b`, but a C
-    /// `switch` is a statement, not an expression, so the match has no temp to
-    /// reference and would emit broken C (the old `/* UNHOISTED MATCH */`
-    /// marker). Reject it with a clear message until codegen can lift the temp
-    /// out of the conditional. The ternary shape here mirrors codegen's `If`
-    /// arm (else present, then-block is a single tail value); the branch scan
-    /// mirrors codegen's hoist boundary (stops at `If`/`Loop`/`Block`).
-    pub(super) fn check_unhoisted_matches(&mut self) {
-        let if_ids: Vec<ExprId> = self
-            .body
-            .exprs
-            .iter()
-            .filter_map(|(id, e)| matches!(e, crate::core::Expr::If { .. }).then_some(id))
-            .collect();
-
-        for if_id in if_ids {
-            let crate::core::Expr::If {
-                then_branch,
-                else_branch,
-                ..
-            } = &self.body.exprs[if_id]
-            else {
-                continue;
-            };
-            let then_branch = *then_branch;
-            let Some(else_branch) = *else_branch else {
-                continue;
-            };
-            let then_block = &self.body.blocks[then_branch];
-            if !(then_block.stmts.is_empty() && then_block.tail.is_some()) {
-                continue;
-            }
-
-            let mut unhoisted: Vec<ExprId> = Vec::new();
-            if let Some(tail) = self.body.blocks[then_branch].tail {
-                self.collect_branch_matches(tail, &mut unhoisted);
-            }
-            if let Some(tail) = self.body.blocks[else_branch].tail {
-                self.collect_branch_matches(tail, &mut unhoisted);
-            }
-            for mid in unhoisted {
-                let Some(ptr) = self.body.source_map.expr.get(mid).cloned() else {
-                    continue;
-                };
-                self.emit(ptr, UnsupportedError::TernaryMatch);
-            }
-        }
-    }
-
-    /// Collect value-position matches reachable from `expr` without crossing an
-    /// `If`/`Loop`/`Block` boundary - exactly the matches codegen's hoist walk
-    /// does not reach. Mirrors `collect_match_ids_rec` in codegen.
-    fn collect_branch_matches(&self, expr_id: ExprId, out: &mut Vec<ExprId>) {
-        match &self.body.exprs[expr_id] {
-            crate::core::Expr::Match { scrut, .. } => {
-                self.collect_branch_matches(*scrut, out);
-                out.push(expr_id);
-            }
-            crate::core::Expr::If { .. }
-            | crate::core::Expr::Loop { .. }
-            | crate::core::Expr::Block(_) => {}
-            other => other.for_each_child_expr(|c| self.collect_branch_matches(c, out)),
-        }
-    }
-
     /// The function body's tail expression must produce the declared return
     /// type. General HIR check over any tail expression. When the tail is a
     /// value-position `match`, the return type is authoritative: re-record it
@@ -359,7 +322,7 @@ impl<'a> LoweringCtx<'a> {
             && let Some(TypeRef::Array { len: lit_len, .. }) = self.body.expr_types.get(tail)
             && lit_len == ret_len
         {
-            self.body.expr_types.insert(tail, ret.clone());
+            self.coerce_array_literal_type(ret, tail);
             return;
         }
         let Some(actual) = self.body.expr_types.get(tail).cloned() else {

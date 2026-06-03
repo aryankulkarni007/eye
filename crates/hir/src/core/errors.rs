@@ -44,6 +44,28 @@ pub enum ResolveError {
     EnumNameAsValue {
         name: Text,
     },
+    /// A name in value position resolves to nothing: not a local, function,
+    /// type, or variant. The `print`/`len` call intrinsics are excepted (they
+    /// are sniffed by their unresolved name). This is the principled
+    /// replacement for the old unresolved-name accident, where the HIR-walk
+    /// backend emitted any unknown identifier verbatim as C (an undeclared
+    /// `printf(...)` the linker resolved, the bare `return` keyword); MIR is a
+    /// resolved IR, so it diagnoses here instead. See `docs/DEFER.md`.
+    UnresolvedName {
+        name: Text,
+    },
+    /// A struct type name used in value position (`let x = Point;`). A struct is
+    /// a type, not a value. Sibling of [`ResolveError::EnumNameAsValue`]; a
+    /// struct *literal* (`Point { .. }`) is a separate, valid form.
+    StructNameAsValue {
+        name: Text,
+    },
+    /// A function name used as a value (`let x = f;`). Eye has no function
+    /// pointers, so a function is callable but not a value; it is valid only as
+    /// a call callee.
+    FnAsValue {
+        name: Text,
+    },
 }
 
 /// `T`: type-rule violations.
@@ -87,9 +109,6 @@ pub enum ConstError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsupportedError {
     ArrayField,
-    /// Transient: codifies today's HIR ban on value-position matches that
-    /// codegen cannot hoist. Deleted when MIR lands (REDESIGN I3).
-    TernaryMatch,
 }
 
 /// The single HIR diagnostic kind. Lowering accumulates a `Sink<HirError>`;
@@ -169,6 +188,15 @@ impl fmt::Display for ResolveError {
             }
             ResolveError::EnumNameAsValue { name } => {
                 write!(f, "`{name}` is an enum type, not a value")
+            }
+            ResolveError::UnresolvedName { name } => {
+                write!(f, "use of undeclared name `{name}`")
+            }
+            ResolveError::StructNameAsValue { name } => {
+                write!(f, "`{name}` is a struct type, not a value")
+            }
+            ResolveError::FnAsValue { name } => {
+                write!(f, "`{name}` is a function, not a value")
             }
         }
     }
@@ -264,11 +292,6 @@ impl fmt::Display for UnsupportedError {
             UnsupportedError::ArrayField => {
                 write!(f, "arrays as struct or union fields are not supported yet")
             }
-            UnsupportedError::TernaryMatch => write!(
-                f,
-                "match in a conditional (ternary) expression is not supported yet; \
-                 bind it to a `let` first"
-            ),
         }
     }
 }
@@ -287,7 +310,7 @@ impl fmt::Display for HirError {
 
 impl Diagnostic for HirError {
     fn code(&self) -> Code {
-        // Numbers are positional placeholders; the class letter is the
+        // FIXME: numbers are positional placeholders; the class letter is the
         // meaningful part until the code registry is finalized.
         match self {
             HirError::Resolve(_) => Code::new(Class::Resolve, 1),

@@ -266,14 +266,9 @@ dependencies = [
 name = "eye-codegen"
 version = "0.1.0"
 dependencies = [
- "eye-ast",
  "eye-hir",
- "eye-lexer",
- "eye-parser",
- "insta",
+ "eye-mir",
  "rustc-hash 2.1.2",
- "smallvec",
- "thin-vec",
 ]
 
 [[package]]
@@ -333,6 +328,21 @@ dependencies = [
  "lsp-types",
  "serde_json",
  "text-size",
+]
+
+[[package]]
+name = "eye-mir"
+version = "0.1.0"
+dependencies = [
+ "eye-ast",
+ "eye-hir",
+ "eye-lexer",
+ "eye-parser",
+ "la-arena",
+ "rustc-hash 2.1.2",
+ "smallvec",
+ "smol_str",
+ "thin-vec",
 ]
 
 [[package]]

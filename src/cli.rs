@@ -8,7 +8,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "eye",
-    about = "Eye compiler driver (transpiles .eye -> C -> native via clang)"
+    about = "eye compiler driver (transpiles .eye -> c -> native via clang)"
 )]
 pub struct Cli {
     /// Source file to compile. Must have a `.eye` extension.

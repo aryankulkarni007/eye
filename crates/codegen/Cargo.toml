@@ -8,12 +8,5 @@ name = "codegen"
 
 [dependencies]
 hir.workspace = true
+mir.workspace = true
 rustc-hash.workspace = true
-smallvec.workspace = true
-
-[dev-dependencies]
-lexer.workspace = true
-parser.workspace = true
-ast.workspace = true
-insta.workspace = true
-thin-vec.workspace = true

@@ -50,11 +50,38 @@ impl<'a> LoweringCtx<'a> {
             ast::Expr::NameRef(nr) => {
                 let name: Text = Self::text(nr.name());
                 let resolution = self.resolve(&name);
-                // Bare enum name in expression position is not a value.
-                // `Shape.Circle` short-circuits before reaching here via the
-                // FieldExpr arm, so an Enum resolution here is misuse.
-                if matches!(resolution, Resolution::Enum(_)) {
-                    self.emit(ptr, ResolveError::EnumNameAsValue { name: name.clone() });
+                // Is this name the direct callee of a call (`f(...)`)? A function
+                // and the `print`/`len` intrinsics are usable there but are not
+                // bare values.
+                let is_callee = nr
+                    .syntax()
+                    .parent()
+                    .and_then(ast::CallExpr::cast)
+                    .and_then(|c| c.callee())
+                    .is_some_and(|callee| callee.syntax() == nr.syntax());
+                // A name in value position must denote a value: a local or an
+                // enum variant constant (or, in callee position, a function /
+                // `print` / `len`). Every other resolution is misuse and is
+                // rejected here, so a `Path` reaching codegen always denotes a
+                // value - MIR relies on this (REDESIGN I2). Exhaustive over
+                // `Resolution` so a new variant must decide its value-ness.
+                let not_value: Option<ResolveError> = match &resolution {
+                    Resolution::Local(_) | Resolution::Variant { .. } => None,
+                    Resolution::Fn(_) if is_callee => None,
+                    Resolution::Unresolved(n) if is_callee && (n == "print" || n == "len") => None,
+                    Resolution::Enum(_) => {
+                        Some(ResolveError::EnumNameAsValue { name: name.clone() })
+                    }
+                    Resolution::Struct(_) => {
+                        Some(ResolveError::StructNameAsValue { name: name.clone() })
+                    }
+                    Resolution::Fn(_) => Some(ResolveError::FnAsValue { name: name.clone() }),
+                    Resolution::Unresolved(_) => {
+                        Some(ResolveError::UnresolvedName { name: name.clone() })
+                    }
+                };
+                if let Some(err) = not_value {
+                    self.emit(ptr, err);
                     return self.missing_expr(ptr);
                 }
                 // look up the type of the resolved entity.
@@ -92,27 +119,17 @@ impl<'a> LoweringCtx<'a> {
                     let fn_id = *fn_id;
                     expr_type = self.hir.functions[fn_id].ret.clone();
                     // Coerce array-literal arguments to the declared param's
-                    // array type (its element type), same as a `let`/return.
-                    // Length-guarded so an arity mismatch is not masked.
+                    // array type, same as a `let`/return. The shared helper
+                    // recurses through nested array literals and is
+                    // length-guarded at every level, so an arity mismatch is
+                    // not masked.
                     let param_tys: Vec<TypeRef> = self.hir.functions[fn_id]
                         .params
                         .iter()
                         .map(|p| p.ty.clone())
                         .collect();
                     for (arg, pty) in args.iter().zip(param_tys.iter()) {
-                        let TypeRef::Array { len: plen, .. } = pty else {
-                            continue;
-                        };
-                        if !matches!(self.body.exprs[*arg], Expr::ArrayLit(_)) {
-                            continue;
-                        }
-                        let alen = match self.body.expr_types.get(*arg) {
-                            Some(TypeRef::Array { len, .. }) => *len,
-                            _ => continue,
-                        };
-                        if alen == *plen {
-                            self.body.expr_types.insert(*arg, pty.clone());
-                        }
+                        self.coerce_array_literal_type(pty, *arg);
                     }
                 }
                 Expr::Call { callee, args }
@@ -120,6 +137,9 @@ impl<'a> LoweringCtx<'a> {
             ast::Expr::ArrayLit(al) => {
                 let elems: ThinVec<ExprId> = al.elems().map(|e| self.lower_expr(&e)).collect();
                 // Type as [elem; N] when the first element's type is known.
+                // Integer-literal elements default to int32; a declared array
+                // type (let/return/param) later re-types the whole nested
+                // literal via `coerce_array_literal_type`.
                 if let Some(&first) = elems.first()
                     && let Some(elem_ty) = self.body.expr_types.get(first).cloned()
                 {
@@ -165,9 +185,16 @@ impl<'a> LoweringCtx<'a> {
                     }
                 }
                 // Element type is the base's element/pointee type, when known.
+                // A reference or pointer to an array peels to the element type
+                // so `r[i]` on `&[T; N]` yields `T` (not the whole array, which
+                // would spuriously trip the binary-op-on-array check); a
+                // reference or pointer to a non-array peels to the pointee.
                 expr_type = base_ty.and_then(|t| match t {
                     TypeRef::Array { elem, .. } => Some(*elem),
-                    TypeRef::Ptr(inner) | TypeRef::Ref(inner) => Some(*inner),
+                    TypeRef::Ptr(inner) | TypeRef::Ref(inner) => match *inner {
+                        TypeRef::Array { elem, .. } => Some(*elem),
+                        other => Some(other),
+                    },
                     _ => None,
                 });
                 Expr::Index { base, index }
@@ -196,17 +223,36 @@ impl<'a> LoweringCtx<'a> {
                                 // shorthand desugar: synthesize Path expr.
                                 let resolution = self.resolve(&fname);
                                 let f_ptr = SyntaxNodePtr::new(f.syntax());
-                                let inner_ty = match &resolution {
-                                    Resolution::Local(local_id) => {
-                                        self.body.locals[*local_id].ty.clone()
+                                // An unresolved shorthand names an undeclared
+                                // local - a hard error, same as a bare name in
+                                // value position (the `NameRef` arm). Diagnosing
+                                // it here keeps every reachable `Unresolved` path
+                                // rejected before codegen (I2). No `print`/`len`
+                                // exception: a struct field is never a call, so
+                                // those would be genuinely undeclared here.
+                                if let Resolution::Unresolved(_) = &resolution {
+                                    self.emit(
+                                        f_ptr,
+                                        ResolveError::UnresolvedName {
+                                            name: fname.clone(),
+                                        },
+                                    );
+                                    self.missing_expr(f_ptr)
+                                } else {
+                                    let inner_ty = match &resolution {
+                                        Resolution::Local(local_id) => {
+                                            self.body.locals[*local_id].ty.clone()
+                                        }
+                                        _ => None,
+                                    };
+                                    let id = self.alloc_expr(Expr::Path(resolution), f_ptr);
+                                    // FIXME: Add a regression test for unresolved
+                                    // shorthand fields so this never reaches MIR.
+                                    if let Some(t) = inner_ty {
+                                        self.body.expr_types.insert(id, t);
                                     }
-                                    _ => None,
-                                };
-                                let id = self.alloc_expr(Expr::Path(resolution), f_ptr);
-                                if let Some(t) = inner_ty {
-                                    self.body.expr_types.insert(id, t);
+                                    id
                                 }
-                                id
                             }
                         };
                         fields.push(StructLitField { name: fname, value });
@@ -283,10 +329,12 @@ impl<'a> LoweringCtx<'a> {
                 // a pointer, so only value arrays are caught).
                 let on_array = matches!(self.body.expr_types.get(lhs), Some(TypeRef::Array { .. }))
                     || matches!(self.body.expr_types.get(rhs), Some(TypeRef::Array { .. }));
+
                 if on_array {
                     self.emit(ptr, TypeError::OpOnArray { op: bin_op_str(op) });
                     return self.missing_expr(ptr);
                 }
+
                 // Comparison and logical operators produce `bool`; arithmetic
                 // operators take the left operand's type (a simplification until
                 // full inference exists).
@@ -558,7 +606,10 @@ impl<'a> LoweringCtx<'a> {
                 _ => None,
             };
             if let Some(kind) = kind {
-                self.emit(self.expr_ptr(arg, ptr), TypeError::PrintCannotFormat { kind });
+                self.emit(
+                    self.expr_ptr(arg, ptr),
+                    TypeError::PrintCannotFormat { kind },
+                );
             }
         }
     }

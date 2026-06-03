@@ -1,8 +1,7 @@
 //! Type and format-specifier mapping: HIR `TypeRef` -> C type strings and
 //! printf specifiers.
 
-use super::CGen;
-use hir::core::{Body, Expr, ExprId, Resolution, TypeRef};
+use hir::core::TypeRef;
 use std::fmt;
 
 pub(super) struct CType<'a> {
@@ -73,103 +72,34 @@ impl fmt::Display for CDeclarator<'_> {
     }
 }
 
-impl<'a> CGen<'a> {
-    pub(super) fn get_expr_type(&self, expr_idx: ExprId, body: &Body) -> Option<TypeRef> {
-        // check the explicit type map
-        if let Some(ty) = body.expr_types.get(expr_idx) {
-            return Some(ty.clone());
-        }
-
-        // then try to derive it from the expression itself
-        match &body.exprs[expr_idx] {
-            Expr::Path(Resolution::Local(local_id)) => {
-                // the local should have its type from lowering
-                body.locals[*local_id].ty.clone()
-            }
-            Expr::Field { base, name } => {
-                let parent_ty = self.get_expr_type(*base, body)?;
-
-                let struct_name = match &parent_ty {
-                    TypeRef::Path(n) => n,
-                    TypeRef::Ref(inner) | TypeRef::Ptr(inner) => match inner.as_ref() {
-                        TypeRef::Path(n) => n,
-                        _ => return None,
-                    },
-                    _ => return None,
-                };
-
-                // Field-typed lookup spans both products (structs) and unions
-                // - they share the field arena, so a union member resolves the
-                // same way.
-                let field_id = self
-                    .hir
-                    .items
-                    .structs
-                    .get(struct_name)
-                    .and_then(|&id| self.hir.structs[id].field_index.get(name).copied())
-                    .or_else(|| {
-                        self.hir
-                            .items
-                            .unions
-                            .get(struct_name)
-                            .and_then(|&id| self.hir.unions[id].field_index.get(name).copied())
-                    });
-
-                field_id.map(|id| self.hir.fields[id].ty.clone())
-            }
-            Expr::Ref { operand } => {
-                // &expr has type Ref(inner_type)
-                let inner = self.get_expr_type(*operand, body)?;
-                Some(TypeRef::Ref(Box::new(inner)))
-            }
-            Expr::Deref { operand } => {
-                // *expr has the inner type
-                let op_ty = self.get_expr_type(*operand, body)?;
-                match op_ty {
-                    TypeRef::Ref(inner) | TypeRef::Ptr(inner) => Some(*inner),
-                    _ => None,
-                }
-            }
-            Expr::Index { base, .. } => {
-                // base[i] has the element/pointee type of the base.
-                let base_ty = self.get_expr_type(*base, body)?;
-                match base_ty {
-                    TypeRef::Array { elem, .. } => Some(*elem),
-                    TypeRef::Ref(inner) | TypeRef::Ptr(inner) => Some(*inner),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
-    pub(super) fn spec_for_type(ty: &TypeRef) -> &'static str {
-        match ty {
-            TypeRef::Path(name) => match name.as_str() {
-                // int8/int16 default-promote to int, so %d is correct.
-                "int8" | "int16" | "int32" => "%d",
-                "int64" => "%lld",
-                // uint8/uint16 default-promote to int; %u reads the same small
-                // positive value. uint32 is unsigned int.
-                "uint8" | "uint16" | "uint32" => "%u",
-                "uint64" => "%llu",
-                // C99 length modifiers: %zu for size_t, %td for ptrdiff_t.
-                "usize" => "%zu",
-                "isize" => "%td",
-                // printf promotes float to double for variadics, so a single
-                // `%f` covers both surface types.
-                "float32" | "float64" => "%f",
-                "bool" => "%d",
-                "char" => "%c",
-                "string" => "%s",
-                // Unknown nominal type (likely a struct): no sensible printf
-                // representation, but we still emit *something* so codegen
-                // does not silently drop the placeholder.
-                _ => "%d",
-            },
-            // refs/pointers and decayed arrays print as addresses.
-            TypeRef::Ref(_) | TypeRef::Ptr(_) | TypeRef::Array { .. } => "%p",
-            TypeRef::Error => "%d",
-        }
+/// printf format specifier for a value of type `ty`. A pure type -> specifier
+/// map, read by the MIR emitter's `print` lowering (one specifier per `{}`).
+pub(super) fn spec_for_type(ty: &TypeRef) -> &'static str {
+    match ty {
+        TypeRef::Path(name) => match name.as_str() {
+            // int8/int16 default-promote to int, so %d is correct.
+            "int8" | "int16" | "int32" => "%d",
+            "int64" => "%lld",
+            // uint8/uint16 default-promote to int; %u reads the same small
+            // positive value. uint32 is unsigned int.
+            "uint8" | "uint16" | "uint32" => "%u",
+            "uint64" => "%llu",
+            // C99 length modifiers: %zu for size_t, %td for ptrdiff_t.
+            "usize" => "%zu",
+            "isize" => "%td",
+            // printf promotes float to double for variadics, so a single
+            // `%f` covers both surface types.
+            "float32" | "float64" => "%f",
+            "bool" => "%d",
+            "char" => "%c",
+            "string" => "%s",
+            // Unknown nominal type (likely a struct): no sensible printf
+            // representation, but we still emit *something* so codegen
+            // does not silently drop the placeholder.
+            _ => "%d",
+        },
+        // refs/pointers and decayed arrays print as addresses.
+        TypeRef::Ref(_) | TypeRef::Ptr(_) | TypeRef::Array { .. } => "%p",
+        TypeRef::Error => "%d",
     }
 }
