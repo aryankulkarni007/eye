@@ -1,20 +1,138 @@
 //! Pass 1: collect top-level items into [`HIR::items`].
 
 use ast::AstNode;
-use diagnostics::{Sink, Span};
-use rustc_hash::FxHashMap;
+use diagnostics::Span;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 use syntax::{SyntaxNode, SyntaxNodePtr, SyntaxToken};
 
 use super::types::lower_type_ref;
 use crate::core::{
-    Enum, Field, FnId, Function, HIR, HirError, Param, ResolveError, Struct, Text, TypeRef, Union,
-    UnsupportedError, Variant,
+    Const, ConstId, ConstValue, Enum, Field, FnId, Function, Global, GlobalId, HIR, HirError,
+    OpaqueType, Param, ResolveError, Struct, Text, TypeError, TypeKind, TypeRef, Union, Variant,
 };
+
+/// Pass 1a: collect top-level `const` items into the const arena and item scope,
+/// *before* [`collect_items`], so a later item's array length (`[T; N]`) can
+/// resolve `N` to a const value once pass 1.5 ([`super::const_eval`]) folds it.
+/// Values are filled in by the evaluator; this pass only records names, types,
+/// and the AST body to fold. Returns the AST nodes so the evaluator can walk
+/// each initializer without re-traversing the file.
+pub(super) fn collect_consts(
+    hir: &mut HIR,
+    file: &ast::SourceFile,
+) -> Vec<(ConstId, ast::ConstDef)> {
+    let mut const_asts = Vec::new();
+    for item in file.items() {
+        let ast::Item::ConstDef(c) = item else {
+            continue;
+        };
+        let name: Text = text(c.name());
+        // Const values are not folded yet, so a const-as-array-length in a
+        // const's *own* type cannot be resolved here. Aggregate const values
+        // are deferred anyway (scalar-only floor), so an empty map is correct.
+        let ty = match c.ty() {
+            Some(t) => lower_type_ref(&t, &mut hir.diagnostics, &FxHashMap::with_capacity_and_hasher(0, FxBuildHasher), &mut hir.types.borrow_mut()),
+            None => hir.types.borrow_mut().error_type(),
+        };
+        let const_id = hir.consts.alloc(Const {
+            name: name.clone(),
+            ty,
+            value: None,
+        });
+        // Only other consts exist in scope at this point (this pass runs first);
+        // a clash with a struct/fn/enum is caught when that item is collected.
+        if hir.items.consts.contains_key(&name) {
+            hir.diagnostics.emit(
+                name_span(c.name(), c.syntax()),
+                HirError::Resolve(ResolveError::DuplicateItem { name: name.clone() }),
+            );
+        }
+        hir.items.consts.insert(name, const_id);
+        const_asts.push((const_id, c));
+    }
+    const_asts
+}
+
+/// Pass 1b: collect top-level `let`/`mut` globals (addressable static storage).
+/// Runs after consts are folded, so a global's type (`[T; N]`) may reference a
+/// const length. Values are folded by [`super::const_eval::eval_globals`]; this
+/// pass records name, type, and mutability, and returns the AST initializers.
+pub(super) fn collect_globals(
+    hir: &mut HIR,
+    file: &ast::SourceFile,
+    const_values: &FxHashMap<Text, ConstValue>,
+) -> Vec<(GlobalId, ast::GlobalDef)> {
+    let mut global_asts = Vec::new();
+    for item in file.items() {
+        let ast::Item::GlobalDef(g) = item else {
+            continue;
+        };
+        let name: Text = text(g.name());
+        check_c_keyword(hir, &name, "global", name_span(g.name(), g.syntax()));
+        let ty = match g.ty() {
+            Some(t) => lower_type_ref(&t, &mut hir.diagnostics, const_values, &mut hir.types.borrow_mut()),
+            None => hir.types.borrow_mut().error_type(),
+        };
+        let mutable = matches!(g.kind(), Some(ast::LetKind::Mut));
+        let global_id = hir.globals.alloc(Global {
+            name: name.clone(),
+            ty,
+            mutable,
+            value: None,
+        });
+        // A global sharing a name with an already-collected const/global is a
+        // duplicate item (other namespaces are checked in `collect_items`).
+        if hir.items.consts.contains_key(&name) || hir.items.globals.contains_key(&name) {
+            hir.diagnostics.emit(
+                name_span(g.name(), g.syntax()),
+                HirError::Resolve(ResolveError::DuplicateItem { name: name.clone() }),
+            );
+        }
+        hir.items.globals.insert(name, global_id);
+        global_asts.push((global_id, g));
+    }
+    global_asts
+}
 
 fn text(token: Option<SyntaxToken>) -> Text {
     token.map(|t| SmolStr::from(t.text())).unwrap_or_default()
+}
+
+/// Whether `name` is a C keyword (C11 plus the C23 additions). The C backend
+/// emits item names, field names, parameter names, and enum variants verbatim,
+/// so any of them being a C keyword produces illegal C (`.struct = ...`).
+/// Names that are also Eye keywords (`if`, `return`, `union`, ...) never get
+/// here - the parser rejects them - but they are kept in the list as defense
+/// in depth. The `_X`-style spellings (`_Bool`, `_Atomic`, ...) are omitted:
+/// a leading underscore followed by an uppercase letter is reserved C the
+/// user would have to spell deliberately.
+fn is_c_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "auto" | "bool" | "break" | "case" | "char" | "const" | "constexpr" | "continue"
+            | "default" | "do" | "double" | "else" | "enum" | "extern" | "false" | "float"
+            | "for" | "goto" | "if" | "inline" | "int" | "long" | "nullptr" | "register"
+            | "restrict" | "return" | "short" | "signed" | "sizeof" | "static"
+            | "static_assert" | "struct" | "switch" | "thread_local" | "true" | "typedef"
+            | "typeof" | "typeof_unqual" | "union" | "unsigned" | "void" | "volatile"
+            | "while"
+    )
+}
+
+/// Reject a declared name the backend will emit verbatim when it is a C
+/// keyword. `what` names the declaration kind for the message.
+fn check_c_keyword(hir: &mut HIR, name: &Text, what: &'static str, span: Span) {
+    if is_c_keyword(name) {
+        hir.diagnostics.emit(
+            span,
+            HirError::Resolve(ResolveError::NameIsCKeyword {
+                name: name.clone(),
+                what,
+            }),
+        );
+    }
 }
 
 /// Anchor a diagnostic on an item's name token when present, falling back to the
@@ -25,56 +143,38 @@ fn name_span(name: Option<SyntaxToken>, fallback: &SyntaxNode) -> Span {
         .unwrap_or_else(|| Span::from(SyntaxNodePtr::new(fallback)))
 }
 
-/// Arrays as struct/union fields need the array's wrapper typedef emitted
-/// before the containing struct, which the current codegen ordering (arrays
-/// after nominal types) does not provide. Reject them with a clear diagnostic
-/// until codegen gains a type-dependency topo-sort, and degrade the field type
-/// to `Error` so the unbuilt C never references an undeclared wrapper. The
-/// diagnostic anchors on the field's type node (the offending `[T; N]`), or the
-/// whole field when no type node is present.
-fn reject_array_field(
-    ty: TypeRef,
-    ty_node: Option<&SyntaxNode>,
-    field: &SyntaxNode,
-    diagnostics: &mut Sink<HirError>,
-) -> TypeRef {
-    if matches!(ty, TypeRef::Array { .. }) {
-        let anchor = ty_node
-            .map(|n| Span::from(SyntaxNodePtr::new(n)))
-            .unwrap_or_else(|| Span::from(SyntaxNodePtr::new(field)));
-        diagnostics.emit(anchor, HirError::Unsupported(UnsupportedError::ArrayField));
-        return TypeRef::Error;
-    }
-    ty
-}
-
 /// Walk top-level items, allocate signatures, populate [`ItemScope`].
 /// Returns the AST nodes for each function so pass 3 can lower their bodies
 /// without re-traversing the file. Emits a diagnostic on duplicate names
 /// (later definitions still take effect; the original slot stays allocated
 /// but is shadowed in the scope map).
-pub(super) fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId, ast::FnDef)> {
+pub(super) fn collect_items(
+    hir: &mut HIR,
+    file: &ast::SourceFile,
+    const_values: &FxHashMap<Text, ConstValue>,
+) -> Vec<(FnId, ast::FnDef)> {
     let mut fn_asts = Vec::new();
     for item in file.items() {
         match item {
+            // Collected in pass 1a (`collect_consts`), before this pass, so an
+            // array length here can already reference a const value.
+            ast::Item::ConstDef(_) => {}
+            // Collected in pass 1b (`collect_globals`), after const folding.
+            ast::Item::GlobalDef(_) => {}
             ast::Item::StructDef(s) => {
                 let name: Text = text(s.name());
+                check_c_keyword(hir, &name, "struct", name_span(s.name(), s.syntax()));
+                let field_count = s.field_list().map(|fl| fl.fields().count()).unwrap_or(0);
                 let mut fields = SmallVec::new();
-                let mut field_index = FxHashMap::default();
+                let mut field_index = FxHashMap::with_capacity_and_hasher(field_count, FxBuildHasher);
                 if let Some(fl) = s.field_list() {
                     for f in fl.fields() {
                         let fname: Text = text(f.name());
-                        let ty_ast = f.ty();
-                        let ty = match &ty_ast {
-                            Some(t) => lower_type_ref(t, &mut hir.diagnostics),
-                            None => TypeRef::Error,
+                        check_c_keyword(hir, &fname, "field", name_span(f.name(), f.syntax()));
+                        let ty = match f.ty() {
+                            Some(t) => lower_type_ref(&t, &mut hir.diagnostics, const_values, &mut hir.types.borrow_mut()),
+                            None => hir.types.borrow_mut().error_type(),
                         };
-                        let ty = reject_array_field(
-                            ty,
-                            ty_ast.as_ref().map(|t| t.syntax()),
-                            f.syntax(),
-                            &mut hir.diagnostics,
-                        );
                         let field_id = hir.fields.alloc(Field { name: fname, ty });
                         if !field_index.contains_key(&hir.fields[field_id].name) {
                             field_index.insert(hir.fields[field_id].name.clone(), field_id);
@@ -87,7 +187,9 @@ pub(super) fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId,
                     fields,
                     field_index,
                 });
-                if hir.items.structs.contains_key(&name) || hir.items.functions.contains_key(&name)
+                if hir.items.structs.contains_key(&name)
+                    || hir.items.functions.contains_key(&name)
+                    || hir.items.consts.contains_key(&name)
                 {
                     hir.diagnostics.emit(
                         name_span(s.name(), s.syntax()),
@@ -98,13 +200,20 @@ pub(super) fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId,
             }
             ast::Item::FnDef(f) => {
                 let name: Text = text(f.name());
+                check_c_keyword(hir, &name, "function", name_span(f.name(), f.syntax()));
                 let mut params = SmallVec::new();
                 if let Some(pl) = f.param_list() {
                     for param_ast in pl.params() {
                         let pname = text(param_ast.name());
+                        check_c_keyword(
+                            hir,
+                            &pname,
+                            "parameter",
+                            name_span(param_ast.name(), param_ast.syntax()),
+                        );
                         let pty = match param_ast.ty() {
-                            Some(t) => lower_type_ref(&t, &mut hir.diagnostics),
-                            None => TypeRef::Error,
+                            Some(t) => lower_type_ref(&t, &mut hir.diagnostics, const_values, &mut hir.types.borrow_mut()),
+                            None => hir.types.borrow_mut().error_type(),
                         };
                         params.push(Param {
                             name: pname,
@@ -114,15 +223,36 @@ pub(super) fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId,
                 }
                 let ret = f
                     .ret_type()
-                    .map(|t| lower_type_ref(&t, &mut hir.diagnostics));
+                    .map(|t| lower_type_ref(&t, &mut hir.diagnostics, const_values, &mut hir.types.borrow_mut()));
+                // `main` is the program entry point. The C backend wraps it in
+                // an `int main(void)` shim that calls it with no arguments and
+                // adapts whatever it returns to the process exit code. Any
+                // return type is fine, but the shim has nothing to pass for a
+                // parameter, so a parameterized `main` is rejected here rather
+                // than emitting C that clang rejects (a call with too few args).
+                if name == "main" && !params.is_empty() {
+                    hir.diagnostics.emit(
+                        name_span(f.name(), f.syntax()),
+                        HirError::Type(TypeError::MainHasParams),
+                    );
+                }
+                let fn_type = {
+                    let p: &[Param] = &params;
+                    let param_tys: Vec<TypeRef> = p.iter().map(|p| p.ty).collect();
+                    Some(hir.types.borrow_mut().intern(TypeKind::Fn { params: param_tys, ret }))
+                };
                 let fn_id = hir.functions.alloc(Function {
                     name: name.clone(),
                     params,
                     ret,
                     body: None,
                     is_extern: false,
+                    variadic: false,
+                    fn_type,
                 });
-                if hir.items.functions.contains_key(&name) || hir.items.structs.contains_key(&name)
+                if hir.items.functions.contains_key(&name)
+                    || hir.items.structs.contains_key(&name)
+                    || hir.items.consts.contains_key(&name)
                 {
                     hir.diagnostics.emit(
                         name_span(f.name(), f.syntax()),
@@ -136,22 +266,18 @@ pub(super) fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId,
             // separate arena + scope namespace.
             ast::Item::UnionDef(u) => {
                 let name: Text = text(u.name());
+                check_c_keyword(hir, &name, "union", name_span(u.name(), u.syntax()));
+                let field_count = u.field_list().map(|fl| fl.fields().count()).unwrap_or(0);
                 let mut fields = SmallVec::new();
-                let mut field_index = FxHashMap::default();
+                let mut field_index = FxHashMap::with_capacity_and_hasher(field_count, FxBuildHasher);
                 if let Some(fl) = u.field_list() {
                     for f in fl.fields() {
                         let fname: Text = text(f.name());
-                        let ty_ast = f.ty();
-                        let ty = match &ty_ast {
-                            Some(t) => lower_type_ref(t, &mut hir.diagnostics),
-                            None => TypeRef::Error,
+                        check_c_keyword(hir, &fname, "field", name_span(f.name(), f.syntax()));
+                        let ty = match f.ty() {
+                            Some(t) => lower_type_ref(&t, &mut hir.diagnostics, const_values, &mut hir.types.borrow_mut()),
+                            None => hir.types.borrow_mut().error_type(),
                         };
-                        let ty = reject_array_field(
-                            ty,
-                            ty_ast.as_ref().map(|t| t.syntax()),
-                            f.syntax(),
-                            &mut hir.diagnostics,
-                        );
                         let field_id = hir.fields.alloc(Field { name: fname, ty });
                         if !field_index.contains_key(&hir.fields[field_id].name) {
                             field_index.insert(hir.fields[field_id].name.clone(), field_id);
@@ -167,6 +293,7 @@ pub(super) fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId,
                 if hir.items.structs.contains_key(&name)
                     || hir.items.unions.contains_key(&name)
                     || hir.items.functions.contains_key(&name)
+                    || hir.items.consts.contains_key(&name)
                 {
                     hir.diagnostics.emit(
                         name_span(u.name(), u.syntax()),
@@ -178,35 +305,72 @@ pub(super) fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId,
             // Each signature in an `extern` block becomes a bodyless
             // [`Function`] flagged `is_extern`, registered in the fn namespace
             // so calls resolve. No AST body, so nothing is pushed to `fn_asts`.
+            // A `type Name;` declaration becomes an [`OpaqueType`], registered
+            // in its own namespace so `Name*` type refs name a real item.
             ast::Item::ExternBlock(eb) => {
-                for ef in eb.fns() {
+                for item in eb.items() {
+                    let ef = match item {
+                        ast::ExternItem::ExternFn(ef) => ef,
+                        ast::ExternItem::ExternTypeDef(et) => {
+                            let name: Text = text(et.name());
+                            check_c_keyword(hir, &name, "type", name_span(et.name(), et.syntax()));
+                            let opaque_id = hir.opaques.alloc(OpaqueType { name: name.clone() });
+                            if hir.items.opaques.contains_key(&name)
+                                || hir.items.structs.contains_key(&name)
+                                || hir.items.unions.contains_key(&name)
+                                || hir.items.enums.contains_key(&name)
+                            {
+                                hir.diagnostics.emit(
+                                    name_span(et.name(), et.syntax()),
+                                    HirError::Resolve(ResolveError::DuplicateItem { name: name.clone() }),
+                                );
+                            }
+                            hir.items.opaques.insert(name, opaque_id);
+                            continue;
+                        }
+                    };
                     let name: Text = text(ef.name());
+                    // No C symbol can be a keyword, so an extern keyword name
+                    // could never link; reject it like a defined function's.
+                    // Extern *parameter* names are not checked: the emitted
+                    // prototype is types-only, so they never reach the C.
+                    check_c_keyword(hir, &name, "function", name_span(ef.name(), ef.syntax()));
                     let mut params = SmallVec::new();
+                    let mut variadic = false;
                     if let Some(pl) = ef.param_list() {
                         for param_ast in pl.params() {
                             let pname = text(param_ast.name());
                             let pty = match param_ast.ty() {
-                                Some(t) => lower_type_ref(&t, &mut hir.diagnostics),
-                                None => TypeRef::Error,
+                                Some(t) => lower_type_ref(&t, &mut hir.diagnostics, const_values, &mut hir.types.borrow_mut()),
+                                None => hir.types.borrow_mut().error_type(),
                             };
                             params.push(Param {
                                 name: pname,
                                 ty: pty,
                             });
                         }
+                        variadic = pl.variadic().is_some();
                     }
                     let ret = ef
                         .ret_type()
-                        .map(|t| lower_type_ref(&t, &mut hir.diagnostics));
+                        .map(|t| lower_type_ref(&t, &mut hir.diagnostics, const_values, &mut hir.types.borrow_mut()));
+                    let fn_type = {
+                        let p: &[Param] = &params;
+                        let param_tys: Vec<TypeRef> = p.iter().map(|p| p.ty).collect();
+                        Some(hir.types.borrow_mut().intern(TypeKind::Fn { params: param_tys, ret }))
+                    };
                     let fn_id = hir.functions.alloc(Function {
                         name: name.clone(),
                         params,
                         ret,
                         body: None,
                         is_extern: true,
+                        variadic,
+                        fn_type,
                     });
                     if hir.items.functions.contains_key(&name)
                         || hir.items.structs.contains_key(&name)
+                        || hir.items.consts.contains_key(&name)
                     {
                         hir.diagnostics.emit(
                             name_span(ef.name(), ef.syntax()),
@@ -218,10 +382,13 @@ pub(super) fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId,
             }
             ast::Item::EnumDef(e) => {
                 let name: Text = text(e.name());
+                check_c_keyword(hir, &name, "enum", name_span(e.name(), e.syntax()));
+                let variant_count = e.variants().count();
                 let mut variants = SmallVec::new();
-                let mut variant_index = FxHashMap::default();
+                let mut variant_index = FxHashMap::with_capacity_and_hasher(variant_count, FxBuildHasher);
                 for v in e.variants() {
                     let vname = text(v.name());
+                    check_c_keyword(hir, &vname, "enum variant", name_span(v.name(), v.syntax()));
                     if !variant_index.contains_key(&vname) {
                         variant_index.insert(vname.clone(), variants.len() as u32);
                     }
@@ -232,10 +399,12 @@ pub(super) fn collect_items(hir: &mut HIR, file: &ast::SourceFile) -> Vec<(FnId,
                     variants,
                     variant_index,
                 });
-                if hir.items.structs.contains_key(&name) || hir.items.functions.contains_key(&name)
+                if hir.items.structs.contains_key(&name)
+                    || hir.items.functions.contains_key(&name)
+                    || hir.items.consts.contains_key(&name)
                 {
                     hir.diagnostics.emit(
-                        SyntaxNodePtr::new(e.syntax()),
+                        name_span(e.name(), e.syntax()),
                         HirError::Resolve(ResolveError::DuplicateItem { name: name.clone() }),
                     );
                 }

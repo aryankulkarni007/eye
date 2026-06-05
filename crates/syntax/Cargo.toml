@@ -9,3 +9,4 @@ name = "syntax"
 [dependencies]
 token.workspace = true
 rowan.workspace = true
+text-size.workspace = true

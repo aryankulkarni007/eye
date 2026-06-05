@@ -10,3 +10,5 @@ name = "codegen"
 hir.workspace = true
 mir.workspace = true
 rustc-hash.workspace = true
+ryu.workspace = true
+itoa.workspace = true

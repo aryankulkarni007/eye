@@ -1,0 +1,81 @@
+---
+source: tests/snapshots.rs
+expression: mir
+---
+fn main:
+MirBody {
+    locals: Arena {
+        len: 2,
+        data: [
+            MirLocal {
+                ty: TypeRef(
+                    3,
+                ),
+                name: Some(
+                    "x",
+                ),
+                mutable: false,
+            },
+            MirLocal {
+                ty: TypeRef(
+                    3,
+                ),
+                name: Some(
+                    "y",
+                ),
+                mutable: false,
+            },
+        ],
+    },
+    params: [],
+    body: MirBlock {
+        stmts: [
+            Let {
+                local: Idx::<MirLocal>(0),
+                init: Some(
+                    Use(
+                        Const(
+                            Int(
+                                42,
+                            ),
+                        ),
+                    ),
+                ),
+            },
+            Let {
+                local: Idx::<MirLocal>(1),
+                init: Some(
+                    Binary(
+                        Add,
+                        Copy(
+                            Local(
+                                Idx::<MirLocal>(0),
+                            ),
+                        ),
+                        Const(
+                            Int(
+                                1,
+                            ),
+                        ),
+                    ),
+                ),
+            },
+            Eval(
+                Println {
+                    args: [
+                        Const(
+                            String(
+                                "{}",
+                            ),
+                        ),
+                        Copy(
+                            Local(
+                                Idx::<MirLocal>(1),
+                            ),
+                        ),
+                    ],
+                },
+            ),
+        ],
+    },
+}

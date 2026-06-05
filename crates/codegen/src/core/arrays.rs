@@ -12,20 +12,14 @@
 //! no wrapper type. The language never mentions `.data`; indexing and `&a[0]`
 //! are rewritten onto it here.
 //!
-//! Wrapper names are derived purely from the type, so [`super::types::CType`]
-//! can render an array as its wrapper name with no shared state. The collection
-//! pass below only decides which typedefs to emit, and in what order (an
-//! element type must be complete before the array that contains it, so nested
-//! arrays are emitted innermost-first).
+//! Wrapper names are derived purely from the type via interned handles, so
+//! [`super::types::CType`] can render an array as its wrapper name with no
+//! shared state. This module is now just the wrapper naming (the injective
+//! mangle); deciding which wrappers to emit and in what order is the shared
+//! type-declaration topology ([`hir::core::topo_order`]), driven from the MIR
+//! emitter.
 
-use hir::core::{HIR, TypeRef};
-use rustc_hash::FxHashSet;
-
-pub(super) struct ArrayWrapper {
-    pub(super) elem: TypeRef,
-    pub(super) len: u64,
-    pub(super) name: String,
-}
+use hir::core::{TypeInterner, TypeKind, TypeRef};
 
 /// Mangle a type into a fragment of a C identifier. Injective: two distinct
 /// Eye types never produce the same fragment, so they never collide on one
@@ -42,103 +36,75 @@ pub(super) struct ArrayWrapper {
 ///   `arr_` puts the length first (`arr_3_5int32`) so the fragment parses
 ///   front-to-back: after `arr_`, the digit run is the length, then `_`, then
 ///   the element mangle.
-fn array_mangle(ty: &TypeRef) -> String {
-    match ty {
-        TypeRef::Path(name) => {
+fn array_mangle(ty: TypeRef, types: &TypeInterner) -> String {
+    match types.lookup(ty) {
+        TypeKind::Path(name) => {
             let n = name.to_string();
             format!("{}{}", n.len(), n)
         }
-        TypeRef::Ref(inner) => format!("ref_{}", array_mangle(inner)),
-        TypeRef::Ptr(inner) => format!("ptr_{}", array_mangle(inner)),
-        TypeRef::Array { elem, len } => format!("arr_{}_{}", len, array_mangle(elem)),
-        TypeRef::Error => "err".to_string(),
+        TypeKind::Ref(inner) => format!("ref_{}", array_mangle(*inner, types)),
+        TypeKind::Ptr(inner) => format!("ptr_{}", array_mangle(*inner, types)),
+        TypeKind::Array { elem, len } => {
+            format!("arr_{}_{}", len, array_mangle(*elem, types))
+        }
+        TypeKind::Fn { params, ret } => {
+            let mut s = format!("fn{}", params.len());
+            for &p in params {
+                s.push('_');
+                s.push_str(&array_mangle(p, types));
+            }
+            s.push_str("_to_");
+            match ret {
+                Some(r) => s.push_str(&array_mangle(*r, types)),
+                None => s.push_str("void"),
+            }
+            s
+        }
+        TypeKind::Error => "err".to_string(),
     }
 }
 
 /// The C typedef name for the wrapper of `[elem; len]`. Equal to
 /// `__eye_` ++ `array_mangle([elem; len])`, spelled inline to avoid a clone.
-pub(super) fn array_wrapper_name(elem: &TypeRef, len: u64) -> String {
-    format!("__eye_arr_{}_{}", len, array_mangle(elem))
+pub(super) fn array_wrapper_name(elem: TypeRef, len: u64, types: &TypeInterner) -> String {
+    format!("__eye_arr_{}_{}", len, array_mangle(elem, types))
 }
 
-/// Walk a type, registering every array node it contains. Innermost-first
-/// (post-order) so a nested array's wrapper is emitted before the wrapper that
-/// embeds it. Pushes each distinct wrapper, deduped by name.
-fn collect(ty: &TypeRef, seen: &mut FxHashSet<String>, ordered: &mut Vec<ArrayWrapper>) {
-    match ty {
-        TypeRef::Array { elem, len } => {
-            collect(elem, seen, ordered);
-            let name = array_wrapper_name(elem, *len);
-            if seen.insert(name.clone()) {
-                ordered.push(ArrayWrapper {
-                    elem: elem.as_ref().clone(),
-                    len: *len,
-                    name,
-                });
-            }
-        }
-        TypeRef::Ref(inner) | TypeRef::Ptr(inner) => collect(inner, seen, ordered),
-        TypeRef::Path(_) | TypeRef::Error => {}
-    }
+/// The C typedef name for a function-pointer type `(params) -> ret`.
+pub(super) fn fn_typedef_name(
+    params: &[TypeRef],
+    ret: Option<TypeRef>,
+    types: &TypeInterner,
+) -> String {
+    format!("__eye_{}", array_mangle_fn(params, ret, types))
 }
 
-/// Collect every distinct array type used anywhere in the program, innermost
-/// first (so a nested array's wrapper is emitted before the wrapper embedding
-/// it). Drives the MIR emitter's array-wrapper typedef pass: the type universe
-/// is fixed by the program, independent of codegen.
-pub(super) fn collect_program_arrays(hir: &HIR) -> Vec<ArrayWrapper> {
-    let mut seen = FxHashSet::default();
-    let mut ordered = Vec::new();
-
-    // Struct and union field types (array fields are rejected in lowering,
-    // but walking them is harmless and keeps this exhaustive).
-    for (_id, field) in hir.fields.iter() {
-        collect(&field.ty, &mut seen, &mut ordered);
+fn array_mangle_fn(params: &[TypeRef], ret: Option<TypeRef>, types: &TypeInterner) -> String {
+    let mut s = format!("fn{}", params.len());
+    for &p in params {
+        s.push('_');
+        s.push_str(&array_mangle(p, types));
     }
-    // Function signatures.
-    for (_id, r#fn) in hir.functions.iter() {
-        for param in &r#fn.params {
-            collect(&param.ty, &mut seen, &mut ordered);
-        }
-        if let Some(ret) = &r#fn.ret {
-            collect(ret, &mut seen, &mut ordered);
-        }
+    s.push_str("_to_");
+    match ret {
+        Some(r) => s.push_str(&array_mangle(r, types)),
+        None => s.push_str("void"),
     }
-    // Body-local types: declared local types, cast/struct-literal target
-    // types, and every recovered expression type (covers array literals).
-    for (_id, body) in hir.bodies.iter() {
-        for (_lid, local) in body.locals.iter() {
-            if let Some(ty) = &local.ty {
-                collect(ty, &mut seen, &mut ordered);
-            }
-        }
-        for (_eid, expr) in body.exprs.iter() {
-            match expr {
-                hir::core::Expr::Cast { ty, .. } | hir::core::Expr::StructLit { ty, .. } => {
-                    collect(ty, &mut seen, &mut ordered);
-                }
-                _ => {}
-            }
-        }
-        for (_sid, stmt) in body.stmts.iter() {
-            if let hir::core::Stmt::Let { ty: Some(ty), .. } = stmt {
-                collect(ty, &mut seen, &mut ordered);
-            }
-        }
-        for (_eid, ty) in body.expr_types.iter() {
-            collect(ty, &mut seen, &mut ordered);
-        }
-    }
-    ordered
+    s
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use hir::core::Text;
+    use rustc_hash::FxHashSet;
 
-    fn path(name: &str) -> TypeRef {
-        TypeRef::Path(Text::from(name))
+    fn new_types() -> TypeInterner {
+        TypeInterner::new()
+    }
+
+    fn path(types: &mut TypeInterner, name: &str) -> TypeRef {
+        types.intern(TypeKind::Path(Text::from(name)))
     }
 
     /// The mangle must be injective: a reference/pointer/array construction must
@@ -147,56 +113,37 @@ mod tests {
     /// and `ptr_int`, `[int; 2]` and `arr_2_3int` all collided.
     #[test]
     fn mangle_is_injective_against_named_types() {
-        let cases = [
-            (
-                TypeRef::Ref(Box::new(path("int"))), // &int
-                path("ref_int"),                     // user type `ref_int`
-            ),
-            (
-                TypeRef::Ptr(Box::new(path("int"))), // *int
-                path("ptr_int"),                     // user type `ptr_int`
-            ),
-            (
-                TypeRef::Array {
-                    elem: Box::new(path("int")),
-                    len: 2,
-                }, // [int; 2]
-                path("arr_2_3int"), // a name that mimics the old mangle
-            ),
-        ];
-        for (constructed, named) in cases {
-            assert_ne!(
-                array_mangle(&constructed),
-                array_mangle(&named),
-                "mangle collision between {constructed:?} and {named:?}"
-            );
-        }
-    }
+        let mut t = new_types();
+        let int = path(&mut t, "int");
+        let ref_int = path(&mut t, "ref_int");
+        let ptr_int = path(&mut t, "ptr_int");
+        let arr_2_3int = path(&mut t, "arr_2_3int");
+        let fn0_to_void = path(&mut t, "fn0_to_void");
 
-    /// Distinct types across the whole grid produce distinct wrapper names.
-    #[test]
-    fn wrapper_names_are_all_distinct() {
-        let elems = [
-            path("int32"),
-            path("usize"),
-            TypeRef::Ref(Box::new(path("int32"))),
-            TypeRef::Ptr(Box::new(path("int32"))),
-            TypeRef::Array {
-                elem: Box::new(path("int32")),
-                len: 2,
-            },
+        let cases = [
+            (t.intern(TypeKind::Ref(int)), ref_int),
+            (t.intern(TypeKind::Ptr(int)), ptr_int),
+            (
+                t.intern(TypeKind::Array {
+                    elem: int,
+                    len: 2,
+                }),
+                arr_2_3int,
+            ),
+            (
+                t.intern(TypeKind::Fn {
+                    params: vec![],
+                    ret: None,
+                }),
+                fn0_to_void,
+            ),
         ];
-        let mut names = Vec::new();
-        for elem in &elems {
-            for len in [2u64, 3, 23] {
-                names.push(array_wrapper_name(elem, len));
-            }
+        let mut set = FxHashSet::default();
+        for (a, b) in &cases {
+            let ma = array_mangle(*a, &t);
+            let mb = array_mangle(*b, &t);
+            assert_ne!(ma, mb, "mangle collision: {ma}");
+            assert!(set.insert(ma), "duplicate mangle across cases");
         }
-        let unique: FxHashSet<&String> = names.iter().collect();
-        assert_eq!(
-            unique.len(),
-            names.len(),
-            "duplicate wrapper name: {names:?}"
-        );
     }
 }

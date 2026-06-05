@@ -1,73 +1,119 @@
 use diagnostics::Diagnostic;
 use hir::core::HIR;
 
-/// Dump the full HIR to stderr for debugging.
+/// Print the HIR as a readable summary — counts, names, types — not full Debug.
 pub fn dump_hir(hir: &HIR) {
-    eprintln!("===== HIR DUMP =====");
-    eprintln!("--- Structs ({}) ---", hir.structs.len());
+    println!("  structs: {} struct(s)", hir.structs.len());
     for (id, s) in hir.structs.iter() {
-        eprintln!("  Struct({:?}): name={}, fields={:?}", id, s.name, s.fields);
+        println!("    Struct({:?}): {}", id, s.name);
+        for &fid in &s.fields {
+            let f = &hir.fields[fid];
+            println!("      field {}: {:?}", f.name, f.ty);
+        }
     }
-    eprintln!("--- Enums ({}) ---", hir.enums.len());
+
+    println!("  enums: {} enum(s)", hir.enums.len());
     for (id, e) in hir.enums.iter() {
-        eprintln!(
-            "  Enum({:?}): name={}, variants={:?}",
-            id, e.name, e.variants
-        );
+        println!("    Enum({:?}): {}", id, e.name);
+        for v in &e.variants {
+            println!("      | {}", v.name);
+        }
     }
-    eprintln!("--- Fields ({}) ---", hir.fields.len());
+
+    println!("  fields: {} field(s)", hir.fields.len());
     for (id, f) in hir.fields.iter() {
-        eprintln!("  Field({:?}): name={}, ty={:?}", id, f.name, f.ty);
+        println!("    Field({:?}): {} -> {:?}", id, f.name, f.ty);
     }
-    eprintln!("--- Functions ({}) ---", hir.functions.len());
+
+    println!("  functions: {} fn(s)", hir.functions.len());
     for (id, f) in hir.functions.iter() {
-        eprintln!(
-            "  Fn({:?}): name={}, params={:?}, ret={:?}, body={:?}",
-            id, f.name, f.params, f.ret, f.body
+        let params: Vec<String> = f
+            .params
+            .iter()
+            .map(|p| format!("{} {:?}", p.name, p.ty))
+            .collect();
+        println!(
+            "    Fn({:?}): {}({}) -> {:?}{}",
+            id,
+            f.name,
+            params.join(", "),
+            f.ret,
+            if f.is_extern { " [extern]" } else { "" }
         );
     }
-    eprintln!("--- ItemScope ---");
-    eprintln!("  functions: {:?}", hir.items.functions);
-    eprintln!("  structs:   {:?}", hir.items.structs);
-    eprintln!("  enums:     {:?}", hir.items.enums);
-    eprintln!("--- Bodies ---");
-    for (id, body) in hir.bodies.iter() {
-        eprintln!("  Body({:?}):", id);
-        eprintln!("    locals ({})", body.locals.len());
+
+    println!("  items:");
+    for (name, fid) in &hir.items.functions {
+        println!("    {name} -> fn({:?})", fid);
+    }
+    for (name, sid) in &hir.items.structs {
+        println!("    {name} -> struct({:?})", sid);
+    }
+    for (name, eid) in &hir.items.enums {
+        println!("    {name} -> enum({:?})", eid);
+    }
+
+    println!("  bodies: {} body(s)", hir.bodies.len());
+    for (bid, body) in hir.bodies.iter() {
+        println!("    Body({:?}):", bid);
+        println!("      locals: {}", body.locals.len());
         for (lid, local) in body.locals.iter() {
-            eprintln!(
-                "      Local({:?}): name='{}', ty={:?}, mutable={}",
-                lid, local.name, local.ty, local.mutable
+            println!(
+                "        Local({:?}): {}: {:?} {}",
+                lid,
+                local.name,
+                local.ty,
+                if local.mutable { "mut" } else { "" }
             );
         }
-        eprintln!("    pats ({})", body.pats.len());
-        for (pid, pat) in body.pats.iter() {
-            eprintln!("      Pat({:?}): {:?}", pid, pat);
-        }
-        eprintln!("    exprs ({})", body.exprs.len());
+        println!("      pats: {}", body.pats.len());
+        println!("      exprs: {}", body.exprs.len());
         for (eid, expr) in body.exprs.iter() {
             let ty = body.expr_types.get(eid);
-            eprintln!("      Expr({:?}): {:?}", eid, expr);
-            if let Some(t) = ty {
-                eprintln!("        type: {:?}", t);
-            }
+            let ty_str = ty.map(|t| format!(": {:?}", t)).unwrap_or_default();
+            let variant = variant_name(expr);
+            println!("        Expr({:?}): {}{ty_str}", eid, variant);
         }
-        eprintln!("    stmts ({})", body.stmts.len());
-        for (sid, stmt) in body.stmts.iter() {
-            eprintln!("      Stmt({:?}): {:?}", sid, stmt);
-        }
-        eprintln!("    blocks ({})", body.blocks.len());
-        for (bid, block) in body.blocks.iter() {
-            eprintln!(
-                "      Block({:?}): stmts={:?}, tail={:?}",
-                bid, block.stmts, block.tail
-            );
-        }
-        eprintln!("    body.block: {:?}", body.block);
-        eprintln!("    body.tail:  {:?}", body.tail);
+        println!("      stmts: {}", body.stmts.len());
+        println!("      blocks: {}", body.blocks.len());
     }
-    eprintln!("--- Diagnostics ({}) ---", hir.diagnostics.len());
+
+    println!("  diagnostics: {}", hir.diagnostics.len());
     for (span, err) in hir.diagnostics.entries() {
-        eprintln!("  [{}] {}: {:?}", err.code(), err, span);
+        println!("    [{}] {} (span {span:?})", err.code(), err);
     }
+}
+
+fn variant_name(e: &hir::core::Expr) -> &'static str {
+    use hir::core::Expr::*;
+    match e {
+        Missing => "Missing",
+        Literal(_) => "Literal",
+        Path(_) => "Path",
+        Binary { .. } => "Binary",
+        Unary { .. } => "Unary",
+        Call { .. } => "Call",
+        ArrayLit(_) => "ArrayLit",
+        ArrayRepeat { .. } => "ArrayRepeat",
+        Index { .. } => "Index",
+        StructLit { .. } => "StructLit",
+        Field { .. } => "Field",
+        Assign { .. } => "Assign",
+        If { .. } => "If",
+        Loop { .. } => "Loop",
+        Break => "Break",
+        Continue => "Continue",
+        Return(_) => "Return",
+        Ref { .. } => "Ref",
+        Deref { .. } => "Deref",
+        Cast { .. } => "Cast",
+        Match { .. } => "Match",
+        SizeOf(_) => "SizeOf",
+        Block(_) => "Block",
+    }
+}
+
+/// Print the HIR as full Debug representation.
+pub fn dump_hir_raw(hir: &HIR) {
+    println!("{:#?}", hir);
 }

@@ -1,6 +1,7 @@
 //! Expression lowering.
 
 use ast::AstNode;
+use rustc_hash::FxHashSet;
 use syntax::SyntaxNodePtr;
 use thin_vec::ThinVec;
 
@@ -8,7 +9,7 @@ use super::LoweringCtx;
 use super::types::{literal_type, lower_literal, lower_type_ref};
 use crate::core::{
     Block, ConstError, EnumId, Expr, ExprId, Literal, MatchArm, Pat, PatternError, Resolution,
-    ResolveError, StructLitField, Text, TypeError, TypeRef,
+    ResolveError, StructLitField, Text, TypeError, TypeInterner, TypeKind, TypeRef,
 };
 
 /// The source spelling of a binary operator, for diagnostics.
@@ -44,7 +45,7 @@ impl<'a> LoweringCtx<'a> {
         let hir_expr = match expr {
             ast::Expr::Literal(lit) => {
                 let literal = lower_literal(lit);
-                expr_type = Some(literal_type(&literal));
+                expr_type = Some(literal_type(&literal, &mut self.hir.types.borrow_mut()));
                 Expr::Literal(literal)
             }
             ast::Expr::NameRef(nr) => {
@@ -67,15 +68,25 @@ impl<'a> LoweringCtx<'a> {
                 // `Resolution` so a new variant must decide its value-ness.
                 let not_value: Option<ResolveError> = match &resolution {
                     Resolution::Local(_) | Resolution::Variant { .. } => None,
-                    Resolution::Fn(_) if is_callee => None,
-                    Resolution::Unresolved(n) if is_callee && (n == "print" || n == "len") => None,
+                    // A const is a compile-time value, usable anywhere a value is.
+                    Resolution::Const(_) | Resolution::LocalConst(_) => None,
+                    // A global is addressable static storage: a readable value
+                    // (and an assignable place when `mut`).
+                    Resolution::Global(_) => None,
+                    // A function name is a value (a function pointer) as well as
+                    // a callee, so it is allowed in either position.
+                    Resolution::Fn(_) => None,
+                    Resolution::Unresolved(n)
+                        if is_callee && (n == "println" || n == "len" || n == "sizeof") =>
+                    {
+                        None
+                    }
                     Resolution::Enum(_) => {
                         Some(ResolveError::EnumNameAsValue { name: name.clone() })
                     }
                     Resolution::Struct(_) => {
                         Some(ResolveError::StructNameAsValue { name: name.clone() })
                     }
-                    Resolution::Fn(_) => Some(ResolveError::FnAsValue { name: name.clone() }),
                     Resolution::Unresolved(_) => {
                         Some(ResolveError::UnresolvedName { name: name.clone() })
                     }
@@ -86,9 +97,25 @@ impl<'a> LoweringCtx<'a> {
                 }
                 // look up the type of the resolved entity.
                 expr_type = match &resolution {
-                    Resolution::Local(local_id) => self.body.locals[*local_id].ty.clone(),
+                    Resolution::Local(local_id) => self.body.locals[*local_id].ty,
+                    // A const reference carries its declared type; the value is
+                    // inlined at MIR lowering.
+                    Resolution::Const(cid) => Some(self.hir.consts[*cid].ty),
+                    Resolution::LocalConst(lcid) => Some(self.body.local_consts[*lcid].ty),
+                    // A global reference carries its declared type; MIR reads the
+                    // named C symbol (a place), not an inlined value.
+                    Resolution::Global(gid) => Some(self.hir.globals[*gid].ty),
                     Resolution::Variant { enum_id, .. } => {
-                        Some(TypeRef::Path(self.hir.enums[*enum_id].name.clone()))
+                        Some(self.hir.types.borrow_mut().intern(TypeKind::Path(self.hir.enums[*enum_id].name.clone())))
+                    }
+                    // A bare function name in value position is a function-pointer
+                    // value of its signature (`let op = f;`). As a direct callee
+                    // the type is unused - the call reads the function's return
+                    // directly - and recording it would force a function-pointer
+                    // typedef in codegen for every called function, so the callee
+                    // case is left untyped.
+                    Resolution::Fn(fn_id) if !is_callee => {
+                        self.hir.functions[*fn_id].fn_type
                     }
                     _ => None,
                 };
@@ -96,7 +123,18 @@ impl<'a> LoweringCtx<'a> {
             }
             ast::Expr::CallExpr(c) => {
                 let callee = self.lower_required_expr(c.callee(), ptr);
-                let args: ThinVec<ExprId> = c
+                // `sizeof(T)` kernel intrinsic: its argument is a *type*, not a
+                // value, so it must be read from the AST before arg-lowering -
+                // lowering `int32`/`Point` as a value would emit a spurious
+                // `UnresolvedName`/`StructNameAsValue`. Recognized by an
+                // unresolved callee name, so a user-defined `sizeof` (which
+                // resolves to a `Fn`) shadows it, like `print`/`len`.
+                if let Expr::Path(Resolution::Unresolved(name)) = &self.body.exprs[callee]
+                    && name == "sizeof"
+                {
+                    return self.lower_sizeof_intrinsic(c, ptr);
+                }
+                let mut args: ThinVec<ExprId> = c
                     .arg_list()
                     .map(|al| al.args().map(|a| self.lower_expr(&a)).collect())
                     .unwrap_or_default();
@@ -111,25 +149,66 @@ impl<'a> LoweringCtx<'a> {
                     return self.lower_len_intrinsic(&args, ptr);
                 }
                 if let Expr::Path(Resolution::Unresolved(name)) = &self.body.exprs[callee]
-                    && name == "print"
+                    && name == "println"
                 {
-                    self.check_print_args(&args, ptr);
+                    self.check_println_args(&args, ptr);
                 }
                 if let Expr::Path(Resolution::Fn(fn_id)) = &self.body.exprs[callee] {
                     let fn_id = *fn_id;
-                    expr_type = self.hir.functions[fn_id].ret.clone();
+                    let fn_name = &self.hir.functions[fn_id].name;
+                    let param_count = self.hir.functions[fn_id].params.len();
+                    // EXPERIMENTAL(L3): reject wrong argument count before
+                    // the coercion loop so arity mismatches never reach clang.
+                    // Skip variadic functions (e.g. printf) which accept
+                    // variable numbers of arguments.
+                    if !self.hir.functions[fn_id].variadic && args.len() != param_count {
+                        self.emit(
+                            ptr,
+                            TypeError::CallArityMismatch {
+                                name: fn_name.clone(),
+                                expected: param_count,
+                                found: args.len(),
+                            },
+                        );
+                    }
+                    expr_type = self.hir.functions[fn_id].ret;
                     // Coerce array-literal arguments to the declared param's
                     // array type, same as a `let`/return. The shared helper
                     // recurses through nested array literals and is
                     // length-guarded at every level, so an arity mismatch is
                     // not masked.
-                    let param_tys: Vec<TypeRef> = self.hir.functions[fn_id]
+                    let param_tys: Vec<&TypeRef> = self.hir.functions[fn_id]
                         .params
                         .iter()
-                        .map(|p| p.ty.clone())
+                        .map(|p| &p.ty)
                         .collect();
-                    for (arg, pty) in args.iter().zip(param_tys.iter()) {
-                        self.coerce_array_literal_type(pty, *arg);
+                    for i in 0..args.len().min(param_tys.len()) {
+                        self.coerce_array_literal_type(param_tys[i], args[i]);
+                        // A `&[T; N]` argument decays to a `&T`/`string` param.
+                        args[i] = self.maybe_decay(param_tys[i], args[i]);
+                    }
+                } else if matches!(&self.body.exprs[callee], Expr::Path(Resolution::Unresolved(n)) if n == "println")
+                {
+                    // println intrinsic: arguments are checked above; the result
+                    // is not a typed value.
+                } else {
+                    // A value callee: an indirect call, valid only through a
+                    // function-pointer value.
+                    if let Some(callee_ty) = self.body.expr_types.get(callee).copied() {
+                        let types = self.hir.types.borrow();
+                        match types.lookup(callee_ty) {
+                            TypeKind::Fn { ret, .. } => {
+                                expr_type = *ret;
+                            }
+                            TypeKind::Error => {}
+                            _ => {
+                                drop(types);
+                                let anchor = self.expr_ptr(callee, ptr);
+                                let found = self.hir.types.borrow().display(callee_ty).to_string();
+                                self.emit(anchor, TypeError::CallNonFunction { found });
+                                return self.missing_expr(ptr);
+                            }
+                        }
                     }
                 }
                 Expr::Call { callee, args }
@@ -143,29 +222,71 @@ impl<'a> LoweringCtx<'a> {
                 if let Some(&first) = elems.first()
                     && let Some(elem_ty) = self.body.expr_types.get(first).cloned()
                 {
-                    expr_type = Some(TypeRef::Array {
-                        elem: Box::new(elem_ty),
+                    expr_type = Some(self.hir.types.borrow_mut().intern(TypeKind::Array {
+                        elem: elem_ty,
                         len: elems.len() as u64,
-                    });
+                    }));
                 }
                 Expr::ArrayLit(elems)
+            }
+            ast::Expr::ArrayRepeat(ar) => {
+                let value = self.lower_required_expr(ar.value(), ptr);
+                // `count` is a const length, resolved by the same machinery as a
+                // `[T; N]` type length: an integer literal or a const-expr,
+                // `> 0`, not too large (diagnosed otherwise).
+                let count = {
+                    let consts = super::const_eval::ScopedConsts {
+                        scopes: &self.scopes,
+                        local_consts: &self.body.local_consts,
+                        globals: self.const_values,
+                    };
+                    super::types::array_len(ar.count(), &mut self.diagnostics, &consts)
+                };
+                // Type as [elem; count] once the value's element type is known.
+                // A declared array type (let/return/param) re-types the value
+                // via `coerce_array_literal_type`.
+                if let Some(count) = count
+                    && let Some(elem_ty) = self.body.expr_types.get(value).cloned()
+                {
+                    expr_type = Some(self.hir.types.borrow_mut().intern(TypeKind::Array {
+                        elem: elem_ty,
+                        len: count,
+                    }));
+                }
+                // A failed `count` (None) has already emitted a diagnostic; 0 is
+                // an inert placeholder the resolved pipeline never reaches.
+                Expr::ArrayRepeat {
+                    value,
+                    count: count.unwrap_or(0),
+                }
             }
             ast::Expr::IndexExpr(ie) => {
                 let base = self.lower_required_expr(ie.base(), ptr);
                 let index = self.lower_required_expr(ie.index(), ptr);
                 let base_ty = self.body.expr_types.get(base).cloned();
+                // EXPERIMENTAL(L7): reject indexing on opaque `ptr` (void*),
+                // which has no element type and would emit void-subscript C.
+                if let Some(ty) = base_ty {
+                    let types = self.hir.types.borrow();
+                    if matches!(types.lookup(ty), TypeKind::Path(n) if n == "ptr") {
+                        self.emit(ptr, TypeError::IndexOnPtr);
+                    }
+                }
                 // A4: a literal index past a known fixed length is a hard error.
                 // C would only warn. Dynamic indices stay unchecked (runtime
                 // safety is deferred). Peel one ref/ptr so `r[i]` on `&[T; N]`
                 // is checked too.
-                let arr_len = match &base_ty {
-                    Some(TypeRef::Array { len, .. }) => Some(*len),
-                    Some(TypeRef::Ref(inner) | TypeRef::Ptr(inner)) => match inner.as_ref() {
-                        TypeRef::Array { len, .. } => Some(*len),
+                let arr_len = base_ty.and_then(|ty| {
+                    let types = self.hir.types.borrow();
+                    match types.lookup(ty) {
+                        TypeKind::Array { len, .. } => Some(*len),
+                        TypeKind::Ref(inner) | TypeKind::Ptr(inner) => match types.lookup(*inner) {
+                            TypeKind::Array { len, .. } => Some(*len),
+                            _ => None,
+                        },
                         _ => None,
-                    },
-                    _ => None,
-                };
+                    }
+                });
                 if let Some(len) = arr_len {
                     if let Some(v) = self.const_uint_index(index) {
                         if v >= len as u128 {
@@ -189,22 +310,38 @@ impl<'a> LoweringCtx<'a> {
                 // so `r[i]` on `&[T; N]` yields `T` (not the whole array, which
                 // would spuriously trip the binary-op-on-array check); a
                 // reference or pointer to a non-array peels to the pointee.
-                expr_type = base_ty.and_then(|t| match t {
-                    TypeRef::Array { elem, .. } => Some(*elem),
-                    TypeRef::Ptr(inner) | TypeRef::Ref(inner) => match *inner {
-                        TypeRef::Array { elem, .. } => Some(*elem),
-                        other => Some(other),
-                    },
-                    _ => None,
+                expr_type = base_ty.and_then(|ty| {
+                    let types = self.hir.types.borrow();
+                    match types.lookup(ty) {
+                        TypeKind::Array { elem, .. } => Some(*elem),
+                        TypeKind::Ptr(inner) | TypeKind::Ref(inner) => match types.lookup(*inner) {
+                            TypeKind::Array { elem, .. } => Some(*elem),
+                            _ => Some(*inner),
+                        },
+                        _ => None,
+                    }
                 });
                 Expr::Index { base, index }
             }
             ast::Expr::StructLit(sl) => {
                 let ty = match sl.name_ref().and_then(|n| n.name()) {
-                    Some(t) => TypeRef::Path(Self::text(Some(t))),
-                    None => TypeRef::Error,
+                    Some(t) => {
+                        let name = Self::text(Some(t));
+                        // EXPERIMENTAL(L5): check the struct/union name
+                        // exists so unknown names don't leak to clang.
+                        if !self.hir.items.structs.contains_key(&name)
+                            && !self.hir.items.unions.contains_key(&name)
+                        {
+                            self.emit(
+                                SyntaxNodePtr::new(sl.syntax()),
+                                ResolveError::UnresolvedName { name: name.clone() },
+                            );
+                        }
+                        self.hir.types.borrow_mut().intern(TypeKind::Path(name))
+                    }
+                    None => self.hir.types.borrow_mut().error_type(),
                 };
-                expr_type = Some(ty.clone());
+                expr_type = Some(ty);
                 let mut fields = ThinVec::new();
                 // A positional initializer (`Point { 1, 2 }`) carries no field
                 // name, so the exhaustiveness check below can't match by name -
@@ -241,7 +378,7 @@ impl<'a> LoweringCtx<'a> {
                                 } else {
                                     let inner_ty = match &resolution {
                                         Resolution::Local(local_id) => {
-                                            self.body.locals[*local_id].ty.clone()
+                                            self.body.locals[*local_id].ty
                                         }
                                         _ => None,
                                     };
@@ -261,7 +398,15 @@ impl<'a> LoweringCtx<'a> {
                 // A union literal sets exactly one member (overlapping
                 // storage). More than one would silently overwrite; zero
                 // leaves the value uninitialized.
-                if let TypeRef::Path(name) = &ty
+                let name_union = {
+                    let types = self.hir.types.borrow();
+                    if let TypeKind::Path(name) = types.lookup(ty) {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(ref name) = name_union
                     && self.hir.items.unions.contains_key(name)
                     && fields.len() != 1
                 {
@@ -277,8 +422,16 @@ impl<'a> LoweringCtx<'a> {
                 // exactly once - missing fields leave silent garbage in C,
                 // unknown fields are typos. Skipped for positional literals
                 // (no names to match) and unions (handled above).
+                let name_path = {
+                    let types = self.hir.types.borrow();
+                    if let TypeKind::Path(name) = types.lookup(ty) {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                };
                 if !saw_positional
-                    && let TypeRef::Path(name) = &ty
+                    && let Some(ref name) = name_path
                     && let Some(&sid) = self.hir.items.structs.get(name)
                 {
                     let declared: Vec<Text> = self.hir.structs[sid]
@@ -286,10 +439,11 @@ impl<'a> LoweringCtx<'a> {
                         .iter()
                         .map(|&fid| self.hir.fields[fid].name.clone())
                         .collect();
+                    let field_names: FxHashSet<&Text> = fields.iter().map(|f| &f.name).collect();
                     let sl_ptr = SyntaxNodePtr::new(sl.syntax());
                     let missing: Vec<Text> = declared
                         .iter()
-                        .filter(|d| !fields.iter().any(|f| &f.name == *d))
+                        .filter(|d| !field_names.contains(d))
                         .cloned()
                         .collect();
                     if !missing.is_empty() {
@@ -301,10 +455,11 @@ impl<'a> LoweringCtx<'a> {
                             },
                         );
                     }
+                    let declared_set: FxHashSet<&Text> = declared.iter().collect();
                     let unknown: Vec<Text> = fields
                         .iter()
                         .map(|f| f.name.clone())
-                        .filter(|fname| !declared.iter().any(|d| d == fname))
+                        .filter(|fname| !declared_set.contains(fname))
                         .collect();
                     if !unknown.is_empty() {
                         self.emit(
@@ -327,12 +482,35 @@ impl<'a> LoweringCtx<'a> {
                 // A whole array is a struct in the C backend; any binary operator
                 // on it emits invalid C. Reject it here (a reference compares as
                 // a pointer, so only value arrays are caught).
-                let on_array = matches!(self.body.expr_types.get(lhs), Some(TypeRef::Array { .. }))
-                    || matches!(self.body.expr_types.get(rhs), Some(TypeRef::Array { .. }));
+                let on_array = {
+                    let types = self.hir.types.borrow();
+                    let is_arr = |id: ExprId| {
+                        self.body.expr_types.get(id).is_some_and(|ty| {
+                            matches!(types.lookup(*ty), TypeKind::Array { .. })
+                        })
+                    };
+                    is_arr(lhs) || is_arr(rhs)
+                };
 
                 if on_array {
                     self.emit(ptr, TypeError::OpOnArray { op: bin_op_str(op) });
                     return self.missing_expr(ptr);
+                }
+
+                // `%` is integer-only. On a float it would lower to `double % double`,
+                // which is invalid C (a raw clang error). Reject it here instead.
+                if matches!(op, ast::BinOp::Rem) {
+                    let is_float = |id: ExprId| {
+                        let types = self.hir.types.borrow();
+                        self.body.expr_types.get(id).is_some_and(|ty| {
+                            matches!(types.lookup(*ty), TypeKind::Path(p) if p == "float32" || p == "float64")
+                        })
+                    };
+                    if is_float(lhs) || is_float(rhs)
+                    {
+                        self.emit(ptr, TypeError::ModuloOnFloat);
+                        return self.missing_expr(ptr);
+                    }
                 }
 
                 // Comparison and logical operators produce `bool`; arithmetic
@@ -347,7 +525,7 @@ impl<'a> LoweringCtx<'a> {
                     | BinOp::Leq
                     | BinOp::Geq
                     | BinOp::And
-                    | BinOp::Or => Some(TypeRef::Path(Text::from("bool"))),
+                    | BinOp::Or => Some(self.hir.types.borrow_mut().intern(TypeKind::Path(Text::from("bool")))),
                     // Arithmetic, modulo, and bitwise all take the left
                     // operand's type (a simplification until full inference).
                     BinOp::Add
@@ -372,7 +550,7 @@ impl<'a> LoweringCtx<'a> {
                 // operand's type.
                 use ast::UnaryOp;
                 expr_type = match op {
-                    UnaryOp::Not => Some(TypeRef::Path(Text::from("bool"))),
+                    UnaryOp::Not => Some(self.hir.types.borrow_mut().intern(TypeKind::Path(Text::from("bool")))),
                     UnaryOp::Neg | UnaryOp::BitNot => self.body.expr_types.get(operand).cloned(),
                 };
                 Expr::Unary { op, operand }
@@ -399,7 +577,7 @@ impl<'a> LoweringCtx<'a> {
                         let enum_def = &self.hir.enums[enum_id];
                         if let Some(&idx) = enum_def.variant_index.get(&name) {
                             let res = Resolution::Variant { enum_id, idx };
-                            let ty = TypeRef::Path(enum_def.name.clone());
+                            let ty = self.hir.types.borrow_mut().intern(TypeKind::Path(enum_def.name.clone()));
                             let id = self.alloc_expr(Expr::Path(res), ptr);
                             self.body.expr_types.insert(id, ty);
                             return id;
@@ -422,23 +600,46 @@ impl<'a> LoweringCtx<'a> {
                     .expr_types
                     .get(base)
                     .cloned()
-                    .unwrap_or(TypeRef::Error);
+                    .unwrap_or_else(|| self.hir.types.borrow_mut().error_type());
                 // `.len` on an array is reserved for a future `.len()` method
                 // (needs a real backend). Today length is read with the
                 // `len(x)` intrinsic; steer there instead of emitting a field
                 // access against the wrapper's nonexistent `len` member. One
                 // ref/ptr is peeled so the steer fires through `&[T; N]` too.
-                if name == "len" && Self::peeled_array_len(&base_ty).is_some() {
+                if name == "len" && Self::peeled_array_len(base_ty, &self.hir.types.borrow()).is_some() {
                     self.emit(ptr, TypeError::LenFieldOnArray);
                     return self.missing_expr(ptr);
                 }
-                expr_type = Some(self.lookup_field_type(&base_ty, &name));
+                expr_type = Some(self.lookup_field_type(base_ty, &name));
                 Expr::Field { base, name }
             }
             ast::Expr::AssignExpr(a) => {
                 let op = a.op().unwrap_or(ast::AssignOp::Assign);
                 let lhs = self.lower_required_expr(a.lhs(), ptr);
                 let rhs = self.lower_required_expr(a.rhs(), ptr);
+                // A const is a value, not storage: `MAX = ..` is rejected. (A
+                // const is scalar, so it never roots a field/index projection.)
+                let const_name = match &self.body.exprs[lhs] {
+                    Expr::Path(Resolution::Const(cid)) => Some(self.hir.consts[*cid].name.clone()),
+                    Expr::Path(Resolution::LocalConst(lcid)) => {
+                        Some(self.body.local_consts[*lcid].name.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(name) = const_name {
+                    self.emit(self.expr_ptr(lhs, ptr), ConstError::AssignToConst { name });
+                }
+                // Immutable-by-default: writing a `let` binding (directly, or
+                // through a field/index projection rooted in it) is rejected;
+                // `mut` opts in. Covers every assignment form, plain and
+                // compound. A write through a pointer is untracked (see
+                // `immutable_assign_target`).
+                if let Some(name) = self.immutable_assign_target(lhs) {
+                    self.emit(
+                        self.expr_ptr(lhs, ptr),
+                        TypeError::AssignToImmutable { name },
+                    );
+                }
                 // Assignment type is the type of the RHS.
                 expr_type = self.body.expr_types.get(rhs).cloned();
                 Expr::Assign { op, lhs, rhs }
@@ -485,15 +686,39 @@ impl<'a> LoweringCtx<'a> {
             }
             ast::Expr::BreakExpr(_) => Expr::Break,
             ast::Expr::ContinueExpr(_) => Expr::Continue,
+            ast::Expr::ReturnExpr(r) => {
+                let value = r.expr().map(|e| self.lower_expr(&e));
+                // A `&[T; N]` return value decays to a `&T`/`string` return type.
+                let value = match (self.fn_ret, value) {
+                    (Some(ret), Some(id)) => Some(self.maybe_decay(&ret, id)),
+                    _ => value,
+                };
+                self.check_explicit_return(value, ptr);
+                Expr::Return(value)
+            }
             ast::Expr::RefExpr(r) => {
                 let operand = self.lower_required_expr(r.expr(), ptr);
+                // `&const` is illegal: a const is a value with no guaranteed
+                // address (it is inlined). Reject it before it reaches MIR,
+                // where it would silently take the address of an inlined temp.
+                let const_name = match &self.body.exprs[operand] {
+                    Expr::Path(Resolution::Const(cid)) => Some(self.hir.consts[*cid].name.clone()),
+                    Expr::Path(Resolution::LocalConst(lcid)) => {
+                        Some(self.body.local_consts[*lcid].name.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(name) = const_name {
+                    self.emit(ptr, ConstError::RefOfConst { name });
+                    return self.missing_expr(ptr);
+                }
                 let inner_ty = self
                     .body
                     .expr_types
                     .get(operand)
                     .cloned()
-                    .unwrap_or(TypeRef::Error);
-                expr_type = Some(TypeRef::Ref(Box::new(inner_ty)));
+                    .unwrap_or_else(|| self.hir.types.borrow_mut().error_type());
+                expr_type = Some(self.hir.types.borrow_mut().intern(TypeKind::Ref(inner_ty)));
                 Expr::Ref { operand }
             }
             ast::Expr::ParenExpr(pe) => {
@@ -512,22 +737,34 @@ impl<'a> LoweringCtx<'a> {
                     .expr_types
                     .get(operand)
                     .cloned()
-                    .unwrap_or(TypeRef::Error);
-                let deref_ty = match &op_ty {
-                    TypeRef::Ref(inner) | TypeRef::Ptr(inner) => (**inner).clone(),
-                    _ => TypeRef::Error,
+                    .unwrap_or_else(|| self.hir.types.borrow_mut().error_type());
+                let deref_ty = {
+                    let types = self.hir.types.borrow();
+                    match types.lookup(op_ty) {
+                        TypeKind::Ref(inner) | TypeKind::Ptr(inner) => *inner,
+                        _ => {
+                            drop(types);
+                            self.hir.types.borrow_mut().error_type()
+                        }
+                    }
                 };
                 expr_type = Some(deref_ty);
                 Expr::Deref { operand }
             }
             ast::Expr::CastExpr(c) => {
                 let operand = self.lower_required_expr(c.operand(), ptr);
+                let consts = super::const_eval::ScopedConsts {
+                    scopes: &self.scopes,
+                    local_consts: &self.body.local_consts,
+                    globals: self.const_values,
+                };
+                let mut types = self.hir.types.borrow_mut();
                 let ty = c
                     .ty()
-                    .map(|t| lower_type_ref(&t, &mut self.diagnostics))
-                    .unwrap_or(TypeRef::Error);
-                // A cast's value is its target type.
-                expr_type = Some(ty.clone());
+                    .map(|t| lower_type_ref(&t, &mut self.diagnostics, &consts, &mut types))
+                    .unwrap_or_else(|| types.error_type());
+                drop(types);
+                expr_type = Some(ty);
                 Expr::Cast { operand, ty }
             }
         };
@@ -572,14 +809,88 @@ impl<'a> LoweringCtx<'a> {
         )
     }
 
+    /// Insert an array-reference *decay* when a `&[T; N]` value meets a context
+    /// expecting a pointer-to-element (`&T` / `T*` / `string`): wrap the value in
+    /// a cast to the expected type. The decay is lowered as a plain pointer cast
+    /// because the array wrapper places its `data` at offset 0, so
+    /// `(T*)wrapper_ptr` is the element pointer. This is the kernel string story
+    /// (`&[uint8; N]` -> `&uint8`/`string`, HORIZON0 C3): length is known at the
+    /// literal, erased at the boundary. The cast's type *is* the expected type,
+    /// so the normal type check then passes (no symmetric `types_compatible`
+    /// relaxation, which would mask real mismatches). A non-decay pairing returns
+    /// the expression unchanged.
+    pub(super) fn maybe_decay(&mut self, declared: &TypeRef, expr_id: ExprId) -> ExprId {
+        let Some(found) = self.body.expr_types.get(expr_id).cloned() else {
+            return expr_id;
+        };
+        if !Self::array_ref_decays_to(*declared, found, &self.hir.types.borrow()) {
+            return expr_id;
+        }
+        let Some(ptr) = self.body.source_map.expr.get(expr_id).cloned() else {
+            return expr_id;
+        };
+        self.alloc_expr_with_type(
+            Expr::Cast {
+                operand: expr_id,
+                ty: *declared,
+            },
+            ptr,
+            *declared,
+        )
+    }
+
+    /// Whether a `&[T; N]` (`found`) decays to `declared`: `declared` is `&T`/`T*`
+    /// with the same element type, or `string` (the byte-pointer view of a
+    /// `&[uint8; N]`).
+    fn array_ref_decays_to(declared: TypeRef, found: TypeRef, types: &TypeInterner) -> bool {
+        let &TypeKind::Ref(arr) = types.lookup(found) else {
+            return false;
+        };
+        let &TypeKind::Array { elem, .. } = types.lookup(arr) else {
+            return false;
+        };
+        match types.lookup(declared) {
+            TypeKind::Path(n) if n == "string" => {
+                matches!(types.lookup(elem), TypeKind::Path(e) if e == "uint8")
+            }
+            TypeKind::Ref(t) | TypeKind::Ptr(t) => *t == elem,
+            _ => false,
+        }
+    }
+
+    /// If an assignment target ultimately writes an immutable `let` binding,
+    /// return its name. The target roots in a local through field/index
+    /// projections (`s.f = ..`, `a[i] = ..`); a deref (`*p = ..`) writes
+    /// through a pointer and is deliberately not tracked - the raw-pointer
+    /// escape, consistent with Eye's runtime-freedom model (KERNEL.md). Mutable
+    /// bindings and non-local targets return `None`.
+    fn immutable_assign_target(&self, place: ExprId) -> Option<Text> {
+        match &self.body.exprs[place] {
+            Expr::Path(Resolution::Local(id)) => {
+                let local = &self.body.locals[*id];
+                (!local.mutable).then(|| local.name.clone())
+            }
+            // A `let` global is read-only static storage; a `mut` global opts in.
+            // Same immutable-by-default rule as a local binding.
+            Expr::Path(Resolution::Global(gid)) => {
+                let global = &self.hir.globals[*gid];
+                (!global.mutable).then(|| global.name.clone())
+            }
+            Expr::Field { base, .. } | Expr::Index { base, .. } => {
+                self.immutable_assign_target(*base)
+            }
+            _ => None,
+        }
+    }
+
     /// The static length of an array type, peeling one `&`/`*` so a reference
     /// or pointer to an array reports the same length as the array itself.
     /// `None` for any non-array type.
-    fn peeled_array_len(ty: &TypeRef) -> Option<u64> {
-        match ty {
-            TypeRef::Array { len, .. } => Some(*len),
-            TypeRef::Ref(inner) | TypeRef::Ptr(inner) => match inner.as_ref() {
-                TypeRef::Array { len, .. } => Some(*len),
+    fn peeled_array_len(ty: TypeRef, types: &TypeInterner) -> Option<u64> {
+        match types.lookup(ty) {
+            &TypeKind::Array { len, .. } => Some(len),
+            &TypeKind::Ref(inner) | &TypeKind::Ptr(inner) => match types.lookup(inner) {
+                &TypeKind::Array { len, .. } => Some(len),
                 _ => None,
             },
             _ => None,
@@ -591,19 +902,22 @@ impl<'a> LoweringCtx<'a> {
     /// ref/ptr is peeled). Wrong arity or a non-array argument is a diagnostic;
     /// the result is then a `0` placeholder, still typed `usize`, so downstream
     /// type information stays intact.
-    /// `print` is a primitive-only intrinsic (not a trait or macro yet): it has
-    /// no format for a compound value. Reject array/struct/union arguments.
-    fn check_print_args(&mut self, args: &[ExprId], ptr: SyntaxNodePtr) {
+    /// `println` is a primitive-only intrinsic (not a trait or macro yet): it
+    /// has no format for a compound value. Reject array/struct/union arguments.
+    fn check_println_args(&mut self, args: &[ExprId], ptr: SyntaxNodePtr) {
         for &arg in args.iter().skip(1) {
-            let kind = match self.body.expr_types.get(arg) {
-                Some(TypeRef::Array { .. }) => Some("an array"),
-                Some(TypeRef::Path(name)) if self.hir.items.structs.contains_key(name) => {
-                    Some("a struct")
-                }
-                Some(TypeRef::Path(name)) if self.hir.items.unions.contains_key(name) => {
-                    Some("a union")
-                }
-                _ => None,
+            let kind = {
+                let types = self.hir.types.borrow();
+                self.body.expr_types.get(arg).and_then(|ty| match types.lookup(*ty) {
+                    TypeKind::Array { .. } => Some("an array"),
+                    TypeKind::Path(name) if self.hir.items.structs.contains_key(name) => {
+                        Some("a struct")
+                    }
+                    TypeKind::Path(name) if self.hir.items.unions.contains_key(name) => {
+                        Some("a union")
+                    }
+                    _ => None,
+                })
             };
             if let Some(kind) = kind {
                 self.emit(
@@ -632,8 +946,8 @@ impl<'a> LoweringCtx<'a> {
                 .expr_types
                 .get(args[0])
                 .cloned()
-                .unwrap_or(TypeRef::Error);
-            match Self::peeled_array_len(&arg_ty) {
+                .unwrap_or_else(|| self.hir.types.borrow_mut().error_type());
+            match Self::peeled_array_len(arg_ty, &self.hir.types.borrow()) {
                 Some(len) => len,
                 None => {
                     self.emit(self.expr_ptr(args[0], ptr), TypeError::LenNotArray);
@@ -644,15 +958,47 @@ impl<'a> LoweringCtx<'a> {
         // Emit as `(usize)N` so the C literal carries `size_t` type. Printed with
         // `%zu` a bare `int` literal would be a varargs type mismatch (UB on LP64).
         let lit = self.alloc_expr(Expr::Literal(Literal::Int(len as u128)), ptr);
-        let usize_ty = TypeRef::Path(Text::from("usize"));
+        let usize_ty = self.hir.types.borrow_mut().intern(TypeKind::Path(Text::from("usize")));
         let id = self.alloc_expr(
             Expr::Cast {
                 operand: lit,
-                ty: usize_ty.clone(),
+                ty: usize_ty,
             },
             ptr,
         );
         self.body.expr_types.insert(id, usize_ty);
+        id
+    }
+
+    /// Lower `sizeof(T)` to an `Expr::SizeOf` of type `usize`. The argument is a
+    /// type read straight from the AST (see the call site): the floor accepts a
+    /// bare named type only (`sizeof(int32)`, `sizeof(Point)`), matching the
+    /// lenient type-name handling elsewhere - the name is not validated here, the
+    /// C backend is the layout authority. Compound types (`sizeof(&T)`,
+    /// `sizeof([T; N])`) and value arguments are rejected.
+    fn lower_sizeof_intrinsic(&mut self, c: &ast::CallExpr, ptr: SyntaxNodePtr) -> ExprId {
+        let args: Vec<ast::Expr> = c
+            .arg_list()
+            .map(|al| al.args().collect())
+            .unwrap_or_default();
+        let ty = if args.len() != 1 {
+            self.emit(ptr, TypeError::SizeofArity { found: args.len() });
+            self.hir.types.borrow_mut().error_type()
+        } else if let ast::Expr::NameRef(nr) = &args[0] {
+            let mut types = self.hir.types.borrow_mut();
+            types.intern(TypeKind::Path(Self::text(nr.name())))
+        } else {
+            self.emit(
+                SyntaxNodePtr::new(args[0].syntax()),
+                TypeError::SizeofNotAType,
+            );
+            self.hir.types.borrow_mut().error_type()
+        };
+        let id = self.alloc_expr(Expr::SizeOf(ty), ptr);
+        let usize_ty = self.hir.types.borrow_mut().intern(TypeKind::Path(Text::from("usize")));
+        self.body
+            .expr_types
+            .insert(id, usize_ty);
         id
     }
 
@@ -664,15 +1010,25 @@ impl<'a> LoweringCtx<'a> {
     ) -> Expr {
         let scrut = self.lower_required_expr(me.scrut(), ptr);
 
-        // Identify the scrutinee enum (if any). Only TypeRef::Path
-        // pointing at a known enum carries match semantics; anything
-        // else still lowers but skips exhaustiveness so user keeps
-        // typing without a cascade of follow-on diagnostics.
-        let scrut_enum: Option<EnumId> = match self.body.expr_types.get(scrut) {
-            Some(TypeRef::Path(name)) => self.hir.items.enums.get(name).copied(),
+        // Classify the scrutinee's discriminant domain. enum / int / char / bool
+        // are matchable; anything else still lowers (so the user keeps typing)
+        // but the domain error below fires and per-arm domain checks are skipped.
+        let domain = self.match_domain(scrut);
+        let scrut_enum = match domain {
+            MatchDomain::Enum(eid) => Some(eid),
             _ => None,
         };
-        if scrut_enum.is_none() {
+        let scrut_ty_name: Text = match self.body.expr_types.get(scrut).copied() {
+            Some(ty) => {
+                let types = self.hir.types.borrow();
+                match types.lookup(ty) {
+                    TypeKind::Path(name) => name.clone(),
+                    _ => Text::from("<unknown>"),
+                }
+            }
+            None => Text::from("<unknown>"),
+        };
+        if matches!(domain, MatchDomain::Other) {
             self.emit(self.expr_ptr(scrut, ptr), TypeError::MatchScrutineeNotEnum);
         }
 
@@ -681,6 +1037,8 @@ impl<'a> LoweringCtx<'a> {
             Some(eid) => vec![false; self.hir.enums[eid].variants.len()],
             None => Vec::new(),
         };
+        let mut saw_true = false;
+        let mut saw_false = false;
         let mut saw_wildcard = false;
         let mut arm_type: Option<TypeRef> = None;
 
@@ -688,60 +1046,275 @@ impl<'a> LoweringCtx<'a> {
             for arm in arm_list.arms() {
                 let arm_ptr = SyntaxNodePtr::new(arm.syntax());
                 let after_wildcard = saw_wildcard;
-                let pat_id = match arm.pat() {
-                    Some(p) => self.lower_match_pat(&p, scrut_enum),
-                    None => self.alloc_pat(Pat::Missing, arm_ptr),
-                };
+                // A guarded arm does NOT discharge coverage of its discriminant:
+                // its guard may be false, leaving that case unmatched. So a
+                // guarded arm marks nothing covered (and a guarded `_`/binding is
+                // not the totalizing wildcard). Without this a guarded
+                // full-coverage match with no `_` would be accepted, and the
+                // value-position hoist temp could be read uninitialized.
+                let has_guard = arm.guard().is_some();
+
+                // Each arm gets its own scope so an arm binding (`x -> ..`) is
+                // visible only in that arm's body.
+                self.scopes.push();
+
+                // A bare ident over a primitive scrutinee (int / char / bool) is
+                // a BINDING, not a variant (the type-directed bare-ident rule):
+                // there is no variant namespace to resolve against. It is
+                // irrefutable, so it acts as a named wildcard. Over an enum a bare
+                // ident stays a variant (handled by `lower_match_pat`).
+                let bare_binding = matches!(
+                    (arm.pat(), domain),
+                    (
+                        Some(ast::Pat::BareIdentPat(_)),
+                        MatchDomain::Int | MatchDomain::Char | MatchDomain::Bool
+                    )
+                );
+                let pat_id =
+                    if let (true, Some(ast::Pat::BareIdentPat(bp))) = (bare_binding, arm.pat()) {
+                        let name: Text = Self::text(bp.name().and_then(|n| n.name()));
+                        let bind_ty = self.hir.types.borrow_mut().intern(TypeKind::Path(scrut_ty_name.clone()));
+                        let (pat_id, local_id) = self.alloc_bind_pat(
+                            name.clone(),
+                            Some(bind_ty),
+                            false,
+                            arm_ptr,
+                        );
+                        self.scopes.define(name, local_id);
+                        pat_id
+                    } else {
+                        match arm.pat() {
+                            Some(p) => self.lower_match_pat(&p, scrut_enum),
+                            None => self.alloc_pat(Pat::Missing, arm_ptr),
+                        }
+                    };
                 if after_wildcard {
                     self.emit(arm_ptr, PatternError::UnreachableAfterWildcard);
                 }
-                match &self.body.pats[pat_id] {
-                    Pat::Wildcard => saw_wildcard = true,
-                    Pat::Variant { idx, .. } => {
-                        let i = (*idx) as usize;
-                        if let Some(slot) = covered.get_mut(i) {
-                            if *slot {
-                                let vname = scrut_enum
-                                    .map(|eid| self.hir.enums[eid].variants[i].name.clone())
-                                    .unwrap_or_default();
-                                self.emit(arm_ptr, PatternError::DuplicateArm { variant: vname });
-                            }
-                            *slot = true;
+                // Read what we need out of the arena before any `self.emit`
+                // (which borrows `self` mutably): copy the pattern shape so the
+                // arena borrow ends here.
+                let arm_pat = match &self.body.pats[pat_id] {
+                    Pat::Wildcard => ArmPatShape::Wildcard,
+                    Pat::Bind(_) => ArmPatShape::Binding,
+                    Pat::Variant { enum_id, idx } => ArmPatShape::Variant(*enum_id, *idx),
+                    Pat::Literal(lit) => ArmPatShape::Literal(lit.clone()),
+                    // A struct pattern in a match arm is rejected at the parser
+                    // (`GrammarError::StructPatInMatchArm`) and never reaches HIR
+                    // as a `Pat::Struct`; `Pat::Missing` falls through to `Other`.
+                    _ => ArmPatShape::Other,
+                };
+                match arm_pat {
+                    // A binding is an irrefutable named wildcard: it makes the
+                    // match total and shadows any following arm.
+                    ArmPatShape::Wildcard | ArmPatShape::Binding => {
+                        if !has_guard {
+                            saw_wildcard = true;
                         }
                     }
-                    _ => {}
+                    ArmPatShape::Variant(enum_id, idx) => match domain {
+                        MatchDomain::Enum(_) => {
+                            let i = idx as usize;
+                            if let Some(slot) = covered.get_mut(i) {
+                                if *slot {
+                                    let vname = self.hir.enums[enum_id].variants[i].name.clone();
+                                    self.emit(
+                                        arm_ptr,
+                                        PatternError::DuplicateArm { variant: vname },
+                                    );
+                                }
+                                if !has_guard {
+                                    *slot = true;
+                                }
+                            }
+                        }
+                        MatchDomain::Bool | MatchDomain::Int | MatchDomain::Char => {
+                            let vname = self.hir.enums[enum_id].variants[idx as usize].name.clone();
+                            self.emit(
+                                arm_ptr,
+                                PatternError::PatternDomainMismatch {
+                                    scrutinee: scrut_ty_name.clone(),
+                                    pattern: vname,
+                                },
+                            );
+                        }
+                        MatchDomain::Other => {}
+                    },
+                    ArmPatShape::Literal(lit) => match domain {
+                        // int and char are both integer comparisons in C, so a
+                        // char literal against an int scrutinee (and vice versa)
+                        // is allowed; only bool/enum are kept strict.
+                        MatchDomain::Int | MatchDomain::Char
+                            if matches!(lit, Literal::Int(_) | Literal::Char(_)) => {}
+                        MatchDomain::Bool if matches!(lit, Literal::Bool(_)) => {
+                            if !has_guard {
+                                if matches!(lit, Literal::Bool(true)) {
+                                    saw_true = true;
+                                } else {
+                                    saw_false = true;
+                                }
+                            }
+                        }
+                        MatchDomain::Other => {}
+                        _ => self.emit(
+                            arm_ptr,
+                            PatternError::PatternDomainMismatch {
+                                scrutinee: scrut_ty_name.clone(),
+                                pattern: literal_pat_text(&lit),
+                            },
+                        ),
+                    },
+                    ArmPatShape::Other => {}
                 }
+                // Lower the optional guard expression. A guard is allowed on any
+                // arm, including an irrefutable one (`x if ..` / `_ if ..`): MIR
+                // lowers a guarded catch-all to an ordered `Always` arm with
+                // fall-through, so a false guard moves on to the next arm. A
+                // guarded arm does not discharge coverage (see `has_guard` above),
+                // so a match with guards still needs an unconditional catch-all to
+                // be exhaustive.
+                let guard_id = arm
+                    .guard()
+                    .map(|g| self.lower_required_expr(g.expr(), arm_ptr));
                 let body_id = self.lower_required_expr(arm.body(), arm_ptr);
                 if arm_type.is_none() {
                     arm_type = self.body.expr_types.get(body_id).cloned();
                 }
                 arms.push(MatchArm {
                     pat: pat_id,
+                    guard: guard_id,
                     body: body_id,
                 });
+
+                self.scopes.pop();
             }
         }
 
-        // NOTE: IMPORTANT! Exhaustiveness: every variant must be covered unless `_`
-        // catches the rest. Skipped when scrutinee isn't a known enum
-        // (the upstream diag already told the user).
-        if !saw_wildcard && let Some(eid) = scrut_enum {
-            let missing: Vec<Text> = self.hir.enums[eid]
-                .variants
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !covered[*i])
-                .map(|(_, v)| v.name.clone())
-                .collect();
-            if !missing.is_empty() {
-                let enum_name = self.hir.enums[eid].name.clone();
-                self.emit(ptr, PatternError::NonExhaustive { enum_name, missing });
+        // Exhaustiveness, by domain. enum and bool have finite known universes,
+        // so a missing case is an error; int and char are too large to
+        // enumerate, so totality requires an explicit `_`.
+        if !saw_wildcard {
+            match domain {
+                MatchDomain::Enum(eid) => {
+                    let missing: Vec<Text> = self.hir.enums[eid]
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| !covered[*i])
+                        .map(|(_, v)| v.name.clone())
+                        .collect();
+                    if !missing.is_empty() {
+                        let enum_name = self.hir.enums[eid].name.clone();
+                        self.emit(ptr, PatternError::NonExhaustive { enum_name, missing });
+                    }
+                }
+                MatchDomain::Bool => {
+                    let mut missing: Vec<Text> = Vec::new();
+                    if !saw_false {
+                        missing.push(Text::from("false"));
+                    }
+                    if !saw_true {
+                        missing.push(Text::from("true"));
+                    }
+                    if !missing.is_empty() {
+                        self.emit(
+                            ptr,
+                            PatternError::NonExhaustivePrimitive {
+                                ty: Text::from("bool"),
+                                missing,
+                            },
+                        );
+                    }
+                }
+                MatchDomain::Int | MatchDomain::Char => self.emit(
+                    ptr,
+                    PatternError::NonExhaustivePrimitive {
+                        ty: scrut_ty_name.clone(),
+                        missing: Vec::new(),
+                    },
+                ),
+                MatchDomain::Other => {}
             }
         }
 
-        // Type of the whole match mirrors `if`: the first arm's body
-        // type. Good enough for M5 codegen + M6 e2e.
+        // Type of the whole match mirrors `if`: the first arm's body type.
         *expr_type = arm_type;
         Expr::Match { scrut, arms }
+    }
+
+    /// Classify a match scrutinee into its discriminant domain. Only a
+    /// `TypeRef::Path` naming an enum or a primitive scalar is matchable.
+    fn match_domain(&self, scrut: ExprId) -> MatchDomain {
+        match self.body.expr_types.get(scrut).copied() {
+            Some(ty) => {
+                let types = self.hir.types.borrow();
+                match types.lookup(ty) {
+                    TypeKind::Path(name) => {
+                        if let Some(&eid) = self.hir.items.enums.get(name) {
+                            MatchDomain::Enum(eid)
+                        } else if name == "bool" {
+                            MatchDomain::Bool
+                        } else if name == "char" {
+                            MatchDomain::Char
+                        } else if is_int_type_name(name) {
+                            MatchDomain::Int
+                        } else {
+                            MatchDomain::Other
+                        }
+                    }
+                    _ => MatchDomain::Other,
+                }
+            }
+            None => MatchDomain::Other,
+        }
+    }
+}
+
+/// A match scrutinee's discriminant domain (see `lower_match_expr`).
+#[derive(Clone, Copy)]
+enum MatchDomain {
+    Enum(EnumId),
+    Bool,
+    Int,
+    Char,
+    Other,
+}
+
+/// A match arm pattern's shape, copied out of the body arena so the borrow ends
+/// before the per-arm diagnostics (which borrow `self` mutably) run.
+enum ArmPatShape {
+    Wildcard,
+    /// A bare-ident binding over a primitive scrutinee - an irrefutable named
+    /// wildcard.
+    Binding,
+    Variant(EnumId, u32),
+    Literal(Literal),
+    Other,
+}
+
+fn is_int_type_name(n: &str) -> bool {
+    matches!(
+        n,
+        "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "usize"
+            | "isize"
+    )
+}
+
+/// Display text for a literal pattern, used in a domain-mismatch diagnostic.
+fn literal_pat_text(lit: &Literal) -> Text {
+    match lit {
+        Literal::Int(v) => Text::from(v.to_string()),
+        Literal::Char(c) => Text::from(format!("'{c}'")),
+        Literal::Bool(b) => Text::from(if *b { "true" } else { "false" }),
+        // Float / string never reach a pattern (the parser excludes them).
+        Literal::Float(s) | Literal::String(s) => Text::from(s.as_str()),
     }
 }

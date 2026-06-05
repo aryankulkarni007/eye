@@ -1,8 +1,9 @@
 ---
 source: crates/parser/src/lib.rs
+assertion_line: 560
 expression: "format!(\"{:#?}\", parse.green)"
 ---
-SourceFile@0..130
+SourceFile@0..132
   StructDef@0..48
     Structure@0..9 "structure"
     Wspace@9..10 " "
@@ -31,13 +32,13 @@ SourceFile@0..130
     Semicolon@45..46 ";"
     Newline@46..47 "\n"
     Newline@47..48 "\n"
-  FnDef@48..130
+  FnDef@48..132
     Ident@48..52 "main"
     ParamList@52..55
       Oparen@52..53 "("
       Cparen@53..54 ")"
       Wspace@54..55 " "
-    Block@55..130
+    Block@55..132
       Obrace@55..56 "{"
       LetStmt@56..76
         Newline@56..57 "\n"
@@ -81,24 +82,24 @@ SourceFile@0..130
         Semicolon@104..105 ";"
         Newline@105..106 "\n"
         Wspace@106..110 "    "
-      ExprStmt@110..128
-        CallExpr@110..126
-          NameRef@110..115
-            Ident@110..115 "print"
-          ArgList@115..126
-            Oparen@115..116 "("
-            Literal@116..120
-              String@116..120 "\"{}\""
-            Comma@120..121 ","
-            FieldExpr@121..125
-              NameRef@121..123
-                Wspace@121..122 " "
-                Ident@122..123 "p"
-              Dot@123..124 "."
-              NameRef@124..125
-                Ident@124..125 "x"
-            Cparen@125..126 ")"
-        Semicolon@126..127 ";"
-        Newline@127..128 "\n"
-      Cbrace@128..129 "}"
-      Newline@129..130 "\n"
+      ExprStmt@110..130
+        CallExpr@110..128
+          NameRef@110..117
+            Ident@110..117 "println"
+          ArgList@117..128
+            Oparen@117..118 "("
+            Literal@118..122
+              String@118..122 "\"{}\""
+            Comma@122..123 ","
+            FieldExpr@123..127
+              NameRef@123..125
+                Wspace@123..124 " "
+                Ident@124..125 "p"
+              Dot@125..126 "."
+              NameRef@126..127
+                Ident@126..127 "x"
+            Cparen@127..128 ")"
+        Semicolon@128..129 ";"
+        Newline@129..130 "\n"
+      Cbrace@130..131 "}"
+      Newline@131..132 "\n"

@@ -35,18 +35,32 @@ echo "==> regenerating tree-sitter parser from grammar.js"
 
 echo "==> checking corpus parity"
 fail=0
-for f in "$CORPUS"/*.eye; do
+checked=0
+# The corpus is nested (eyesrc/{lang,programs,ffi}/), so walk it recursively -
+# a flat glob here once matched nothing and made the gate pass vacuously.
+while IFS= read -r f; do
   [[ -e "$f" ]] || continue
+  checked=$((checked + 1))
   name="$(basename "$f")"
 
   # Only files the canonical compiler accepts constrain the tree-sitter grammar.
   "$EYE" --check "$f" >/dev/null 2>&1 || continue
 
-  if ( cd "$TS_DIR" && tree-sitter parse "$f" 2>/dev/null | grep -qE 'ERROR|MISSING' ); then
+  # `tree-sitter parse` exits non-zero when it produces an ERROR node. Under
+  # `set -o pipefail` that non-zero would propagate through the pipe and make
+  # the `if` read false EVEN ON A MATCH - masking the very drift we gate on.
+  # Capture first (`|| true` swallows the parse exit), then grep the text.
+  out="$( cd "$TS_DIR" && tree-sitter parse "$f" 2>/dev/null || true )"
+  if grep -qE 'ERROR|MISSING' <<<"$out"; then
     echo "    DRIFT: $name compiles but tree-sitter has ERROR/MISSING"
     fail=1
   fi
-done
+done < <(find "$CORPUS" -name '*.eye' | sort)
+
+if [[ "$checked" -eq 0 ]]; then
+  echo "==> FAIL: no corpus files found under $CORPUS - the gate checked nothing." >&2
+  exit 1
+fi
 
 if [[ "$fail" -ne 0 ]]; then
   echo "==> FAIL: tree-sitter grammar drifted from the compiler." >&2

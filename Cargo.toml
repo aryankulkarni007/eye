@@ -21,6 +21,7 @@ edition = "2024"
 [workspace.dependencies]
 # external
 anyhow = "1.0.102"
+criterion = { version = "0.5", features = ["cargo_bench_support"] }
 drop_bomb = "0.1.5"
 logos = "0.16"
 memchr = "2.8.0"
@@ -29,6 +30,8 @@ proc-macro2 = "1"
 quote = "1"
 rowan = "0.16.1"
 rustc-hash = "2.1.2"
+ryu = "1.0"
+itoa = "1.0"
 smol_str = "0.3"
 text-size = "1.1"
 ungrammar = "1.16"
@@ -36,6 +39,7 @@ insta = "1"
 thin-vec = "0.2.18"
 smallvec = "1.15.1"
 la-arena = "0.3"
+mimalloc = "0.1"
 thiserror = "2"
 ariadne = "0.5"
 clap = { version = "4", features = ["derive"] }
@@ -61,16 +65,34 @@ edition.workspace = true
 name = "eye"
 path = "src/main.rs"
 
+[lib]
+name = "eye"
+path = "src/lib.rs"
+
 [dependencies]
 anyhow.workspace = true
 memmap2.workspace = true
+mimalloc.workspace = true
 ast.workspace = true
 lexer.workspace = true
 parser.workspace = true
 syntax.workspace = true
 smallvec.workspace = true
 hir.workspace = true
+mir.workspace = true
 codegen.workspace = true
 diagnostics.workspace = true
 ariadne.workspace = true
 clap.workspace = true
+rustc-hash.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+insta.workspace = true
+proptest = "1"
+token.workspace = true
+text-size.workspace = true
+
+[[bench]]
+name = "compile"
+harness = false

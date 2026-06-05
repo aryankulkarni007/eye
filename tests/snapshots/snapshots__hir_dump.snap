@@ -1,0 +1,25 @@
+---
+source: tests/snapshots.rs
+expression: hir
+---
+structs: 0 struct(s)
+  enums: 0 enum(s)
+  fields: 0 field(s)
+  functions: 1 fn(s)
+    Fn(Idx::<Function>(0)): main() -> None
+  items:
+    main -> fn(Idx::<Function>(0))
+  bodies: 1 body(s)
+    Body(Idx::<Body>(0)):
+      locals: 1
+        Local(Idx::<Local>(0)): x: Some(TypeRef(3)) 
+      pats: 1
+      exprs: 5
+        Expr(Idx::<Expr>(0)): Literal: TypeRef(3)
+        Expr(Idx::<Expr>(1)): Path
+        Expr(Idx::<Expr>(2)): Literal: TypeRef(20)
+        Expr(Idx::<Expr>(3)): Path: TypeRef(3)
+        Expr(Idx::<Expr>(4)): Call
+      stmts: 2
+      blocks: 1
+  diagnostics: 0

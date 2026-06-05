@@ -20,9 +20,11 @@ lexer.workspace = true
 syntax.workspace = true
 parser.workspace = true
 ast.workspace = true
+hir.workspace = true
 token.workspace = true
 diagnostics.workspace = true
 text-size.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
 insta = { workspace = true }

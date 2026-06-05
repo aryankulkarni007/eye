@@ -24,11 +24,11 @@ structure Point {
 };
 
 main() {
-    let x = 0;
-    let y = 0;
+    let int32 x = 0;
+    let int32 y = 0;
     mut Point p = Point { x, y };
 
-    print(\"{}\", p.x);
+    println(\"{}\", p.x);
 }
 ";
 
@@ -197,7 +197,7 @@ fn well_formed_program_has_no_diagnostics() {
 fn nested_field_access_resolves_field_name() {
     let src = "\
 main() {
-    print(\"{}\", a.b.c);
+    println(\"{}\", a.b.c);
 }
 ";
     let hir = lower(src);
@@ -287,7 +287,7 @@ main() {
 
     assert_eq!(
         body.expr_types.get(call_id),
-        Some(&TypeRef::Path("int32".into()))
+        Some(&hir.types.borrow_mut().intern(TypeKind::Path("int32".into())))
     );
 }
 
@@ -321,7 +321,7 @@ main() {
 
     assert_eq!(
         body.expr_types.get(call_id),
-        Some(&TypeRef::Path("usize".into()))
+        Some(&hir.types.borrow_mut().intern(TypeKind::Path("usize".into())))
     );
 }
 
@@ -342,7 +342,7 @@ main() {
         diags(&hir).iter().any(|e| matches!(
             e,
             HirError::Type(TypeError::LetTypeMismatch { expected, got })
-                if expected.to_string() == "string" && got.to_string() == "int32"
+                if *expected == "string" && *got == "int32"
         )),
         "expected explicit let mismatch diagnostic, got: {:?}",
         hir.diagnostics
@@ -393,7 +393,7 @@ fn match_lowers_arms_and_pins_scrut_enum() {
          Shape.Circle -> 0,\n        \
          Rectangle -> 1,\n        \
          Triangle -> 2,\n    }};\n    \
-         print(\"{{}}\", n);\n}}\n",
+         println(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
     );
     let hir = lower(&src);
@@ -405,14 +405,17 @@ fn match_lowers_arms_and_pins_scrut_enum() {
     let (body, match_id, arms, scrut) = first_match(&hir);
     assert_eq!(arms.len(), 3);
     // scrutinee type pinned to Shape.
-    match body.expr_types.get(scrut) {
-        Some(TypeRef::Path(n)) => assert_eq!(n.as_str(), "Shape"),
+    let types = hir.types.borrow();
+    let scrut_ty = body.expr_types.get(scrut).map(|ty| types.lookup(*ty));
+    match scrut_ty {
+        Some(TypeKind::Path(n)) => assert_eq!(n.as_str(), "Shape"),
         other => panic!("scrut type missing/wrong: {other:?}"),
     }
     // match expression itself carries the arm-body type so M5 codegen can
     // declare `int32 _matchN;` for the hoist temp.
-    match body.expr_types.get(match_id) {
-        Some(TypeRef::Path(n)) => assert_eq!(n.as_str(), "int32"),
+    let match_ty = body.expr_types.get(match_id).map(|ty| types.lookup(*ty));
+    match match_ty {
+        Some(TypeKind::Path(n)) => assert_eq!(n.as_str(), "int32"),
         other => panic!("match expr type missing/wrong: {other:?}"),
     }
     // every arm resolved to a distinct Variant pat.
@@ -434,7 +437,7 @@ fn match_wildcard_covers_remaining_variants() {
          let int32 n = match sh {{\n        \
          Circle -> 0,\n        \
          _ -> 99,\n    }};\n    \
-         print(\"{{}}\", n);\n}}\n",
+         println(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
     );
     let hir = lower(&src);
@@ -453,7 +456,7 @@ fn match_non_exhaustive_diags_each_missing_variant() {
     let src = format!(
         "{}main() {{\n    let Shape sh = Circle;\n    \
          let int32 n = match sh {{\n        Circle -> 0,\n    }};\n    \
-         print(\"{{}}\", n);\n}}\n",
+         println(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
     );
     let hir = lower(&src);
@@ -475,7 +478,7 @@ fn match_duplicate_arm_diagnosed() {
          let int32 n = match sh {{\n        \
          Circle -> 0,\n        Rectangle -> 1,\n        \
          Circle -> 2,\n        Triangle -> 3,\n    }};\n    \
-         print(\"{{}}\", n);\n}}\n",
+         println(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
     );
     let hir = lower(&src);
@@ -495,7 +498,7 @@ fn match_arm_after_wildcard_is_unreachable() {
         "{}main() {{\n    let Shape sh = Circle;\n    \
          let int32 n = match sh {{\n        \
          _ -> 0,\n        Triangle -> 1,\n    }};\n    \
-         print(\"{{}}\", n);\n}}\n",
+         println(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
     );
     let hir = lower(&src);
@@ -508,6 +511,30 @@ fn match_arm_after_wildcard_is_unreachable() {
     );
 }
 
+/// Multiple irrefutable arms are rejected at HIR: an arm after a catch-all
+/// (a `_` wildcard OR a bare-ident binding, both irrefutable over a primitive)
+/// is unreachable. This guards the MIR `ArmKind::Bind`/`Default` paths, where two
+/// irrefutable arms would otherwise both write the default slot and the last
+/// would silently win. Covers `bind -> _` and `bind -> bind`.
+#[test]
+fn match_multiple_irrefutable_arms_rejected() {
+    for arms in ["n -> 1,\n        _ -> 2,", "n -> 1,\n        m -> 2,"] {
+        let src = format!(
+            "main() {{\n    let int32 x = 5;\n    \
+             let int32 r = match x {{\n        {arms}\n    }};\n    \
+             println(\"{{}}\", r);\n}}\n"
+        );
+        let hir = lower(&src);
+        assert!(
+            diags(&hir)
+                .iter()
+                .any(|e| matches!(e, HirError::Pattern(PatternError::UnreachableAfterWildcard))),
+            "expected unreachable diag for arms `{arms}`, got: {:?}",
+            hir.diagnostics
+        );
+    }
+}
+
 #[test]
 fn match_cross_enum_pattern_diagnosed() {
     let src = format!(
@@ -515,7 +542,7 @@ fn match_cross_enum_pattern_diagnosed() {
          let Shape sh = Circle;\n    \
          let int32 n = match sh {{\n        \
          Option.Some -> 0,\n        _ -> 1,\n    }};\n    \
-         print(\"{{}}\", n);\n}}\n",
+         println(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
     );
     let hir = lower(&src);
@@ -536,7 +563,7 @@ fn match_unknown_variant_diagnosed() {
         "{}main() {{\n    let Shape sh = Circle;\n    \
          let int32 n = match sh {{\n        \
          Square -> 0,\n        _ -> 1,\n    }};\n    \
-         print(\"{{}}\", n);\n}}\n",
+         println(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
     );
     let hir = lower(&src);
@@ -551,15 +578,18 @@ fn match_unknown_variant_diagnosed() {
     );
 }
 
+// A scrutinee whose type is not a matchable domain (enum / int / char / bool) is
+// diagnosed. `float64` is a scalar but not discrete, so it is rejected. (An int
+// scrutinee, by contrast, is now matchable - see `match_int_literal_arms`.)
 #[test]
-fn match_non_enum_scrut_diagnosed() {
+fn match_non_matchable_scrut_diagnosed() {
     let src = "\
 main() {
-    let int32 x = 0;
+    let float64 x = 0.0;
     let int32 n = match x {
         _ -> 1,
     };
-    print(\"{}\", n);
+    println(\"{}\", n);
 }
 ";
     let hir = lower(src);
@@ -567,7 +597,407 @@ main() {
         diags(&hir)
             .iter()
             .any(|e| matches!(e, HirError::Type(TypeError::MatchScrutineeNotEnum))),
-        "expected non-enum diag, got: {:?}",
+        "expected non-matchable-domain diag, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// An int scrutinee with literal arms plus a `_` is a valid, total match - no
+// diagnostics. Exercises the int domain and `ArmTest::Const` lowering.
+#[test]
+fn match_int_literal_arms() {
+    let src = "\
+main() {
+    let int32 x = 2;
+    let int32 n = match x {
+        1 -> 10,
+        2 -> 20,
+        _ -> 0,
+    };
+    println(\"{}\", n);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir).is_empty(),
+        "expected a clean int match, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// An int match with no `_` is non-exhaustive (the domain is too large to
+// enumerate).
+#[test]
+fn match_int_without_wildcard_is_non_exhaustive() {
+    let src = "\
+main() {
+    let int32 x = 1;
+    let int32 n = match x {
+        1 -> 10,
+        2 -> 20,
+    };
+    println(\"{}\", n);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Pattern(PatternError::NonExhaustivePrimitive { missing, .. }) if missing.is_empty()
+        )),
+        "expected open-domain non-exhaustive diag, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// A bool match covering both `true` and `false` is total without a `_`.
+#[test]
+fn match_bool_both_values_is_exhaustive() {
+    let src = "\
+main() {
+    let bool b = true;
+    let int32 n = match b {
+        true -> 1,
+        false -> 0,
+    };
+    println(\"{}\", n);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir).is_empty(),
+        "expected a clean bool match, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// A bool match missing `false` is non-exhaustive, naming the missing value.
+#[test]
+fn match_bool_missing_value_is_non_exhaustive() {
+    let src = "\
+main() {
+    let bool b = true;
+    let int32 n = match b {
+        true -> 1,
+    };
+    println(\"{}\", n);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Pattern(PatternError::NonExhaustivePrimitive { ty, missing })
+                if ty == "bool" && missing.iter().any(|m| m == "false")
+        )),
+        "expected bool non-exhaustive diag, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// A `let` struct destructure binding every field lowers cleanly.
+#[test]
+fn destructure_binds_all_fields() {
+    let src = "\
+structure P { int32 x, int32 y, };
+main() {
+    let P p = P { x: 1, y: 2 };
+    let P { x, y } = p;
+    println(\"{} {}\", x, y);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir).is_empty(),
+        "expected a clean destructure, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// Destructuring is exhaustive: a pattern that omits a field is an error naming
+// the missing field.
+#[test]
+fn destructure_missing_field_is_non_exhaustive() {
+    let src = "\
+structure P { int32 x, int32 y, };
+main() {
+    let P p = P { x: 1, y: 2 };
+    let P { x } = p;
+    println(\"{}\", x);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Pattern(PatternError::DestructureNonExhaustive { ty, missing })
+                if ty == "P" && missing.iter().any(|m| m == "y")
+        )),
+        "expected destructure non-exhaustive diag, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// --- EXPERIMENTAL: destructure error paths added 2026-06-07 ---
+//
+// These tests are marked experimental because they cover error-reporting paths
+// that are correct today but whose diagnostic text or anchor placement may
+// change as the pattern-matching surface stabilises through S3-S5.
+
+// A struct destructure binding a field the type does not declare is an error.
+#[test]
+fn destructure_unknown_field_diagnosed() {
+    let src = "\
+structure P { int32 x, int32 y, };
+main() {
+    let P p = P { x: 1, y: 2 };
+    let P { x, z } = p;
+    println(\"{}\", x);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Pattern(PatternError::DestructureUnknownField { ty, field })
+                if ty == "P" && field == "z"
+        )),
+        "expected unknown-field diagnostic naming `z`, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// A struct destructure binding the same field twice is an error (each field must
+// be bound exactly once).
+#[test]
+fn destructure_duplicate_field_diagnosed() {
+    let src = "\
+structure P { int32 x, int32 y, };
+main() {
+    let P p = P { x: 1, y: 2 };
+    let P { x, x } = p;
+    println(\"{}\", x);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Pattern(PatternError::DestructureDuplicateField { field })
+                if field == "x"
+        )),
+        "expected duplicate-field diagnostic, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// A `let` destructure whose type name does not resolve to a known struct is an
+// error (e.g. a typo or a type from another namespace).
+#[test]
+fn destructure_not_a_struct_diagnosed() {
+    let src = "\
+main() {
+    let int32 x = 5;
+    let NotAStruct { x } = x;
+    println(\"{}\", x);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Pattern(PatternError::DestructureNotAStruct { ty })
+                if ty == "NotAStruct"
+        )),
+        "expected not-a-struct diagnostic, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// --- end experimental ---
+
+// A bare ident over a primitive scrutinee is a binding, not a (failed) variant
+// lookup - the type-directed bare-ident rule. The match is total.
+#[test]
+fn match_bare_ident_binds_over_primitive() {
+    let src = "\
+main() {
+    let int32 n = 5;
+    let int32 r = match n {
+        0 -> 100,
+        x -> x + 1,
+    };
+    println(\"{}\", r);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir).is_empty(),
+        "expected a clean binding match, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// A literal pattern whose domain disagrees with the scrutinee (a bool literal
+// against an int scrutinee) is a domain mismatch.
+#[test]
+fn match_literal_domain_mismatch_diagnosed() {
+    let src = "\
+main() {
+    let int32 x = 1;
+    let int32 n = match x {
+        true -> 1,
+        _ -> 0,
+    };
+    println(\"{}\", n);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Pattern(PatternError::PatternDomainMismatch { .. })
+        )),
+        "expected a domain-mismatch diag, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+// Match arm guard lowering tests.
+
+/// A match arm guard (`A if flag -> body`) lowers without diagnostics and the
+/// guard expression is recorded in `MatchArm::guard`.
+#[test]
+fn match_guard_lowers_cleanly() {
+    let src = "\
+enum E = A | B ;
+main() {
+    let bool flag = true;
+    let E e = A;
+    let int32 r = match e {
+        A if flag -> 1,
+        B -> 2,
+        _ -> 0,
+    };
+    println(\"{}\", r);
+}
+";
+    let hir = lower(src);
+    assert!(
+        hir.diagnostics.is_empty(),
+        "expected clean guard match, got: {:?}",
+        hir.diagnostics
+    );
+    let (_, _, arms, _) = first_match(&hir);
+    assert!(arms[0].guard.is_some(), "expected guard on first arm");
+    assert!(arms[1].guard.is_none(), "expected no guard on second arm");
+}
+
+/// A guard on a bare-ident binding catch-all (`x if cond`) is supported: the
+/// binding is in scope for the guard, and an unconditional `_` makes the match
+/// exhaustive. Compiles with no pattern diagnostic.
+#[test]
+fn match_guard_on_binding_arm_supported() {
+    let src = "\
+main() {
+    let int32 x = 5;
+    let int32 r = match x {
+        y if y > 0 -> 1,
+        _ -> 0,
+    };
+    println(\"{}\", r);
+}
+";
+    let hir = lower(src);
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Pattern(_))),
+        "guarded binding catch-all should compile cleanly, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A guarded arm does not discharge coverage of its discriminant: a full-variant
+/// match with a guarded arm and no `_` is non-exhaustive, since the guard may be
+/// false. This prevents a value-position match's hoist temp being read
+/// uninitialized when no arm fires.
+#[test]
+fn guarded_arm_does_not_cover_for_exhaustiveness() {
+    let hir = lower(
+        "\
+enum E = A | B ;
+main() {
+    let bool c = true;
+    let E e = A;
+    let int32 r = match e {
+        A if c -> 1,
+        B -> 2,
+    };
+    println(\"{}\", r);
+}
+",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Pattern(PatternError::NonExhaustive { .. }))),
+        "expected non-exhaustive (guarded `A` does not cover), got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A guard on a wildcard arm (`_ if cond`) is supported when a later
+/// unconditional catch-all keeps the match exhaustive. The guarded `_` does not
+/// discharge coverage, so the trailing `_ -> 0` is required and reachable.
+#[test]
+fn match_guard_on_wildcard_arm_supported() {
+    let src = "\
+enum E = A | B;
+main() {
+    let E e = A;
+    let bool flag = false;
+    let int32 r = match e {
+        A -> 1,
+        _ if flag -> 9,
+        _ -> 0,
+    };
+    println(\"{}\", r);
+}
+";
+    let hir = lower(src);
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Pattern(_))),
+        "guarded wildcard with trailing catch-all should compile cleanly, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A guarded wildcard with NO unconditional catch-all is non-exhaustive: the
+/// guard may be false for an uncovered case, leaving the match with no arm. This
+/// is the safety property that keeps a value-position hoist temp initialized.
+#[test]
+fn match_guard_on_wildcard_without_catchall_rejected() {
+    let src = "\
+enum E = A | B;
+main() {
+    let E e = A;
+    let bool flag = false;
+    let int32 r = match e {
+        A -> 1,
+        _ if flag -> 9,
+    };
+    println(\"{}\", r);
+}
+";
+    let hir = lower(src);
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Pattern(PatternError::NonExhaustive { .. }))),
+        "expected non-exhaustive (guarded `_` does not cover B), got: {:?}",
         hir.diagnostics
     );
 }
@@ -589,13 +1019,14 @@ main() {
     let body = &hir.bodies[body_id];
 
     // the `xs` local carries an Array type with the parsed length.
-    let array_local = body.locals.iter().find_map(|(_, l)| match &l.ty {
-        Some(TypeRef::Array { elem, len }) => Some((elem.clone(), *len)),
-        _ => None,
+    let int32_ty = hir.types.borrow_mut().intern(TypeKind::Path("int32".into()));
+    let types = hir.types.borrow();
+    let array_local = body.locals.iter().find_map(|(_, l)| {
+        l.ty.and_then(|ty| ty.as_array(&types))
     });
     let (elem, len) = array_local.expect("xs local has an Array type");
     assert_eq!(len, 3, "array length parsed from literal");
-    assert_eq!(*elem, TypeRef::Path("int32".into()), "element type");
+    assert_eq!(elem, int32_ty, "element type");
 
     // both an ArrayLit and an Index expression were produced.
     assert!(
@@ -612,9 +1043,9 @@ main() {
     );
 }
 
-/// `[T; N]` currently requires `N` to be an integer literal. A name or other
-/// expression is reserved for future compile-time constants and must not lower
-/// silently as length 0.
+/// `[T; N]` requires `N` to be a compile-time value: an integer literal or a
+/// `const` (a const-expr over those). A runtime local is not a constant, so it
+/// is rejected (and must not lower silently as length 0).
 #[test]
 fn non_integer_literal_array_len_emits_diagnostic() {
     let hir = lower(
@@ -630,10 +1061,235 @@ main() {
     assert!(
         matches!(
             diags(&hir)[0],
-            HirError::Const(ConstError::ArrayLenNotLiteral)
+            HirError::Const(ConstError::ConstUnknownName { .. })
         ),
         "unexpected diagnostic: {:?}",
         diags(&hir)[0]
+    );
+}
+
+/// The const-expr evaluator folds literals, the operator set, and references to
+/// other consts into a scalar [`ConstValue`] on each [`Const`].
+#[test]
+fn consts_fold_to_values() {
+    let hir = lower(
+        "\
+const int32 MAX = 100;
+const int32 DBL = MAX * 2;
+const int32 NEG = 0 - 5;
+const bool BIG = MAX > 50;
+const char MARK = 'A';
+const float64 HALF = 3.0 / 2.0;
+const int32 TRUNC = HALF as int32;
+main() {}
+",
+    );
+    assert_eq!(hir.diagnostics.len(), 0, "{:?}", hir.diagnostics);
+    let val = |name: &str| hir.consts[hir.items.consts[name]].value.clone();
+    assert_eq!(val("MAX"), Some(ConstValue::Int(100)));
+    assert_eq!(val("DBL"), Some(ConstValue::Int(200)));
+    assert_eq!(val("NEG"), Some(ConstValue::Int(-5)));
+    assert_eq!(val("BIG"), Some(ConstValue::Bool(true)));
+    assert_eq!(val("MARK"), Some(ConstValue::Char('A')));
+    assert_eq!(val("HALF"), Some(ConstValue::Float(1.5)));
+    // a numeric `as` cast folds: float 1.5 truncates to int 1.
+    assert_eq!(val("TRUNC"), Some(ConstValue::Int(1)));
+}
+
+/// A `const` whose initializer references itself (directly or through a chain)
+/// is a definition cycle, diagnosed once and left poisoned (`value == None`).
+#[test]
+fn const_cycle_is_rejected() {
+    let hir = lower(
+        "\
+const int32 A = B;
+const int32 B = A;
+main() {}
+",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|d| matches!(d, HirError::Const(ConstError::ConstCycle { .. }))),
+        "expected a const cycle diagnostic: {:?}",
+        diags(&hir)
+    );
+    assert_eq!(hir.consts[hir.items.consts["A"]].value, None);
+}
+
+/// A const sharing a name with another item is a duplicate, like any item clash.
+#[test]
+fn duplicate_const_name_is_rejected() {
+    let hir = lower(
+        "\
+const int32 X = 1;
+const int32 X = 2;
+main() {}
+",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|d| matches!(d, HirError::Resolve(ResolveError::DuplicateItem { .. }))),
+        "expected a duplicate-item diagnostic: {:?}",
+        diags(&hir)
+    );
+}
+
+/// A name the C backend emits verbatim (field, parameter, function, enum
+/// variant) that is a C keyword is rejected at collection (R010): emitted
+/// verbatim it would be illegal C (`.struct = ...`). Non-keyword names that
+/// merely *look* C-ish (`data`, `value`) are untouched.
+#[test]
+fn c_keyword_names_are_rejected() {
+    let hir = lower(
+        "\
+structure Syllable {
+    string struct,
+    int32 data,
+};
+typedef(int32 switch) {}
+main() {}
+",
+    );
+    let keyword_errors: Vec<_> = diags(&hir)
+        .iter()
+        .filter_map(|d| match d {
+            HirError::Resolve(ResolveError::NameIsCKeyword { name, .. }) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        keyword_errors,
+        ["struct", "typedef", "switch"],
+        "expected exactly the keyword names rejected: {:?}",
+        diags(&hir)
+    );
+}
+
+/// A top-level `const` integer resolves as an array length (A6,
+/// `docs/design/HORIZON0.md`): `const usize N = 4; [int32; N]` lowers to a length-4
+/// array, and a const-expr (`N * 2`) folds too.
+#[test]
+fn const_array_length_resolves() {
+    let hir = lower(
+        "\
+const usize N = 4;
+main() {
+    let [int32; N] xs = [1, 2, 3, 4];
+    let [int32; N * 2] ys = [0, 0, 0, 0, 0, 0, 0, 0];
+}
+",
+    );
+
+    assert_eq!(hir.diagnostics.len(), 0, "{:?}", hir.diagnostics);
+    let main_id = *hir.items.functions.get("main").unwrap();
+    let body = &hir.bodies[hir.functions[main_id].body.unwrap()];
+    let types = hir.types.borrow();
+    let lens: Vec<u64> = body
+        .stmts
+        .iter()
+        .filter_map(|(_, s)| match s {
+            Stmt::Let { ty: Some(ty), .. } => {
+                ty.as_array(&types).map(|(_, len)| len)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lens, vec![4, 8]);
+}
+
+/// The repeat literal `[value; N]` resolves its count via the same const
+/// machinery as a `[T; N]` type length: a literal or a `const`.
+#[test]
+fn array_repeat_resolves_const_count() {
+    let hir = lower(
+        "\
+const usize N = 4;
+main() {
+    let [int32; N] xs = [7; N];
+    println(\"{}\", xs[0]);
+}
+",
+    );
+    assert_eq!(hir.diagnostics.len(), 0, "{:?}", hir.diagnostics);
+}
+
+/// A repeat literal with a non-const count is a `Const` error - a runtime local
+/// cannot be a compile-time array length.
+#[test]
+fn array_repeat_non_const_count_rejected() {
+    let hir = lower(
+        "\
+main() {
+    let int32 n = 3;
+    let [int32; 3] xs = [0; n];
+    println(\"{}\", xs[0]);
+}
+",
+    );
+    assert!(
+        diags(&hir).iter().any(|e| matches!(e, HirError::Const(_))),
+        "expected a Const diagnostic for a non-const repeat count, got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// An `if` used as a value must yield a value on every path. An else-less `if`
+/// as a `let` initializer is rejected (it leaves the binding uninitialized when
+/// the condition is false), while a diverging branch (`{ return; }`) is allowed
+/// because it never falls through.
+#[test]
+fn else_less_if_in_value_position_rejected() {
+    let reject = lower(
+        "\
+main() {
+    let bool c = false;
+    let int32 x = if c { 5 };
+    println(\"{}\", x);
+}
+",
+    );
+    assert!(
+        diags(&reject)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::VoidValueInValuePosition))),
+        "expected VoidValueInValuePosition, got: {:?}",
+        reject.diagnostics
+    );
+
+    // A diverging then-branch is fine: the `else` supplies the value.
+    let ok = lower(
+        "\
+pick(int32 c) -> int32 {
+    let int32 x = if c < 0 { return 99; } else { 2 };
+    x
+}
+main() { println(\"{}\", pick(5)); }
+",
+    );
+    assert_eq!(ok.diagnostics.len(), 0, "{:?}", ok.diagnostics);
+}
+
+/// An untyped `let` is rejected. Type inference is on hiatus, so a binding needs
+/// an explicit type; without one it would reach codegen as an `Error` placeholder
+/// (`void* /* ERROR TY */`).
+#[test]
+fn untyped_let_requires_annotation() {
+    let hir = lower(
+        "\
+main() {
+    let x = 5;
+    println(\"{}\", x);
+}
+",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::MissingTypeAnnotation { .. }))),
+        "expected MissingTypeAnnotation, got: {:?}",
+        hir.diagnostics
     );
 }
 
@@ -665,13 +1321,14 @@ main() {
 
 #[test]
 fn match_value_position_heterogeneous_arms_diagnosed() {
-    // First arm is int32, a later arm is a string: the value-position match
-    // has no single result type, so the mismatching arm is diagnosed.
+    // First arm is int32, a later arm is a string (`&[uint8; N]`, HORIZON0 C3):
+    // the value-position match has no single result type, so the mismatching arm
+    // is diagnosed.
     let src = format!(
         "{}main() {{\n    let Shape sh = Circle;\n    \
          let int32 n = match sh {{\n        \
          Circle -> 1,\n        Rectangle -> \"bad\",\n        Triangle -> 3,\n    }};\n    \
-         print(\"{{}}\", n);\n}}\n",
+         println(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
     );
     let hir = lower(&src);
@@ -679,7 +1336,7 @@ fn match_value_position_heterogeneous_arms_diagnosed() {
         diags(&hir).iter().any(|e| matches!(
             e,
             HirError::Type(TypeError::MatchArmTypeMismatch { expected, found })
-                if expected.to_string() == "int32" && found.to_string() == "string"
+                if *expected == "int32" && *found == "&[uint8; 3]"
         )),
         "expected arm-type-mismatch diag, got: {:?}",
         hir.diagnostics
@@ -701,7 +1358,7 @@ main() {
         Green -> unit(),
         Blue -> 3,
     };
-    print(\"{}\", n);
+    println(\"{}\", n);
 }
 ";
     let hir = lower(src);
@@ -709,7 +1366,7 @@ main() {
         diags(&hir).iter().any(|e| matches!(
             e,
             HirError::Type(TypeError::MatchArmTypeMismatch { found, .. })
-                if found.to_string() == "Point"
+                if *found == "Point"
         )),
         "expected Point arm mismatch diag, got: {:?}",
         hir.diagnostics
@@ -725,7 +1382,7 @@ fn match_wide_int_let_records_binding_type_without_false_positive() {
         "{}main() {{\n    let Shape sh = Circle;\n    \
          let int64 n = match sh {{\n        \
          Circle -> 1,\n        Rectangle -> 2,\n        Triangle -> 3,\n    }};\n    \
-         print(\"{{}}\", n);\n}}\n",
+         println(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
     );
     let hir = lower(&src);
@@ -737,8 +1394,9 @@ fn match_wide_int_let_records_binding_type_without_false_positive() {
         hir.diagnostics
     );
     let (body, match_id, _, _) = first_match(&hir);
-    match body.expr_types.get(match_id) {
-        Some(TypeRef::Path(n)) => assert_eq!(n.as_str(), "int64"),
+    let types = hir.types.borrow();
+    match body.expr_types.get(match_id).map(|ty| types.lookup(*ty)) {
+        Some(TypeKind::Path(n)) => assert_eq!(n.as_str(), "int64"),
         other => panic!("explicit binding type not recorded on match: {other:?}"),
     }
 }
@@ -752,7 +1410,7 @@ fn statement_position_match_heterogeneous_arms_not_diagnosed() {
         "{}main() {{\n    let Shape sh = Circle;\n    \
          match sh {{\n        \
          Circle -> 1,\n        Rectangle -> \"bad\",\n        Triangle -> 3,\n    }}\n    \
-         print(\"done\");\n}}\n",
+         println(\"done\");\n}}\n",
         SHAPE_DECL
     );
     let hir = lower(&src);
@@ -773,7 +1431,7 @@ fn untyped_let_homogeneous_match_arms_are_clean() {
         "{}main() {{\n    let Shape sh = Circle;\n    \
          let n = match sh {{\n        \
          Circle -> 1,\n        Rectangle -> 2,\n        Triangle -> 3,\n    }};\n    \
-         print(\"{{}}\", n);\n}}\n",
+         println(\"{{}}\", n);\n}}\n",
         SHAPE_DECL
     );
     let hir = lower(&src);
@@ -796,7 +1454,7 @@ take(int32 n) -> int32 { n }
 pick() -> Color { Green }
 main() {
     let int32 a = take(match pick() { Red -> 1, Green -> pick(), Blue -> 3 });
-    print(\"{}\", a);
+    println(\"{}\", a);
 }
 ";
     let hir = lower(src);
@@ -804,7 +1462,7 @@ main() {
         diags(&hir).iter().any(|e| matches!(
             e,
             HirError::Type(TypeError::MatchArmTypeMismatch { found, .. })
-                if found.to_string() == "Color"
+                if *found == "Color"
         )),
         "fn-arg value-position match must be arm-checked, got: {:?}",
         hir.diagnostics
@@ -825,14 +1483,14 @@ sides(Color c) -> int32 {
         Blue -> 3,
     }
 }
-main() { print(\"{}\", sides(Red)); }
+main() { println(\"{}\", sides(Red)); }
 ";
     let hir = lower(src);
     assert!(
         diags(&hir).iter().any(|e| matches!(
             e,
             HirError::Type(TypeError::MatchArmTypeMismatch { expected, found })
-                if expected.to_string() == "int32" && found.to_string() == "Color"
+                if *expected == "int32" && *found == "Color"
         )),
         "return-tail match arm must be checked against the return type, got: {:?}",
         hir.diagnostics
@@ -873,14 +1531,14 @@ fn return_type_mismatch_non_match_tail_diagnosed() {
     let src = "\
 enum Color = Red | Green | Blue ;
 bad() -> int32 { Red }
-main() { print(\"{}\", bad()); }
+main() { println(\"{}\", bad()); }
 ";
     let hir = lower(src);
     assert!(
         diags(&hir).iter().any(|e| matches!(
             e,
             HirError::Type(TypeError::ReturnTypeMismatch { expected, found })
-                if expected.to_string() == "int32" && found.to_string() == "Color"
+                if *expected == "int32" && *found == "Color"
         )),
         "expected return-type-mismatch diag, got: {:?}",
         hir.diagnostics
@@ -894,7 +1552,7 @@ fn bool_returning_comparison_tail_is_clean() {
     // false positive that motivated typing comparison results as bool.
     let src = "\
 gt(int32 a, int32 b) -> bool { a > b }
-main() { print(\"{}\", gt(3, 1)); }
+main() { println(\"{}\", gt(3, 1)); }
 ";
     let hir = lower(src);
     assert!(
@@ -981,7 +1639,7 @@ fn complete_struct_literal_has_no_diagnostic() {
 #[test]
 fn comparison_in_if_condition_is_clean() {
     let hir = lower(
-        "main() {\n    mut int32 x = 0;\n    if x == 5 {\n        print(\"hi\");\n    }\n}\n",
+        "main() {\n    mut int32 x = 0;\n    if x == 5 {\n        println(\"hi\");\n    }\n}\n",
     );
     assert!(
         hir.diagnostics.is_empty(),
@@ -997,7 +1655,7 @@ fn comparison_in_if_condition_is_clean() {
 #[test]
 fn literal_array_index_out_of_bounds_is_rejected() {
     let hir =
-        lower("main() {\n    let [int32; 4] xs = [1, 2, 3, 4];\n    print(\"{}\", xs[9]);\n}\n");
+        lower("main() {\n    let [int32; 4] xs = [1, 2, 3, 4];\n    println(\"{}\", xs[9]);\n}\n");
     assert!(
         diags(&hir)
             .iter()
@@ -1011,7 +1669,7 @@ fn literal_array_index_out_of_bounds_is_rejected() {
 #[test]
 fn in_bounds_literal_index_is_clean() {
     let hir =
-        lower("main() {\n    let [int32; 4] xs = [1, 2, 3, 4];\n    print(\"{}\", xs[3]);\n}\n");
+        lower("main() {\n    let [int32; 4] xs = [1, 2, 3, 4];\n    println(\"{}\", xs[3]);\n}\n");
     assert!(
         hir.diagnostics.is_empty(),
         "expected no diagnostics, got: {:?}",
@@ -1024,18 +1682,19 @@ fn in_bounds_literal_index_is_clean() {
 #[test]
 fn array_len_is_usize_constant() {
     let hir = lower(
-        "main() {\n    let [int32; 5] xs = [1, 2, 3, 4, 5];\n    print(\"{}\", len(xs));\n}\n",
+        "main() {\n    let [int32; 5] xs = [1, 2, 3, 4, 5];\n    println(\"{}\", len(xs));\n}\n",
     );
     let main_id = *hir.items.functions.get("main").unwrap();
     let body = &hir.bodies[hir.functions[main_id].body.unwrap()];
     // `len` folds to `(usize)5`: a usize-typed cast over the literal length, so
     // it prints with `%zu` without a varargs type mismatch.
+    let types = hir.types.borrow();
     let has_len_const = body.exprs.iter().any(|(id, e)| {
         matches!(e, Expr::Cast { operand, .. }
             if matches!(body.exprs[*operand], Expr::Literal(Literal::Int(5))))
             && matches!(
-                body.expr_types.get(id),
-                Some(TypeRef::Path(n)) if n == "usize"
+                body.expr_types.get(id).map(|ty| types.lookup(*ty)),
+                Some(TypeKind::Path(n)) if n == "usize"
             )
     });
     assert!(
@@ -1063,7 +1722,7 @@ fn array_len_is_usize_constant() {
 /// diagnostics: the first is a type error, the second steers to `len(x)`.
 #[test]
 fn len_misuse_is_diagnosed() {
-    let non_array = lower("main() {\n    let int32 x = 0;\n    print(\"{}\", len(x));\n}\n");
+    let non_array = lower("main() {\n    let int32 x = 0;\n    println(\"{}\", len(x));\n}\n");
     assert_eq!(
         non_array.diagnostics.len(),
         1,
@@ -1072,7 +1731,7 @@ fn len_misuse_is_diagnosed() {
     );
 
     let dot_form =
-        lower("main() {\n    let [int32; 3] xs = [1, 2, 3];\n    print(\"{}\", xs.len);\n}\n");
+        lower("main() {\n    let [int32; 3] xs = [1, 2, 3];\n    println(\"{}\", xs.len);\n}\n");
     assert_eq!(
         dot_form.diagnostics.len(),
         1,
@@ -1088,7 +1747,7 @@ fn len_misuse_is_diagnosed() {
 #[test]
 fn len_of_computed_value_is_rejected() {
     let call_form = lower(
-        "mk() -> [int32; 3] {\n    [1, 2, 3]\n}\nmain() {\n    print(\"{}\", len(mk()));\n}\n",
+        "mk() -> [int32; 3] {\n    [1, 2, 3]\n}\nmain() {\n    println(\"{}\", len(mk()));\n}\n",
     );
     assert_eq!(
         call_form.diagnostics.len(),
@@ -1097,7 +1756,7 @@ fn len_of_computed_value_is_rejected() {
         call_form.diagnostics
     );
 
-    let literal_form = lower("main() {\n    print(\"{}\", len([1, 2, 3]));\n}\n");
+    let literal_form = lower("main() {\n    println(\"{}\", len([1, 2, 3]));\n}\n");
     assert_eq!(
         literal_form.diagnostics.len(),
         1,
@@ -1112,7 +1771,7 @@ fn len_of_computed_value_is_rejected() {
 #[test]
 fn len_through_reference_is_accepted() {
     let hir = lower(
-        "sum(&[int32; 3] r) -> usize {\n    len(r)\n}\nmain() {\n    mut [int32; 3] a = [1, 2, 3];\n    print(\"{}\", sum(&a));\n}\n",
+        "sum(&[int32; 3] r) -> usize {\n    len(r)\n}\nmain() {\n    mut [int32; 3] a = [1, 2, 3];\n    println(\"{}\", sum(&a));\n}\n",
     );
     assert!(
         hir.diagnostics.is_empty(),
@@ -1140,11 +1799,128 @@ fn binary_op_on_array_is_rejected() {
     }
 }
 
+/// `%` is integer-only: on a float it would lower to invalid C (`double %
+/// double`). Rejected in lowering whether the float is on the left or right.
+#[test]
+fn modulo_on_float_is_rejected() {
+    for src in [
+        "main() {\n    let float64 a = 5.5;\n    let x = a % 2.0;\n}\n",
+        "main() {\n    let float32 a = 5.5;\n    let x = a % 2.0;\n}\n",
+        "main() {\n    let float64 a = 5.5;\n    let int32 b = 2;\n    let x = b % a;\n}\n",
+    ] {
+        let hir = lower(src);
+        assert!(
+            diags(&hir)
+                .iter()
+                .any(|e| matches!(e, HirError::Type(TypeError::ModuloOnFloat))),
+            "`%` on a float must be rejected; got: {:?}",
+            hir.diagnostics
+        );
+    }
+}
+
+/// Integer `%` stays clean - the float guard must not catch it.
+#[test]
+fn modulo_on_int_is_clean() {
+    let hir = lower("main() {\n    let int32 a = 5;\n    let x = a % 2;\n}\n");
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ModuloOnFloat))),
+        "integer `%` must not trip the float guard; got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// `return expr;` in a void function is rejected (it reaches clang as a value
+/// returned from a `void` function, a hard error). Caught in HIR instead.
+#[test]
+fn return_value_in_void_is_rejected() {
+    let hir = lower("f() {\n    return 5;\n}\n");
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ReturnValueInVoid))),
+        "`return <value>` in a void function must be rejected; got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// `return;` with no value in a typed function is rejected (clang would reject
+/// the missing value). `main` is an ordinary function (the C entry point is a
+/// backend shim), so a bare void `main()` is NOT typed and a bare `return;` in
+/// it is clean - see `bare_return_in_void_main_is_clean`.
+#[test]
+fn return_missing_value_is_rejected() {
+    let hir = lower("g() -> int32 {\n    return;\n}\n");
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ReturnMissingValue { .. }))),
+        "bare `return;` in a typed function must be rejected; got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// `main` is no longer special-cased as `int`-returning in the front end: a bare
+/// void `main()` may use `return;` like any other void function. (The C entry
+/// point's `int` return is supplied by a backend shim, not a language rule.)
+#[test]
+fn bare_return_in_void_main_is_clean() {
+    let hir = lower("main() {\n    println(\"x\");\n    return;\n}\n");
+    assert!(
+        !diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::ReturnMissingValue { .. } | TypeError::ReturnValueInVoid)
+        )),
+        "a bare `return;` in a void `main` must be clean; got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// `return expr;` whose value type does not match the declared return type is
+/// rejected, same as a mismatching tail expression.
+#[test]
+fn return_wrong_type_is_rejected() {
+    let hir = lower("h() -> int32 {\n    return true;\n}\n");
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ReturnTypeMismatch { .. }))),
+        "a wrong-typed `return` must be rejected; got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A well-formed early return trips none of the return diagnostics: a matching
+/// typed `return expr;` and a bare `return;` in a void function are both clean.
+#[test]
+fn well_formed_early_return_is_clean() {
+    for src in [
+        "k() -> int32 {\n    return 7;\n}\n",
+        "v() {\n    println(\"x\");\n    return;\n}\n",
+    ] {
+        let hir = lower(src);
+        assert!(
+            !diags(&hir).iter().any(|e| matches!(
+                e,
+                HirError::Type(
+                    TypeError::ReturnValueInVoid
+                        | TypeError::ReturnMissingValue { .. }
+                        | TypeError::ReturnTypeMismatch { .. }
+                )
+            )),
+            "a well-formed early return must be clean; got: {:?}",
+            hir.diagnostics
+        );
+    }
+}
+
 /// `print` is a primitive-only intrinsic: a compound argument (array, struct,
 /// union) has no format and is rejected.
 #[test]
 fn print_compound_is_rejected() {
-    let arr = lower("main() {\n    let [int32; 2] a = [1, 2];\n    print(\"{}\", a);\n}\n");
+    let arr = lower("main() {\n    let [int32; 2] a = [1, 2];\n    println(\"{}\", a);\n}\n");
     assert!(
         diags(&arr).iter().any(|e| matches!(
             e,
@@ -1154,7 +1930,7 @@ fn print_compound_is_rejected() {
         arr.diagnostics
     );
     let strct = lower(
-        "structure P { int32 x, };\nmain() {\n    let P p = P { x: 1 };\n    print(\"{}\", p);\n}\n",
+        "structure P { int32 x, };\nmain() {\n    let P p = P { x: 1 };\n    println(\"{}\", p);\n}\n",
     );
     assert!(
         diags(&strct).iter().any(|e| matches!(
@@ -1170,7 +1946,8 @@ fn print_compound_is_rejected() {
 /// rejected like a too-large literal index (A4).
 #[test]
 fn negative_literal_index_is_rejected() {
-    let hir = lower("main() {\n    let [int32; 3] a = [1, 2, 3];\n    print(\"{}\", a[-1]);\n}\n");
+    let hir =
+        lower("main() {\n    let [int32; 3] a = [1, 2, 3];\n    println(\"{}\", a[-1]);\n}\n");
     assert!(
         diags(&hir)
             .iter()
@@ -1185,7 +1962,7 @@ fn negative_literal_index_is_rejected() {
 #[test]
 fn len_as_index_is_caught_out_of_bounds() {
     let hir =
-        lower("main() {\n    let [int32; 3] a = [1, 2, 3];\n    print(\"{}\", a[len(a)]);\n}\n");
+        lower("main() {\n    let [int32; 3] a = [1, 2, 3];\n    println(\"{}\", a[len(a)]);\n}\n");
     assert!(
         diags(&hir)
             .iter()
@@ -1199,7 +1976,7 @@ fn len_as_index_is_caught_out_of_bounds() {
 /// it is rejected.
 #[test]
 fn zero_length_array_is_rejected() {
-    let hir = lower("main() {\n    let [int32; 0] a = [];\n    print(\"{}\", 0);\n}\n");
+    let hir = lower("main() {\n    let [int32; 0] a = [];\n    println(\"{}\", 0);\n}\n");
     assert!(
         diags(&hir)
             .iter()
@@ -1209,18 +1986,146 @@ fn zero_length_array_is_rejected() {
     );
 }
 
-/// Arrays as struct/union fields are rejected this version (the wrapper typedef
-/// would be emitted after the struct; needs a codegen type-dependency sort).
+/// Arrays as struct/union fields are accepted now that codegen orders type
+/// declarations by dependency (the wrapper typedef is emitted before the struct
+/// that embeds it). No diagnostic.
 #[test]
-fn array_struct_field_is_rejected() {
+fn array_struct_field_is_accepted() {
     let hir = lower("structure Buf { [int32; 4] data, };\nmain() {}\n");
+    assert!(
+        diags(&hir).is_empty(),
+        "an array struct field must lower clean; got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A struct that embeds itself by value has infinite size: rejected with
+/// `RecursiveValueType`. Covers a direct self field, mutual recursion, and
+/// recursion through an array. A pointer field (`Node* next`) breaks the cycle
+/// and stays clean - see `pointer_self_reference_is_accepted`.
+#[test]
+fn value_recursive_struct_is_rejected() {
+    for src in [
+        "structure A { A a, };\nmain() {}\n",
+        "structure A { B b, };\nstructure B { A a, };\nmain() {}\n",
+        "structure A { [A; 4] xs, };\nmain() {}\n",
+    ] {
+        let hir = lower(src);
+        assert!(
+            diags(&hir)
+                .iter()
+                .any(|e| matches!(e, HirError::Type(TypeError::RecursiveValueType { .. }))),
+            "a value-recursive type must be rejected; got: {:?}",
+            hir.diagnostics
+        );
+    }
+}
+
+/// Mutual recursion is a single infinite-size cycle, so it is reported once (on
+/// the first-declared member), not once per member.
+#[test]
+fn mutual_recursion_reports_one_diagnostic() {
+    let hir = lower("structure A { B b, };\nstructure B { A a, };\nmain() {}\n");
+    let count = diags(&hir)
+        .iter()
+        .filter(|e| matches!(e, HirError::Type(TypeError::RecursiveValueType { .. })))
+        .count();
+    assert_eq!(
+        count, 1,
+        "a mutual recursion must report once, got {count}: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// `main` is the entry point; the C backend wraps it in `int main(void)` and
+/// calls it with no arguments, so a parameterized `main` is rejected (it would
+/// otherwise emit C that clang rejects).
+#[test]
+fn main_with_params_is_rejected() {
+    let hir = lower("main(int32 x) {\n    println(\"{}\", x);\n}\n");
     assert!(
         diags(&hir)
             .iter()
-            .any(|e| matches!(e, HirError::Unsupported(UnsupportedError::ArrayField))),
-        "expected an array-field diagnostic, got: {:?}",
+            .any(|e| matches!(e, HirError::Type(TypeError::MainHasParams))),
+        "a parameterized `main` must be rejected; got: {:?}",
         hir.diagnostics
     );
+}
+
+/// `main` may return any type - the C entry shim adapts it to the exit code -
+/// so a non-integer return is accepted, not rejected. (Only declaring
+/// parameters is an error; see `main_with_params_is_rejected`.)
+#[test]
+fn main_with_any_return_is_accepted() {
+    for src in [
+        "main() {\n    println(\"x\");\n}\n",
+        "main() -> int32 {\n    return 0;\n}\n",
+        "main() -> bool {\n    true\n}\n",
+        "main() -> float64 {\n    1.5\n}\n",
+    ] {
+        let hir = lower(src);
+        assert!(
+            !diags(&hir)
+                .iter()
+                .any(|e| matches!(e, HirError::Type(TypeError::MainHasParams))),
+            "any `main` return type must be accepted; got: {:?}",
+            hir.diagnostics
+        );
+    }
+}
+
+/// A bare function name in value position is a function pointer of the
+/// function's signature, not an error (the old `FnAsValue` rejection is gone). A
+/// correctly-typed binding lowers clean.
+#[test]
+fn function_name_as_value_is_accepted() {
+    let hir = lower(
+        "add(int32 a, int32 b) -> int32 { a + b }\n\
+         main() {\n    let (int32, int32) -> int32 op = add;\n    println(\"{}\", op(1, 2));\n}\n",
+    );
+    assert!(
+        diags(&hir).is_empty(),
+        "a function name as a value must lower clean; got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// Calling a value that is not a function pointer (`let int32 x = 5; x(3);`) is a
+/// `CallNonFunction` diagnostic, not a raw clang error.
+#[test]
+fn calling_a_non_function_is_rejected() {
+    let hir = lower("main() {\n    let int32 x = 5;\n    println(\"{}\", x(3));\n}\n");
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::CallNonFunction { .. }))),
+        "calling a non-function must be rejected; got: {:?}",
+        hir.diagnostics
+    );
+}
+
+/// A struct that refers to itself only through a pointer is finite and legal:
+/// the pointer is a soft edge (the forward-declared tag suffices). No diagnostic.
+#[test]
+fn pointer_self_reference_is_accepted() {
+    for src in [
+        // pointer to self
+        "structure Node { int32 v, Node* next, };\nmain() {}\n",
+        // array of pointers to self
+        "structure Node { int32 v, [&Node; 4] kids, };\nmain() {}\n",
+        // pointer to an array of self (finite: the named-tag wrapper is
+        // forward-declared, so the pointer is a soft edge)
+        "structure Node { int32 v, &[Node; 4] kids, };\nmain() {}\n",
+    ] {
+        let hir = lower(src);
+        assert!(
+            !diags(&hir)
+                .iter()
+                .any(|e| matches!(e, HirError::Type(TypeError::RecursiveValueType { .. }))),
+            "a pointer self-reference must be clean; got: {:?}",
+            hir.diagnostics
+        );
+    }
 }
 
 /// REDESIGN I3: a value-position match in a ternary-shaped `if` branch lowers
@@ -1290,7 +2195,7 @@ fn array_literal_return_coercion_keeps_length_check() {
 /// set: an undeclared name (call callee, bare value, struct-literal shorthand),
 /// a struct type name, a function name, and the `print`/`len` intrinsics outside
 /// callee position. Values (a local, an enum variant) and valid callees (a
-/// function call, `print(...)`) must stay clean.
+/// function call, `println(...)`) must stay clean.
 #[test]
 fn non_value_name_uses_are_rejected() {
     let resolve_err = |src: &str| -> Vec<ResolveError> {
@@ -1337,14 +2242,6 @@ fn non_value_name_uses_are_rejected() {
         ),
         "struct name in value position must be rejected"
     );
-    // A function name as a value (Eye has no function pointers).
-    assert!(
-        has(
-            "f() -> int32 { 1 }\nmain() {\n    let int32 y = f;\n}\n",
-            |e| matches!(e, FnAsValue { .. })
-        ),
-        "function name as a value must be rejected"
-    );
     // The `print`/`len` intrinsics outside callee position are undeclared.
     assert!(
         has("main() {\n    let int32 p = print;\n}\n", |e| matches!(
@@ -1356,11 +2253,67 @@ fn non_value_name_uses_are_rejected() {
 
     // Controls: real values and valid callees stay clean.
     assert!(
-        resolve_err("f() -> int32 { 1 }\nmain() {\n    print(\"{}\", f());\n}\n").is_empty(),
-        "a function call and `print(...)` are valid, not errors"
+        resolve_err("f() -> int32 { 1 }\nmain() {\n    println(\"{}\", f());\n}\n").is_empty(),
+        "a function call and `println(...)` are valid, not errors"
     );
     assert!(
         resolve_err("enum E = A | B;\nmain() {\n    let E y = A;\n}\n").is_empty(),
         "an enum variant is a value, not an error"
+    );
+}
+
+/// C seam: a variadic extern signature sets `Function::variadic`; an opaque
+/// `type Name;` lands in the opaque arena + namespace. A defined fn is never
+/// variadic (the parser rejects `...` outside extern).
+#[test]
+fn extern_variadic_and_opaque_type_collected() {
+    let hir = lower(
+        "extern {\n\
+         \x20   type FILE;\n\
+         \x20   printf(string fmt, ...) -> int32;\n\
+         \x20   fclose(FILE* f) -> int32;\n\
+         }\n\
+         main() {\n\
+         }\n",
+    );
+    assert!(diags(&hir).is_empty(), "{:?}", diags(&hir));
+
+    let printf = hir.items.functions["printf"];
+    assert!(hir.functions[printf].is_extern);
+    assert!(hir.functions[printf].variadic);
+    assert_eq!(hir.functions[printf].params.len(), 1);
+
+    let fclose = hir.items.functions["fclose"];
+    assert!(!hir.functions[fclose].variadic);
+
+    assert_eq!(hir.opaques.len(), 1);
+    let file = hir.items.opaques["FILE"];
+    assert_eq!(hir.opaques[file].name, "FILE");
+
+    let main = hir.items.functions["main"];
+    assert!(!hir.functions[main].variadic);
+}
+
+/// An opaque type name collides with the nominal-type namespaces: redeclaring
+/// a struct's name as `type Name;` is a duplicate-item error.
+#[test]
+fn opaque_type_duplicate_name_is_rejected() {
+    let hir = lower(
+        "structure FILE {\n\
+         \x20   int32 x,\n\
+         };\n\
+         extern {\n\
+         \x20   type FILE;\n\
+         }\n\
+         main() {\n\
+         }\n",
+    );
+    assert!(
+        diags(&hir).iter().any(|d| matches!(
+            d,
+            HirError::Resolve(ResolveError::DuplicateItem { name }) if name == "FILE"
+        )),
+        "expected a duplicate-item diagnostic, got: {:?}",
+        diags(&hir)
     );
 }

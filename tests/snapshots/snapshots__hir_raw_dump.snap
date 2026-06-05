@@ -1,0 +1,453 @@
+---
+source: tests/snapshots.rs
+expression: hir
+---
+HIR {
+    structs: Arena {
+        len: 0,
+        data: [],
+    },
+    unions: Arena {
+        len: 0,
+        data: [],
+    },
+    enums: Arena {
+        len: 0,
+        data: [],
+    },
+    consts: Arena {
+        len: 0,
+        data: [],
+    },
+    globals: Arena {
+        len: 0,
+        data: [],
+    },
+    opaques: Arena {
+        len: 0,
+        data: [],
+    },
+    fields: Arena {
+        len: 0,
+        data: [],
+    },
+    functions: Arena {
+        len: 1,
+        data: [
+            Function {
+                name: "main",
+                params: [],
+                ret: None,
+                body: Some(
+                    Idx::<Body>(0),
+                ),
+                is_extern: false,
+                variadic: false,
+                fn_type: Some(
+                    TypeRef(
+                        18,
+                    ),
+                ),
+            },
+        ],
+    },
+    bodies: Arena {
+        len: 1,
+        data: [
+            Body {
+                exprs: Arena {
+                    len: 5,
+                    data: [
+                        Literal(
+                            Int(
+                                42,
+                            ),
+                        ),
+                        Path(
+                            Unresolved(
+                                "println",
+                            ),
+                        ),
+                        Literal(
+                            String(
+                                "{}",
+                            ),
+                        ),
+                        Path(
+                            Local(
+                                Idx::<Local>(0),
+                            ),
+                        ),
+                        Call {
+                            callee: Idx::<Expr>(1),
+                            args: [
+                                Idx::<Expr>(2),
+                                Idx::<Expr>(3),
+                            ],
+                        },
+                    ],
+                },
+                stmts: Arena {
+                    len: 2,
+                    data: [
+                        Let {
+                            pat: Idx::<Pat>(0),
+                            ty: Some(
+                                TypeRef(
+                                    3,
+                                ),
+                            ),
+                            init: Some(
+                                Idx::<Expr>(0),
+                            ),
+                            mutable: false,
+                        },
+                        Expr(
+                            Idx::<Expr>(4),
+                        ),
+                    ],
+                },
+                pats: Arena {
+                    len: 1,
+                    data: [
+                        Bind(
+                            Idx::<Local>(0),
+                        ),
+                    ],
+                },
+                locals: Arena {
+                    len: 1,
+                    data: [
+                        Local {
+                            name: "x",
+                            ty: Some(
+                                TypeRef(
+                                    3,
+                                ),
+                            ),
+                            mutable: false,
+                            pat: Idx::<Pat>(0),
+                        },
+                    ],
+                },
+                block: [
+                    Idx::<Stmt>(0),
+                    Idx::<Stmt>(1),
+                ],
+                tail: None,
+                source_map: BodySourceMap {
+                    expr: ArenaMap {
+                        v: [
+                            Some(
+                                SyntaxNodePtr {
+                                    kind: Literal,
+                                    range: 26..29,
+                                },
+                            ),
+                            Some(
+                                SyntaxNodePtr {
+                                    kind: NameRef,
+                                    range: 35..42,
+                                },
+                            ),
+                            Some(
+                                SyntaxNodePtr {
+                                    kind: Literal,
+                                    range: 43..47,
+                                },
+                            ),
+                            Some(
+                                SyntaxNodePtr {
+                                    kind: NameRef,
+                                    range: 48..50,
+                                },
+                            ),
+                            Some(
+                                SyntaxNodePtr {
+                                    kind: CallExpr,
+                                    range: 35..51,
+                                },
+                            ),
+                        ],
+                        _ty: PhantomData<la_arena::Idx<hir::core::body::Expr>>,
+                    },
+                    stmt: ArenaMap {
+                        v: [
+                            Some(
+                                SyntaxNodePtr {
+                                    kind: LetStmt,
+                                    range: 8..35,
+                                },
+                            ),
+                            Some(
+                                SyntaxNodePtr {
+                                    kind: ExprStmt,
+                                    range: 35..53,
+                                },
+                            ),
+                        ],
+                        _ty: PhantomData<la_arena::Idx<hir::core::body::Stmt>>,
+                    },
+                    pat: ArenaMap {
+                        v: [
+                            Some(
+                                SyntaxNodePtr {
+                                    kind: LetStmt,
+                                    range: 8..35,
+                                },
+                            ),
+                        ],
+                        _ty: PhantomData<la_arena::Idx<hir::core::body::Pat>>,
+                    },
+                },
+                blocks: Arena {
+                    len: 1,
+                    data: [
+                        Block {
+                            stmts: [
+                                Idx::<Stmt>(0),
+                                Idx::<Stmt>(1),
+                            ],
+                            tail: None,
+                        },
+                    ],
+                },
+                block_source_map: ArenaMap {
+                    v: [
+                        Some(
+                            SyntaxNodePtr {
+                                kind: Block,
+                                range: 7..55,
+                            },
+                        ),
+                    ],
+                    _ty: PhantomData<la_arena::Idx<hir::core::body::Block>>,
+                },
+                expr_types: ArenaMap {
+                    v: [
+                        Some(
+                            TypeRef(
+                                3,
+                            ),
+                        ),
+                        None,
+                        Some(
+                            TypeRef(
+                                20,
+                            ),
+                        ),
+                        Some(
+                            TypeRef(
+                                3,
+                            ),
+                        ),
+                    ],
+                    _ty: PhantomData<la_arena::Idx<hir::core::body::Expr>>,
+                },
+                local_consts: Arena {
+                    len: 0,
+                    data: [],
+                },
+            },
+        ],
+    },
+    items: ItemScope {
+        functions: {
+            "main": Idx::<Function>(0),
+        },
+        structs: {},
+        unions: {},
+        enums: {},
+        consts: {},
+        globals: {},
+        opaques: {},
+        variants: {},
+    },
+    diagnostics: Sink {
+        entries: [],
+    },
+    types: RefCell {
+        value: TypeInterner {
+            arena: [
+                Error,
+                Path(
+                    "int8",
+                ),
+                Path(
+                    "int16",
+                ),
+                Path(
+                    "int32",
+                ),
+                Path(
+                    "int64",
+                ),
+                Path(
+                    "uint8",
+                ),
+                Path(
+                    "uint16",
+                ),
+                Path(
+                    "uint32",
+                ),
+                Path(
+                    "uint64",
+                ),
+                Path(
+                    "float32",
+                ),
+                Path(
+                    "float64",
+                ),
+                Path(
+                    "bool",
+                ),
+                Path(
+                    "char",
+                ),
+                Path(
+                    "string",
+                ),
+                Path(
+                    "usize",
+                ),
+                Path(
+                    "isize",
+                ),
+                Path(
+                    "ptr",
+                ),
+                Path(
+                    "void",
+                ),
+                Fn {
+                    params: [],
+                    ret: None,
+                },
+                Array {
+                    elem: TypeRef(
+                        5,
+                    ),
+                    len: 2,
+                },
+                Ref(
+                    TypeRef(
+                        19,
+                    ),
+                ),
+            ],
+            map: {
+                Path(
+                    "int64",
+                ): TypeRef(
+                    4,
+                ),
+                Path(
+                    "int32",
+                ): TypeRef(
+                    3,
+                ),
+                Path(
+                    "int8",
+                ): TypeRef(
+                    1,
+                ),
+                Path(
+                    "int16",
+                ): TypeRef(
+                    2,
+                ),
+                Path(
+                    "float64",
+                ): TypeRef(
+                    10,
+                ),
+                Path(
+                    "bool",
+                ): TypeRef(
+                    11,
+                ),
+                Path(
+                    "isize",
+                ): TypeRef(
+                    15,
+                ),
+                Array {
+                    elem: TypeRef(
+                        5,
+                    ),
+                    len: 2,
+                }: TypeRef(
+                    19,
+                ),
+                Path(
+                    "ptr",
+                ): TypeRef(
+                    16,
+                ),
+                Error: TypeRef(
+                    0,
+                ),
+                Path(
+                    "uint16",
+                ): TypeRef(
+                    6,
+                ),
+                Path(
+                    "string",
+                ): TypeRef(
+                    13,
+                ),
+                Path(
+                    "uint64",
+                ): TypeRef(
+                    8,
+                ),
+                Path(
+                    "usize",
+                ): TypeRef(
+                    14,
+                ),
+                Ref(
+                    TypeRef(
+                        19,
+                    ),
+                ): TypeRef(
+                    20,
+                ),
+                Path(
+                    "void",
+                ): TypeRef(
+                    17,
+                ),
+                Path(
+                    "float32",
+                ): TypeRef(
+                    9,
+                ),
+                Path(
+                    "uint8",
+                ): TypeRef(
+                    5,
+                ),
+                Path(
+                    "uint32",
+                ): TypeRef(
+                    7,
+                ),
+                Fn {
+                    params: [],
+                    ret: None,
+                }: TypeRef(
+                    18,
+                ),
+                Path(
+                    "char",
+                ): TypeRef(
+                    12,
+                ),
+            },
+        },
+    },
+}

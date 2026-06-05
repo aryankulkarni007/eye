@@ -8,7 +8,7 @@
 use logos::Logos;
 use memchr::memchr_iter;
 use memmap2::Mmap;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use smol_str::SmolStr;
 use text_size::{TextRange, TextSize};
 
@@ -88,6 +88,21 @@ pub struct Symbol(pub u32);
 /// hit yields the original `Symbol`. The table outlives the lexer: it is
 /// handed off in [`Lexed`].
 #[derive(Debug)]
+/// A string interner backed by a hash map. Every distinct string is stored once
+/// and identified by a lightweight [`Symbol`] handle.
+///
+/// ```
+/// # use lexer::Interner;
+/// let mut interner = Interner::new();
+/// let a = interner.intern("hello");
+/// let b = interner.intern("world");
+/// let c = interner.intern("hello"); // same as `a`
+///
+/// assert_eq!(interner.lookup(a), "hello");
+/// assert_eq!(interner.lookup(b), "world");
+/// assert_eq!(a, c);
+/// assert_eq!(interner.len(), 2);
+/// ```
 pub struct Interner {
     map: FxHashMap<SmolStr, Symbol>,
     vec: Vec<SmolStr>,
@@ -96,7 +111,7 @@ pub struct Interner {
 impl Interner {
     pub fn new() -> Self {
         Interner {
-            map: FxHashMap::default(),
+            map: FxHashMap::with_capacity_and_hasher(256, FxBuildHasher),
             vec: Vec::new(),
         }
     }
@@ -116,6 +131,12 @@ impl Interner {
 
     /// The text behind a [`Symbol`]. Panics if `id` came from another table.
     pub fn lookup(&self, id: Symbol) -> &str {
+        debug_assert!(
+            (id.0 as usize) < self.vec.len(),
+            "Symbol({}) out of range for this Interner (len {}); it likely came from a different table",
+            id.0,
+            self.vec.len()
+        );
         &self.vec[id.0 as usize]
     }
 
@@ -136,9 +157,10 @@ impl Default for Interner {
     }
 }
 
-/// line (one based), col (one based, byte offset from line start)
-/// WARNING: u32 to save memory; used to be usize
-/// warn because for big files could be insufficient
+/// A one-based source position: `line` and `col` (a byte offset from the line
+/// start, not a character count). Both are `u32` rather than `usize` to halve
+/// the struct's size; this caps a source file at ~4 billion lines and ~4 billion
+/// bytes per line, far beyond any real input.
 #[derive(Debug)]
 pub struct LineCol {
     pub line: u32,

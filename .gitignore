@@ -1,14 +1,24 @@
-# Rust build output
-/target/
+# rust
+target/
+**/target/
 
-# Generated Eye compiler outputs
-/eyesrc/*.c
-/eyesrc/*
-!/eyesrc/*.eye
+# fuzzing
+fuzz/corpus/
+fuzz/coverage/
+fuzz/artifacts/
 
-# Local editor and OS files
-/.cursor/
-.DS_Store
+# generated outputs
+eyesrc/*.c
+eyesrc/*.o
+eyesrc/main
+
+# local tooling
+.cursor/
+.cargo/
+.claude/
+
+# os/editor
+.ds_store
 *.swp
 *.swo
 *~

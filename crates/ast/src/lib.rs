@@ -126,6 +126,20 @@ impl LetStmt {
     }
 }
 
+impl GlobalDef {
+    /// `let` (read-only static) vs `mut` (mutable static) - the leading keyword.
+    pub fn kind(&self) -> Option<LetKind> {
+        self.syntax()
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find_map(|t| match t.kind() {
+                T![let] => Some(LetKind::Let),
+                T![mut] => Some(LetKind::Mut),
+                _ => None,
+            })
+    }
+}
+
 /// Which kind of literal a [`Literal`] node holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LiteralKind {
@@ -294,12 +308,21 @@ impl PrefixExpr {
     }
 }
 
-/// An assignment operator: plain `=` or compound `+=` / `-=`.
+/// An assignment operator: plain `=` or a compound form (`+=`, `-=`, `*=`,
+/// `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssignOp {
     Assign,
     AddAssign,
     SubAssign,
+    MulAssign,
+    DivAssign,
+    RemAssign,
+    BitAndAssign,
+    BitOrAssign,
+    BitXorAssign,
+    ShlAssign,
+    ShrAssign,
 }
 
 impl AssignOp {
@@ -309,7 +332,34 @@ impl AssignOp {
             T![=] => AssignOp::Assign,
             T![+=] => AssignOp::AddAssign,
             T![-=] => AssignOp::SubAssign,
+            T![*=] => AssignOp::MulAssign,
+            T![/=] => AssignOp::DivAssign,
+            T![%=] => AssignOp::RemAssign,
+            T![&=] => AssignOp::BitAndAssign,
+            T![|=] => AssignOp::BitOrAssign,
+            T![^=] => AssignOp::BitXorAssign,
+            T![<<=] => AssignOp::ShlAssign,
+            T![>>=] => AssignOp::ShrAssign,
             _ => return None,
+        })
+    }
+
+    /// The binary operator a compound assignment desugars to (`a += b` is
+    /// `a = a + b`), or `None` for the plain `=`. Lets MIR lowering map every
+    /// compound form uniformly instead of enumerating each one.
+    pub fn to_bin_op(self) -> Option<BinOp> {
+        Some(match self {
+            AssignOp::Assign => return None,
+            AssignOp::AddAssign => BinOp::Add,
+            AssignOp::SubAssign => BinOp::Sub,
+            AssignOp::MulAssign => BinOp::Mul,
+            AssignOp::DivAssign => BinOp::Div,
+            AssignOp::RemAssign => BinOp::Rem,
+            AssignOp::BitAndAssign => BinOp::BitAnd,
+            AssignOp::BitOrAssign => BinOp::BitOr,
+            AssignOp::BitXorAssign => BinOp::BitXor,
+            AssignOp::ShlAssign => BinOp::Shl,
+            AssignOp::ShrAssign => BinOp::Shr,
         })
     }
 }
@@ -320,6 +370,14 @@ impl fmt::Display for AssignOp {
             AssignOp::Assign => "=",
             AssignOp::AddAssign => "+=",
             AssignOp::SubAssign => "-=",
+            AssignOp::MulAssign => "*=",
+            AssignOp::DivAssign => "/=",
+            AssignOp::RemAssign => "%=",
+            AssignOp::BitAndAssign => "&=",
+            AssignOp::BitOrAssign => "|=",
+            AssignOp::BitXorAssign => "^=",
+            AssignOp::ShlAssign => "<<=",
+            AssignOp::ShrAssign => ">>=",
         };
         write!(f, "{}", op_str)
     }
@@ -360,7 +418,7 @@ main() {
     let y = 0;
     mut Point p = Point { x, y };
 
-    print(\"{}\", p);
+    println(\"{}\", p);
 }
 ";
 
@@ -555,7 +613,7 @@ main() {
         };
         let stmts: Vec<_> = f.body().unwrap().stmts().collect();
 
-        // `print("{}", p);`
+        // `println("{}", p);`
         let Stmt::ExprStmt(es) = &stmts[3] else {
             panic!("last stmt is an expr stmt");
         };
@@ -565,7 +623,7 @@ main() {
         let Some(Expr::NameRef(callee)) = call.callee() else {
             panic!("callee is a name");
         };
-        assert_eq!(callee.name().unwrap().text(), "print");
+        assert_eq!(callee.name().unwrap().text(), "println");
 
         let args: Vec<_> = call.arg_list().unwrap().args().collect();
         assert_eq!(args.len(), 2);

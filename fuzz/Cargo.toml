@@ -1,0 +1,50 @@
+[workspace]
+
+[package]
+name = "eye-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Workspace crate deps – path references because fuzz/ is NOT a workspace member
+# (cargo-fuzz manages its own workspace).
+lexer = { path = "../crates/lexer", package = "eye-lexer" }
+parser = { path = "../crates/parser", package = "eye-parser" }
+syntax = { path = "../crates/syntax", package = "eye-syntax" }
+token = { path = "../crates/token", package = "eye-token" }
+ast = { path = "../crates/ast", package = "eye-ast" }
+hir = { path = "../crates/hir", package = "eye-hir" }
+mir = { path = "../crates/mir", package = "eye-mir" }
+codegen = { path = "../crates/codegen", package = "eye-codegen" }
+diagnostics = { path = "../crates/diagnostics", package = "eye-diagnostics" }
+text-size = "1.1"
+
+[[bin]]
+name = "fuzz_lexer"
+path = "fuzz_targets/fuzz_lexer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_parser"
+path = "fuzz_targets/fuzz_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_full"
+path = "fuzz_targets/fuzz_full.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

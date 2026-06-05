@@ -86,7 +86,11 @@ pub struct Parser<'t> {
     /// `if x_struct_lit_then_block`. Restored to its prior value on entry to
     /// any inner parenthesised context so `if foo(Bar { x }) { ... }` still
     /// parses the inner literal.
-    no_struct_lit: Cell<bool>,
+    no_struct_lit: bool,
+    /// The cached kind of the current (non-trivia) token under the cursor.
+    /// Updated on every [`advance`](Parser::advance) and initialised in
+    /// [`Parser::new`]. Avoids repeated `nth(0)` lookahead loops.
+    current: SyntaxKind,
 }
 
 impl<'t> Parser<'t> {
@@ -96,14 +100,23 @@ impl<'t> Parser<'t> {
             pos: 0,
             // events run a small constant factor over the token count
             // (Advance per token, Open + Close per node); 2x is generous
-            // headroom so typical input fills this without reallocating
+            // headroom so typical input fills without this reallocating
             events: Vec::with_capacity(tokens.len() * 2),
             diagnostics: Sink::new(),
             fuel: Cell::new(FUEL),
-            no_struct_lit: Cell::new(false),
+            no_struct_lit: false,
+            current: SyntaxKind::Eof,
         };
         p.pos = p.skip_trivia(0);
+        p.current = p.current_kind();
         p
+    }
+
+    /// Kind of the non-trivia token at `self.pos`.
+    fn current_kind(&self) -> SyntaxKind {
+        self.tokens
+            .get(self.pos)
+            .map_or(SyntaxKind::Eof, |t| t.kind.into())
     }
 
     /// First non-trivia raw index at or after `idx`.
@@ -120,46 +133,59 @@ impl<'t> Parser<'t> {
 
     /// Kind of the token under the cursor.
     pub fn nth0(&self) -> SyntaxKind {
-        self.nth(0)
+        self.current
     }
 
-    /// Kind of the `n`-th non-trivia token ahead of the cursor. Past the end
-    /// of the stream this is always [`SyntaxKind::Eof`].
+    /// Kind of the `n`-th non-trivia token ahead of the cursor for `n > 0`.
+    /// Past the end of the stream this is always [`SyntaxKind::Eof`].
+    /// For `n == 0` use [`nth0`](Parser::nth0) - it is a cached field access.
     pub fn nth(&self, n: usize) -> SyntaxKind {
+        debug_assert!(n > 0, "use nth0() for the current token");
         let fuel = self.fuel.get();
         assert!(fuel != 0, "parser ran out of fuel - non-progressing loop");
         self.fuel.set(fuel - 1);
 
-        let mut idx = self.pos;
+        // start after the current non-trivia token (which is at self.pos)
+        let mut idx = self.pos + 1;
         let mut remaining = n;
-        loop {
-            if idx >= self.tokens.len() {
-                return SyntaxKind::Eof;
-            }
+        while idx < self.tokens.len() {
             let kind: SyntaxKind = self.tokens[idx].kind.into();
-            if kind.is_trivia() {
-                idx += 1;
-                continue;
+            if !kind.is_trivia() {
+                remaining -= 1;
+                if remaining == 0 {
+                    return kind;
+                }
             }
-            if remaining == 0 {
-                return kind;
-            }
-            remaining -= 1;
             idx += 1;
         }
+        SyntaxKind::Eof
     }
 
     pub fn at(&self, kind: SyntaxKind) -> bool {
-        self.nth(0) == kind
+        self.current == kind
     }
 
     pub fn at_eof(&self) -> bool {
-        self.at(SyntaxKind::Eof)
+        self.current == SyntaxKind::Eof
     }
 
     /// Range of the token under the cursor - the anchor for diagnostics.
+    /// When the cursor is past the last real token (at Eof) the returned range
+    /// is extended to the last consumed token so diagnostics never have a
+    /// zero-width anchor at end-of-file.
     fn cursor_range(&self) -> TextRange {
-        self.tokens[self.pos.min(self.tokens.len() - 1)].range
+        let raw = self.tokens[self.pos.min(self.tokens.len() - 1)].range;
+        if raw.is_empty() && self.pos > 0 {
+            self.tokens[self.pos - 1].range
+        } else {
+            raw
+        }
+    }
+
+    /// Range of the most recently consumed non-trivia token. Panics when no
+    /// token has been consumed yet (`pos == 0`).
+    fn last_consumed_range(&self) -> TextRange {
+        self.tokens[self.pos - 1].range
     }
 
     /// Consume the current non-trivia token.
@@ -168,6 +194,7 @@ impl<'t> Parser<'t> {
         self.events.push(Event::Advance);
         self.pos = self.skip_trivia(self.pos + 1);
         self.fuel.set(FUEL);
+        self.current = self.current_kind();
     }
 
     /// Consume the current token iff it is `kind`.
@@ -187,6 +214,22 @@ impl<'t> Parser<'t> {
         }
     }
 
+    /// Like [`expect`](Parser::expect) but anchors the diagnostic at the given
+    /// `start` range, spanning to the current cursor. Used when the expected
+    /// token belongs to a construct beginning at `start` so the underline
+    /// covers the full incomplete construct rather than just the next token.
+    pub fn expect_after(
+        &mut self,
+        kind: SyntaxKind,
+        start: TextRange,
+        err: impl Into<ParseError>,
+    ) {
+        if !self.eat(kind) {
+            let span = TextRange::new(start.start(), self.cursor_range().end());
+            self.error_at(span, err);
+        }
+    }
+
     /// Record a diagnostic anchored at the cursor. Emits an [`Event::Diagnostic`]
     /// but does not move the cursor.
     pub fn error(&mut self, err: impl Into<ParseError>) {
@@ -203,12 +246,31 @@ impl<'t> Parser<'t> {
     }
 
     /// Recovery: wrap the unexpected current token in an `ErrorNode` and
-    /// record `err`. Always makes progress.
+    /// record `err`. When already at EOF the error is recorded but no empty
+    /// `ErrorNode` is emitted — advancing would hit the `advance past Eof`
+    /// assertion.
     pub fn error_and_advance(&mut self, err: impl Into<ParseError>) {
         let m = self.open();
         self.error(err);
-        self.advance();
+        if !self.at_eof() {
+            self.advance();
+        }
         m.complete(self, SyntaxKind::ErrorNode);
+    }
+
+    /// Skip unexpected tokens until one of `sync_kinds` is found (or EOF).
+    /// Records `err` once at the starting position, then silently wraps each
+    /// subsequent token in an `ErrorNode` — no cascading per-token diagnostics.
+    /// The cursor ends on the sync token (which is not consumed).
+    pub fn sync(&mut self, sync_kinds: &[SyntaxKind], err: impl Into<ParseError>) {
+        // one diagnostic for the whole skipped region
+        self.error(err);
+        // silently consume tokens until a sync point
+        while !self.at_eof() && !sync_kinds.contains(&self.nth0()) {
+            let m = self.open();
+            self.advance();
+            m.complete(self, SyntaxKind::ErrorNode);
+        }
     }
 
     /// Start a node. Returns a [`Marker`] that *must* be completed or
@@ -229,13 +291,15 @@ impl<'t> Parser<'t> {
     /// Suppress (or re-enable) struct-literal recognition by the postfix loop.
     /// Returns the previous value so the caller can restore it - use the RAII
     /// pattern `let prev = p.set_no_struct_lit(true); ...; p.set_no_struct_lit(prev);`.
-    pub(crate) fn set_no_struct_lit(&self, v: bool) -> bool {
-        self.no_struct_lit.replace(v)
+    // A6: single boolean, not a stack. RAII save/restore works for current
+    // grammar but is fragile. A stack of booleans would be more robust.
+    pub(crate) fn set_no_struct_lit(&mut self, v: bool) -> bool {
+        std::mem::replace(&mut self.no_struct_lit, v)
     }
 
     /// True if struct-literal postfix is currently suppressed.
     pub(crate) fn no_struct_lit(&self) -> bool {
-        self.no_struct_lit.get()
+        self.no_struct_lit
     }
 }
 
@@ -387,6 +451,7 @@ fn build_tree(tokens: &[Token], mut events: Vec<Event>, source: &SourceText) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use diagnostics::Span;
     use lexer::{Lexer, SourceText};
 
     /// Lex + parse `src` into a [`Parse`].
@@ -406,7 +471,7 @@ structure Point {
 main() {
     let x = 0;
     mut Point p = Point { x, y };
-    print(\"{}\", p.x);
+    println(\"{}\", p.x);
 }
 ";
 
@@ -502,12 +567,99 @@ main() {
         assert_eq!(parse.green.to_string(), src);
     }
 
+    /// C seam: a variadic extern signature (`...` last) and an opaque extern
+    /// type (`type Name;`) both parse clean and round-trip.
+    #[test]
+    fn extern_variadic_and_opaque_type_parse_clean() {
+        let src = "extern {\n    type FILE;\n    printf(string fmt, ...) -> int32;\n    \
+                   fopen(string path, string mode) -> FILE*;\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `...` in a defined (non-extern) fn signature is a grammar rejection:
+    /// Eye has no varargs access, the marker is C-ABI only. Round-trips.
+    #[test]
+    fn variadic_in_defined_fn_is_rejected() {
+        let src = "log(string fmt, ...) {\n}\n";
+        let parse = parse_src(src);
+        assert!(
+            parse
+                .diagnostics
+                .entries()
+                .iter()
+                .any(|(_, d)| matches!(
+                    d,
+                    ParseError::Grammar(GrammarError::VariadicOutsideExtern)
+                )),
+            "expected a variadic-outside-extern diagnostic, got: {:?}",
+            parse.diagnostics
+        );
+        assert_eq!(parse.green.to_string(), src);
+    }
+
+    /// `...` must be last and needs a named parameter before it (C99).
+    #[test]
+    fn variadic_position_rules_are_rejected() {
+        let src = "extern {\n    bad(string fmt, ..., int32 n) -> int32;\n}\n";
+        let parse = parse_src(src);
+        assert!(
+            parse
+                .diagnostics
+                .entries()
+                .iter()
+                .any(|(_, d)| matches!(d, ParseError::Grammar(GrammarError::VariadicNotLast))),
+            "expected a variadic-not-last diagnostic, got: {:?}",
+            parse.diagnostics
+        );
+        assert_eq!(parse.green.to_string(), src);
+
+        let src = "extern {\n    bare(...) -> int32;\n}\n";
+        let parse = parse_src(src);
+        assert!(
+            parse
+                .diagnostics
+                .entries()
+                .iter()
+                .any(|(_, d)| matches!(
+                    d,
+                    ParseError::Grammar(GrammarError::VariadicNeedsNamedParam)
+                )),
+            "expected a variadic-needs-named-param diagnostic, got: {:?}",
+            parse.diagnostics
+        );
+        assert_eq!(parse.green.to_string(), src);
+    }
+
     /// A single comparison, and comparisons joined by `&&`, are fine.
     #[test]
     fn single_and_logically_joined_comparisons_are_clean() {
         let src = "main() {\n    let bool r = a < b && c < d;\n}\n";
         let parse = parse_src(src);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+    }
+
+    /// A struct pattern (`Ident { .. }`) is a `let`-destructure form only; in a
+    /// match arm it is a deliberate grammar rejection (S3, deferred). The whole
+    /// pattern is consumed so the error spans it and recovery round-trips.
+    #[test]
+    fn struct_pattern_in_match_arm_is_rejected() {
+        let src = "main() {\n    let int32 r = match p {\n        P { x, y } -> x,\n        _ -> 0,\n    };\n}\n";
+        let parse = parse_src(src);
+        assert!(
+            parse
+                .diagnostics
+                .entries()
+                .iter()
+                .any(|(_, d)| matches!(
+                    d,
+                    ParseError::Grammar(GrammarError::StructPatInMatchArm)
+                )),
+            "expected a struct-pat-in-match-arm diagnostic, got: {:?}",
+            parse.diagnostics
+        );
+        assert_eq!(parse.green.to_string(), src);
     }
 
     /// `if x = y { }` is the `=`/`==` footgun: an assignment in a condition is
@@ -538,7 +690,7 @@ main() {
 
     #[test]
     fn field_access_expression_parses_clean_and_round_trips() {
-        let src = "main() {\n    print(\"{}\", p.x);\n    print(\"{}\", p.y);\n}\n";
+        let src = "main() {\n    println(\"{}\", p.x);\n    println(\"{}\", p.y);\n}\n";
         let parse = parse_src(src);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
@@ -548,7 +700,7 @@ main() {
     fn nested_field_access_parses_clean_and_round_trips() {
         // Chained `a.b.c` exercises the postfix loop in `lhs`, producing
         // `FieldExpr(FieldExpr(a, b), c)` rather than two siblings.
-        let src = "main() {\n    print(\"{}\", a.b.c);\n}\n";
+        let src = "main() {\n    println(\"{}\", a.b.c);\n}\n";
         let parse = parse_src(src);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
@@ -958,11 +1110,133 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// Full `eyesrc/design.eye` parses with zero diagnostics and round-trips
+    /// Assert that every diagnostic has a non-empty range (not pointing at EOF).
+    fn assert_non_empty_spans(diags: &[(Span, ParseError)]) {
+        for (i, (span, _)) in diags.iter().enumerate() {
+            match span {
+                Span::Range(r) => assert!(
+                    !r.is_empty(),
+                    "diagnostic {i} has an empty range (likely points at EOF)"
+                ),
+                Span::Ptr(_) => {}
+            }
+        }
+    }
+
+    /// Missing `}` at end of block should point to the opening `{` (or function name).
+    #[test]
+    fn missing_block_close_reports_error_at_opening_brace() {
+        let parse = parse_src("main() {\n    let x = 5;\n");
+        let diags = parse.diagnostics.entries();
+        assert!(!diags.is_empty(), "expected a diagnostic for missing '}}'");
+        assert_non_empty_spans(diags);
+        assert_eq!(parse.green.to_string(), "main() {\n    let x = 5;\n");
+    }
+
+    /// Missing `)` in function call arg_list should point to the opening `(`.
+    #[test]
+    fn missing_arg_list_close_reports_error_at_open_paren() {
+        let parse = parse_src("main() {\n    foo(bar\n}\n");
+        let diags = parse.diagnostics.entries();
+        assert!(!diags.is_empty(), "expected a diagnostic for missing ')'");
+        assert_non_empty_spans(diags);
+        assert_eq!(parse.green.to_string(), "main() {\n    foo(bar\n}\n");
+    }
+
+    /// Missing `{` after function definition should point to the function name.
+    #[test]
+    fn missing_block_open_reports_error_at_fn_name() {
+        let parse = parse_src("main()\n    let x = 5;\n}\n");
+        let diags = parse.diagnostics.entries();
+        assert!(!diags.is_empty(), "expected a diagnostic for missing '{{'");
+        assert_non_empty_spans(diags);
+        assert_eq!(parse.green.to_string(), "main()\n    let x = 5;\n}\n");
+    }
+
+    /// Missing `{` after struct name should point to the struct name.
+    #[test]
+    fn missing_field_list_open_reports_error_at_struct_name() {
+        let parse = parse_src("structure Point\n    int32 x,\n    int32 y,\n};\n");
+        let diags = parse.diagnostics.entries();
+        assert!(!diags.is_empty(), "expected a diagnostic for missing '{{'");
+        assert_non_empty_spans(diags);
+        assert_eq!(
+            parse.green.to_string(),
+            "structure Point\n    int32 x,\n    int32 y,\n};\n"
+        );
+    }
+
+    /// Missing `{` after `if` condition should point to the `if` keyword.
+    #[test]
+    fn missing_if_body_open_reports_error_at_if_keyword() {
+        let parse = parse_src("main() {\n    if x\n        y = 5;\n}\n");
+        let diags = parse.diagnostics.entries();
+        assert!(!diags.is_empty(), "expected a diagnostic for missing '{{'");
+        assert_non_empty_spans(diags);
+        assert_eq!(parse.green.to_string(), "main() {\n    if x\n        y = 5;\n}\n");
+    }
+
+    /// Missing `(` after function name should point to the function name.
+    #[test]
+    fn missing_param_list_open_reports_error_at_fn_name() {
+        let parse = parse_src("main\n    int32 x,\n}\n");
+        let diags = parse.diagnostics.entries();
+        assert!(!diags.is_empty(), "expected a diagnostic for missing '('");
+        assert_non_empty_spans(diags);
+        assert_eq!(parse.green.to_string(), "main\n    int32 x,\n}\n");
+    }
+
+    /// Missing `]` in array literal should point to the opening `[`.
+    #[test]
+    fn missing_array_lit_close_reports_error_at_open_bracket() {
+        let parse = parse_src("main() {\n    let xs = [1, 2, 3\n}\n");
+        let diags = parse.diagnostics.entries();
+        assert!(!diags.is_empty(), "expected a diagnostic for missing ']'");
+        assert_non_empty_spans(diags);
+        assert_eq!(parse.green.to_string(), "main() {\n    let xs = [1, 2, 3\n}\n");
+    }
+
+    /// `[v; N]` parses as an `ArrayRepeat`; the list form `[a, b, c]` stays an
+    /// `ArrayLit`. The `;` after the first element selects the repeat form.
+    #[test]
+    fn array_repeat_vs_list_literal() {
+        let repeat = format!("{:#?}", parse_src("main() {\n    let xs = [7; 3];\n}\n").green);
+        assert!(repeat.contains("ArrayRepeat"), "expected ArrayRepeat in:\n{repeat}");
+        assert!(!repeat.contains("ArrayLit"), "got ArrayLit for repeat in:\n{repeat}");
+
+        let list = format!("{:#?}", parse_src("main() {\n    let xs = [1, 2, 3];\n}\n").green);
+        assert!(list.contains("ArrayLit"), "expected ArrayLit in:\n{list}");
+        assert!(!list.contains("ArrayRepeat"), "got ArrayRepeat for list in:\n{list}");
+    }
+
+    /// Missing `}` in match arm list should point to the opening `{`.
+    #[test]
+    fn missing_match_arms_close_reports_error_at_open_brace() {
+        let parse = parse_src("main() {\n    match x {\n        A -> 1,\n        B -> 2,\n");
+        let diags = parse.diagnostics.entries();
+        assert!(!diags.is_empty(), "expected a diagnostic for missing '}}'");
+        assert_non_empty_spans(diags);
+        assert_eq!(
+            parse.green.to_string(),
+            "main() {\n    match x {\n        A -> 1,\n        B -> 2,\n"
+        );
+    }
+
+    /// Missing `)` in parenthesized expression should point to the opening `(`.
+    #[test]
+    fn missing_paren_expr_close_reports_error_at_open_paren() {
+        let parse = parse_src("main() {\n    let r = (a + b\n}\n");
+        let diags = parse.diagnostics.entries();
+        assert!(!diags.is_empty(), "expected a diagnostic for missing ')'");
+        assert_non_empty_spans(diags);
+        assert_eq!(parse.green.to_string(), "main() {\n    let r = (a + b\n}\n");
+    }
+
+    /// Full `eyesrc/programs/design.eye` parses with zero diagnostics and round-trips
     /// byte-for-byte. This is the integration check the unit tests can miss.
     #[test]
     fn design_eye_parses_clean_and_round_trips() {
-        let src = include_str!("../../../eyesrc/design.eye");
+        let src = include_str!("../../../eyesrc/programs/design.eye");
         let parse = parse_src(src);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);

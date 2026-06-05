@@ -84,7 +84,15 @@ define_tokens! {
     #[regex(r"[\p{XID_Start}_]\p{XID_Continue}*")]
     Ident = "IDENT",
 
-    // literals
+    // literals.
+    // Integers carry an optional base prefix: `0x`/`0X` hex, `0b`/`0B` binary,
+    // `0o`/`0O` octal, else decimal. Logos picks the longest match, so `0x1F`
+    // takes the hex rule over the decimal rule (which would match only `0`).
+    // The literal's value is parsed in HIR (`parse_int_literal`); codegen emits
+    // it in decimal, so C never sees a `0b`/`0o` prefix it cannot read.
+    #[regex(r"0[xX][0-9a-fA-F]+")]
+    #[regex(r"0[bB][01]+")]
+    #[regex(r"0[oO][0-7]+")]
     #[regex(r"[0-9]+")]
     Int = "INT",
     #[regex(r"[0-9]+(\.[0-9]+)+")]
@@ -103,6 +111,8 @@ define_tokens! {
     Let = "LET",
     #[token("mut")]
     Mut = "MUT",
+    #[token("const")]
+    Const = "CONST",
     #[token("structure")]
     Structure = "STRUCTURE",
     #[token("enum")]
@@ -111,6 +121,9 @@ define_tokens! {
     Union = "UNION",
     #[token("extern")]
     Extern = "EXTERN",
+    // `type Name;` inside an extern block declares an opaque FFI type.
+    #[token("type")]
+    Type = "TYPE",
 
     // control flow
     #[token("if")]
@@ -123,6 +136,8 @@ define_tokens! {
     Break = "BREAK",
     #[token("continue")]
     Continue = "CONTINUE",
+    #[token("return")]
+    Return = "RETURN",
     #[token("match")]
     Match = "MATCH",
     #[token("as")]
@@ -162,6 +177,25 @@ define_tokens! {
     PlusEq = "+=",
     #[token("-=")]
     MinusEq = "-=",
+    // The remaining compound forms. Maximal munch keeps each whole: `<<=`
+    // outranks `<<`/`<=`/`<`, `>>=` outranks `>>`, and `/=` never collides with
+    // a comment (Eye line comments are `--`, blocks `--*`).
+    #[token("*=")]
+    StarEq = "*=",
+    #[token("/=")]
+    SlashEq = "/=",
+    #[token("%=")]
+    PercentEq = "%=",
+    #[token("&=")]
+    AmpEq = "&=",
+    #[token("|=")]
+    PipeEq = "|=",
+    #[token("^=")]
+    CaretEq = "^=",
+    #[token("<<=")]
+    ShlEq = "<<=",
+    #[token(">>=")]
+    ShrEq = ">>=",
 
     // operators
     #[token("+")]
@@ -211,6 +245,10 @@ define_tokens! {
     Farrow = "=>",
     #[token(".")]
     Dot = ".",
+    // variadic marker in an extern signature. Maximal munch keeps `...`
+    // whole over three `.` tokens.
+    #[token("...")]
+    Ellipsis = "...",
     #[token("&")]
     Amp = "&",
     #[token("|")]

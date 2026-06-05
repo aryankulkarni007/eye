@@ -4,19 +4,24 @@ use diagnostics::Sink;
 use smol_str::SmolStr;
 use syntax::{SyntaxNodePtr, SyntaxToken};
 
+use rustc_hash::FxHashMap;
+
 use super::LoweringCtx;
 use crate::core::{
-    Block, BlockId, Body, Expr, ExprId, HIR, HirError, Pat, PatId, Resolution, Stmt, StmtId, Text,
-    TypeRef,
+    Block, BlockId, Body, ConstValue, Expr, ExprId, HIR, HirError, Local, LocalId, Pat, PatId,
+    Resolution, Stmt, StmtId, Text, TypeKind, TypeRef,
 };
 
 impl<'a> LoweringCtx<'a> {
-    pub fn new(hir: &'a HIR) -> Self {
+    pub fn new(hir: &'a HIR, const_values: &'a FxHashMap<Text, ConstValue>) -> Self {
         Self {
             hir,
             body: Body::default(),
             scopes: super::Scopes::new(),
             diagnostics: Sink::new(),
+            fn_ret: None,
+            const_values,
+            fn_block_ptr: None,
         }
     }
 
@@ -89,6 +94,30 @@ impl<'a> LoweringCtx<'a> {
         id
     }
 
+    /// Create a circular `Pat::Bind(local) <-> Local { pat }`
+    /// reference atomically. Allocates `Pat::Missing` first (so the local has a
+    /// valid PatId), then patches it to `Bind(local_id)`. Previously each caller
+    /// hand-rolled the two-step sequence, creating a window where `pats[pat_id]`
+    /// reads as `Missing`. This helper keeps the window internal.
+    /// To revert: inline the body and return to the fragile two-step pattern.
+    pub(super) fn alloc_bind_pat(
+        &mut self,
+        name: Text,
+        ty: Option<TypeRef>,
+        mutable: bool,
+        ptr: SyntaxNodePtr,
+    ) -> (PatId, LocalId) {
+        let pat_id = self.alloc_pat(Pat::Missing, ptr);
+        let local_id = self.body.locals.alloc(Local {
+            name,
+            ty,
+            mutable,
+            pat: pat_id,
+        });
+        self.body.pats[pat_id] = Pat::Bind(local_id);
+        (pat_id, local_id)
+    }
+
     pub(super) fn alloc_block(&mut self, block: Block, ptr: SyntaxNodePtr) -> BlockId {
         let id = self.body.blocks.alloc(block);
         self.body.block_source_map.insert(id, ptr);
@@ -104,8 +133,16 @@ impl<'a> LoweringCtx<'a> {
     /// names produce [`Resolution::Unresolved`] so later diagnostics still
     /// have the original text.
     pub(super) fn resolve(&self, name: &Text) -> Resolution {
-        if let Some(id) = self.scopes.lookup(name) {
-            return Resolution::Local(id);
+        match self.scopes.lookup(name) {
+            Some(super::scopes::Binding::Local(id)) => return Resolution::Local(id),
+            Some(super::scopes::Binding::Const(id)) => return Resolution::LocalConst(id),
+            None => {}
+        }
+        if let Some(&id) = self.hir.items.consts.get(name) {
+            return Resolution::Const(id);
+        }
+        if let Some(&id) = self.hir.items.globals.get(name) {
+            return Resolution::Global(id);
         }
         if let Some(&id) = self.hir.items.functions.get(name) {
             return Resolution::Fn(id);
@@ -131,33 +168,37 @@ impl<'a> LoweringCtx<'a> {
 
     /// Look up the type of a struct or union field given the receiver type and
     /// field name.
-    pub(super) fn lookup_field_type(&self, struct_ty: &TypeRef, field_name: &Text) -> TypeRef {
-        match struct_ty {
-            TypeRef::Path(name) => {
+    pub(super) fn lookup_field_type(&self, struct_ty: TypeRef, field_name: &Text) -> TypeRef {
+        let kind = {
+            let types = self.hir.types.borrow();
+            types.lookup(struct_ty).clone()
+        };
+        match kind {
+            TypeKind::Path(name) => {
                 // Structs and unions share the field arena, so a member of
                 // either resolves the same way - check both namespaces.
                 let field_id = self
                     .hir
                     .items
                     .structs
-                    .get(name)
+                    .get(&name)
                     .and_then(|&id| self.hir.structs[id].field_index.get(field_name).copied())
                     .or_else(|| {
-                        self.hir.items.unions.get(name).and_then(|&id| {
+                        self.hir.items.unions.get(&name).and_then(|&id| {
                             self.hir.unions[id].field_index.get(field_name).copied()
                         })
                     });
                 if let Some(field_id) = field_id {
-                    return self.hir.fields[field_id].ty.clone();
+                    return self.hir.fields[field_id].ty;
                 }
-                TypeRef::Error
+                self.hir.types.borrow_mut().error_type()
             }
-            TypeRef::Ref(inner) | TypeRef::Ptr(inner) => {
+            TypeKind::Ref(inner) | TypeKind::Ptr(inner) => {
                 // NOTE: auto-deref: look through one level of indirection
                 self.lookup_field_type(inner, field_name)
             }
-            // arrays have no named fields
-            TypeRef::Array { .. } | TypeRef::Error => TypeRef::Error,
+            // arrays and function pointers have no named fields
+            _ => self.hir.types.borrow_mut().error_type(),
         }
     }
 }

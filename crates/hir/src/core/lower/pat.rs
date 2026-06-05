@@ -17,6 +17,13 @@ impl<'a> LoweringCtx<'a> {
         let ptr = SyntaxNodePtr::new(pat.syntax());
         match pat {
             ast::Pat::WildcardPat(_) => self.alloc_pat(Pat::Wildcard, ptr),
+            ast::Pat::LiteralPat(lp) => match lp.literal() {
+                Some(lit) => {
+                    let lit = super::types::lower_literal(&lit);
+                    self.alloc_pat(Pat::Literal(lit), ptr)
+                }
+                None => self.alloc_pat(Pat::Missing, ptr),
+            },
             ast::Pat::PathPat(pp) => {
                 let qual: Text = Self::text(pp.qualifier().and_then(|n| n.name()));
                 let vname: Text = Self::text(pp.name().and_then(|n| n.name()));

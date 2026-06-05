@@ -1,10 +1,10 @@
 //! Open document buffer keyed by URI.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 #[derive(Debug, Default)]
 pub struct DocumentStore {
-    by_uri: HashMap<String, String>,
+    by_uri: FxHashMap<String, String>,
 }
 
 impl DocumentStore {

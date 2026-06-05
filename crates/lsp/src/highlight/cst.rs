@@ -26,6 +26,18 @@ pub(crate) fn classify_spans(root: &SyntaxNode) -> Vec<ClassifiedSpan> {
 
 fn classify_item(item: &Item, spans: &mut Vec<ClassifiedSpan>) {
     match item {
+        Item::ConstDef(c) => {
+            push_token(c.name(), legend::VARIABLE, spans);
+            if let Some(value) = c.value() {
+                classify_expr(&value, spans);
+            }
+        }
+        Item::GlobalDef(g) => {
+            push_token(g.name(), legend::VARIABLE, spans);
+            if let Some(value) = g.value() {
+                classify_expr(&value, spans);
+            }
+        }
         Item::StructDef(s) => {
             push_token(s.name(), legend::STRUCT, spans);
             for field in s.field_list().into_iter().flat_map(|fl| fl.fields()) {
@@ -56,8 +68,13 @@ fn classify_item(item: &Item, spans: &mut Vec<ClassifiedSpan>) {
             }
         }
         Item::ExternBlock(eb) => {
-            for ef in eb.fns() {
-                classify_extern_fn(&ef, spans);
+            for item in eb.items() {
+                match item {
+                    ast::ExternItem::ExternFn(ef) => classify_extern_fn(&ef, spans),
+                    ast::ExternItem::ExternTypeDef(et) => {
+                        push_token(et.name(), legend::TYPE, spans);
+                    }
+                }
             }
         }
     }
@@ -97,6 +114,15 @@ fn classify_stmt(stmt: &Stmt, spans: &mut Vec<ClassifiedSpan>) {
                 classify_expr(&expr, spans);
             }
         }
+        Stmt::ConstDef(c) => {
+            push_token(c.name(), legend::VARIABLE, spans);
+            if let Some(ty) = c.ty() {
+                classify_type_ref(&ty, spans);
+            }
+            if let Some(value) = c.value() {
+                classify_expr(&value, spans);
+            }
+        }
     }
 }
 
@@ -116,6 +142,16 @@ fn classify_type_ref(ty: &TypeRef, spans: &mut Vec<ClassifiedSpan>) {
         TypeRef::ArrayType(at) => {
             if let Some(elem) = at.elem() {
                 classify_type_ref(&elem, spans);
+            }
+        }
+        TypeRef::FnType(ft) => {
+            for p in ft.params() {
+                if let Some(t) = p.ty() {
+                    classify_type_ref(&t, spans);
+                }
+            }
+            if let Some(ret) = ft.ret_type() {
+                classify_type_ref(&ret, spans);
             }
         }
     }
@@ -259,10 +295,17 @@ fn classify_pat(pat: &ast::Pat, spans: &mut Vec<ClassifiedSpan>) {
         }
         ast::Pat::BareIdentPat(bp) => {
             if let Some(n) = bp.name() {
+                // A5: variable-capture patterns like `match x { y => y }`
+                // highlight y as ENUM_MEMBER. Without name resolution we
+                // cannot distinguish binding from variant. Fix: defer to
+                // HIR or mark as VARIABLE until typeck is available.
                 push_token(n.name(), legend::ENUM_MEMBER, spans);
             }
         }
         ast::Pat::WildcardPat(_) => {}
+        // The literal token is already colored by the token-level pass
+        // (`token_kind`); no semantic override needed.
+        ast::Pat::LiteralPat(_) => {}
     }
 }
 

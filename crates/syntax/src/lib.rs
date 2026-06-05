@@ -36,33 +36,36 @@ syntax_kinds! {
     Eof, Illegal,
     Ident,
     Int, Float, String, True, False, Char,
-    Let, Mut, Structure, Enum, Union, Extern,
-    If, Else, Loop, Break, Continue,
+    Let, Mut, Const, Structure, Enum, Union, Extern, Type,
+    If, Else, Loop, Break, Continue, Return,
     Match, Underscore, As,
     Oparen, Cparen, Obrace, Cbrace, Obrack, Cbrack, Comma, Semicolon, Colon,
-    Assign, PlusEq, MinusEq,
+    Assign, PlusEq, MinusEq, StarEq, SlashEq, PercentEq, AmpEq, PipeEq, CaretEq, ShlEq, ShrEq,
     Plus, Minus, Star, Slash, Percent, And, Or, Eq, Neq, Lt, Gt, Leq, Geq,
     Tilde, Caret, Shl, Shr, Bang,
-    Arrow, Farrow, Dot, Amp, Pipe,
+    Arrow, Farrow, Dot, Ellipsis, Amp, Pipe,
     Wspace, Lcomment, Bcomment, Dcomment, Newline,
 
     // ---- node kinds (internal) ----
     SourceFile,
+    ConstDef,
+    GlobalDef,
     StructDef, FieldList, Field,
     EnumDef, Variant,
     UnionDef,
-    ExternBlock, ExternFn,
-    FnDef, ParamList, Param, Block,
-    IdentType, RefType, PtrType, ArrayType,
+    ExternBlock, ExternFn, ExternTypeDef,
+    FnDef, ParamList, Param, Variadic, Block,
+    IdentType, RefType, PtrType, ArrayType, FnType, FnTypeParam,
     LetStmt, ExprStmt,
     Literal, NameRef, CallExpr, ArgList,
-    ArrayLit, IndexExpr,
+    ArrayLit, ArrayRepeat, IndexExpr,
     BinExpr, PrefixExpr, FieldExpr,
-    AssignExpr, IfExpr, LoopExpr, BreakExpr, ContinueExpr,
+    AssignExpr, IfExpr, LoopExpr, BreakExpr, ContinueExpr, ReturnExpr,
     RefExpr, DerefExpr, CastExpr, ParenExpr,
     StructLit, StructLitFieldList, StructLitField,
-    MatchExpr, MatchArmList, MatchArm,
-    PathPat, BareIdentPat, WildcardPat,
+    MatchExpr, MatchArmList, MatchArm, MatchGuard,
+    PathPat, BareIdentPat, WildcardPat, LiteralPat,
+    StructPat, StructPatFieldList, StructPatField,
     ErrorNode,
 }
 
@@ -101,15 +104,18 @@ impl From<TokenKind> for SyntaxKind {
             T::Char => S::Char,
             T::Let => S::Let,
             T::Mut => S::Mut,
+            T::Const => S::Const,
             T::Structure => S::Structure,
             T::Enum => S::Enum,
             T::Union => S::Union,
             T::Extern => S::Extern,
+            T::Type => S::Type,
             T::If => S::If,
             T::Else => S::Else,
             T::Loop => S::Loop,
             T::Break => S::Break,
             T::Continue => S::Continue,
+            T::Return => S::Return,
             T::Match => S::Match,
             T::Underscore => S::Underscore,
             T::As => S::As,
@@ -125,6 +131,14 @@ impl From<TokenKind> for SyntaxKind {
             T::Assign => S::Assign,
             T::PlusEq => S::PlusEq,
             T::MinusEq => S::MinusEq,
+            T::StarEq => S::StarEq,
+            T::SlashEq => S::SlashEq,
+            T::PercentEq => S::PercentEq,
+            T::AmpEq => S::AmpEq,
+            T::PipeEq => S::PipeEq,
+            T::CaretEq => S::CaretEq,
+            T::ShlEq => S::ShlEq,
+            T::ShrEq => S::ShrEq,
             T::Plus => S::Plus,
             T::Minus => S::Minus,
             T::Star => S::Star,
@@ -146,6 +160,7 @@ impl From<TokenKind> for SyntaxKind {
             T::Arrow => S::Arrow,
             T::Farrow => S::Farrow,
             T::Dot => S::Dot,
+            T::Ellipsis => S::Ellipsis,
             T::Amp => S::Amp,
             T::Pipe => S::Pipe,
             T::Wspace => S::Wspace,
@@ -186,7 +201,11 @@ pub type SyntaxNodePtr = rowan::ast::SyntaxNodePtr<EyeLang>;
 /// to a node's edges. Tokens are visited in source order; the span runs from
 /// the first non-trivia token's start to the last non-trivia token's end. A
 /// node with no non-trivia tokens falls back to its full range.
-pub fn trimmed_text_range(node: &SyntaxNode) -> rowan::TextRange {
+///
+/// Returns `text_size::TextRange` - the same type rowan re-exports as
+/// `rowan::TextRange` - spelled by its `text_size` path to match the rest of
+/// the workspace (`diagnostics::Span`, lexer, parser).
+pub fn trimmed_text_range(node: &SyntaxNode) -> text_size::TextRange {
     let mut tokens = node
         .descendants_with_tokens()
         .filter_map(|e| e.into_token())
@@ -198,7 +217,7 @@ pub fn trimmed_text_range(node: &SyntaxNode) -> rowan::TextRange {
         .last()
         .map(|t| t.text_range().end())
         .unwrap_or_else(|| first.text_range().end());
-    rowan::TextRange::new(first.text_range().start(), end)
+    text_size::TextRange::new(first.text_range().start(), end)
 }
 
 /// Maps eye surface syntax - punctuation and keywords - to [`SyntaxKind`],
@@ -224,6 +243,7 @@ macro_rules! T {
     [']']   => { $crate::SyntaxKind::Cbrack };
     [->]    => { $crate::SyntaxKind::Arrow };
     [=>]    => { $crate::SyntaxKind::Farrow };
+    [...]   => { $crate::SyntaxKind::Ellipsis };
 
     // ---- arithmetic / logical operators ----
     [+]     => { $crate::SyntaxKind::Plus };
@@ -244,6 +264,14 @@ macro_rules! T {
     // ---- compound assignment ----
     [+=]    => { $crate::SyntaxKind::PlusEq };
     [-=]    => { $crate::SyntaxKind::MinusEq };
+    [*=]    => { $crate::SyntaxKind::StarEq };
+    [/=]    => { $crate::SyntaxKind::SlashEq };
+    [%=]    => { $crate::SyntaxKind::PercentEq };
+    [&=]    => { $crate::SyntaxKind::AmpEq };
+    [|=]    => { $crate::SyntaxKind::PipeEq };
+    [^=]    => { $crate::SyntaxKind::CaretEq };
+    [<<=]   => { $crate::SyntaxKind::ShlEq };
+    [>>=]   => { $crate::SyntaxKind::ShrEq };
 
     // ---- comparison ----
     [==]    => { $crate::SyntaxKind::Eq };
@@ -256,15 +284,18 @@ macro_rules! T {
     // ---- keywords ----
     [let]       => { $crate::SyntaxKind::Let };
     [mut]       => { $crate::SyntaxKind::Mut };
+    [const]     => { $crate::SyntaxKind::Const };
     [structure] => { $crate::SyntaxKind::Structure };
     [enum]      => { $crate::SyntaxKind::Enum };
     [union]     => { $crate::SyntaxKind::Union };
     [extern]    => { $crate::SyntaxKind::Extern };
+    [type]      => { $crate::SyntaxKind::Type };
     [if]        => { $crate::SyntaxKind::If };
     [else]      => { $crate::SyntaxKind::Else };
     [loop]      => { $crate::SyntaxKind::Loop };
     [break]     => { $crate::SyntaxKind::Break };
     [continue]  => { $crate::SyntaxKind::Continue };
+    [return]    => { $crate::SyntaxKind::Return };
     [match]     => { $crate::SyntaxKind::Match };
     [as]        => { $crate::SyntaxKind::As };
     [_]         => { $crate::SyntaxKind::Underscore };
@@ -389,6 +420,10 @@ mod tests {
             SyntaxKind::PathPat,
             SyntaxKind::BareIdentPat,
             SyntaxKind::WildcardPat,
+            SyntaxKind::LiteralPat,
+            SyntaxKind::StructPat,
+            SyntaxKind::StructPatFieldList,
+            SyntaxKind::StructPatField,
             SyntaxKind::ErrorNode,
         ];
         for k in kinds {

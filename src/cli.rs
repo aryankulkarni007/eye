@@ -26,9 +26,26 @@ pub struct Cli {
     #[arg(long)]
     pub dump_symbols: bool,
 
-    /// Print the fully-lowered HIR (items, bodies, expr arenas, types).
+    /// Print the fully-lowered HIR as a readable summary (counts, names, types).
     #[arg(long)]
     pub dump_hir: bool,
+
+    /// Print the fully-lowered HIR in full Debug representation.
+    #[arg(long)]
+    pub dump_hir_raw: bool,
+
+    /// Print the lowered MIR body for each function (readable summary).
+    #[arg(long)]
+    pub dump_mir: bool,
+
+    /// Print the lowered MIR body for each function (full Debug representation).
+    #[arg(long)]
+    pub dump_mir_raw: bool,
+
+    /// Print the generated C source to stdout (in addition to writing the .c
+    /// file and compiling the binary).
+    #[arg(long)]
+    pub dump_c: bool,
 
     /// Stop after lexing and parsing: exit 0 if the source is syntactically
     /// valid, non-zero otherwise. Skips HIR lowering, codegen and clang, and
@@ -38,4 +55,16 @@ pub struct Cli {
     /// parser only, no semantic analysis.
     #[arg(long)]
     pub check: bool,
+
+    /// Pipe the generated C through `clang-format` before writing it. Off by
+    /// default: the format pass forks a process and pipes the whole source on
+    /// every compile, which is pure cosmetics for the `.c` dump. Enable it when
+    /// you want a readable `.c`.
+    #[arg(long)]
+    pub format: bool,
+
+    /// Build the binary with `clang -O2`. Off by default: the dev/test loop
+    /// uses `-O0`, which links far faster. Enable it for a shipping build.
+    #[arg(long)]
+    pub release: bool,
 }

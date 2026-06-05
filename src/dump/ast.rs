@@ -47,6 +47,11 @@ fn describe_pat(pat: &ast::Pat) -> String {
         }
         ast::Pat::BareIdentPat(p) => describe_name_ref(p.name()),
         ast::Pat::WildcardPat(_) => "_".to_string(),
+        ast::Pat::LiteralPat(p) => p
+            .literal()
+            .and_then(|l| l.token())
+            .map(|t| t.text().to_string())
+            .unwrap_or_else(|| "<missing>".to_string()),
     }
 }
 
@@ -62,7 +67,8 @@ fn describe_struct_lit_field(field: &ast::StructLitField) -> String {
 fn describe_params(params: Option<ast::ParamList>) -> String {
     params
         .map(|pl| {
-            pl.params()
+            let mut parts: Vec<String> = pl
+                .params()
                 .map(|p| {
                     let ty = p
                         .ty()
@@ -70,8 +76,11 @@ fn describe_params(params: Option<ast::ParamList>) -> String {
                         .unwrap_or_else(|| "<missing>".to_string());
                     format!("{ty} {}", tok_text(p.name()))
                 })
-                .collect::<Vec<_>>()
-                .join(", ")
+                .collect();
+            if pl.variadic().is_some() {
+                parts.push("...".to_string());
+            }
+            parts.join(", ")
         })
         .unwrap_or_else(|| "<missing>".to_string())
 }
@@ -123,6 +132,17 @@ fn describe_expr(expr: &ast::Expr) -> String {
         }
         ast::Expr::ArrayLit(a) => {
             format!("[{}]", join_exprs(a.elems()))
+        }
+        ast::Expr::ArrayRepeat(ar) => {
+            let value = ar
+                .value()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            let count = ar
+                .count()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            format!("[{value}; {count}]")
         }
         ast::Expr::IndexExpr(ie) => {
             let base = ie
@@ -201,6 +221,10 @@ fn describe_expr(expr: &ast::Expr) -> String {
             None => "break".to_string(),
         },
         ast::Expr::ContinueExpr(_) => "continue".to_string(),
+        ast::Expr::ReturnExpr(r) => match r.expr() {
+            Some(expr) => format!("return {}", describe_expr(&expr)),
+            None => "return".to_string(),
+        },
         ast::Expr::RefExpr(r) => {
             let expr = r
                 .expr()
@@ -284,6 +308,21 @@ fn describe_type_ref(t: &ast::TypeRef) -> String {
                 .unwrap_or_else(|| "<missing>".to_string());
             format!("[{elem}; {len}]")
         }
+        ast::TypeRef::FnType(ft) => {
+            let params = ft
+                .params()
+                .map(|p| {
+                    p.ty()
+                        .map(|t| describe_type_ref(&t))
+                        .unwrap_or_else(|| "<missing>".to_string())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            match ft.ret_type() {
+                Some(ret) => format!("({params}) -> {}", describe_type_ref(&ret)),
+                None => format!("({params})"),
+            }
+        }
     }
 }
 
@@ -312,6 +351,17 @@ fn dump_stmt(stmt: &ast::Stmt, indent: &str) {
                 .unwrap_or_else(|| "<missing>".to_string());
             println!("{indent}expr {expr}");
         }
+        ast::Stmt::ConstDef(c) => {
+            let ty = c
+                .ty()
+                .map(|t| describe_type_ref(&t))
+                .unwrap_or_else(|| "<missing>".to_string());
+            let value = c
+                .value()
+                .map(|e| describe_expr(&e))
+                .unwrap_or_else(|| "<missing>".to_string());
+            println!("{indent}const {ty} {} = {value}", tok_text(c.name()));
+        }
     }
 }
 
@@ -326,9 +376,34 @@ fn dump_block(block: ast::Block, indent: &str) {
 
 /// Walks the typed AST and prints a structured summary.
 pub fn dump_ast(file: &ast::SourceFile) {
-    println!("\n--- AST ---");
     for item in file.items() {
         match item {
+            ast::Item::ConstDef(c) => {
+                let ty = c
+                    .ty()
+                    .map(|t| describe_type_ref(&t))
+                    .unwrap_or_else(|| "<missing>".to_string());
+                let value = c
+                    .value()
+                    .map(|e| describe_expr(&e))
+                    .unwrap_or_else(|| "<missing>".to_string());
+                println!("const {ty} {} = {value}", tok_text(c.name()));
+            }
+            ast::Item::GlobalDef(g) => {
+                let kw = match g.kind() {
+                    Some(ast::LetKind::Mut) => "mut",
+                    _ => "let",
+                };
+                let ty = g
+                    .ty()
+                    .map(|t| describe_type_ref(&t))
+                    .unwrap_or_else(|| "<missing>".to_string());
+                let value = g
+                    .value()
+                    .map(|e| describe_expr(&e))
+                    .unwrap_or_else(|| "<missing>".to_string());
+                println!("{kw} {ty} {} = {value}", tok_text(g.name()));
+            }
             ast::Item::StructDef(s) => {
                 println!("structure {}", tok_text(s.name()));
                 if let Some(fl) = s.field_list() {
@@ -369,10 +444,17 @@ pub fn dump_ast(file: &ast::SourceFile) {
             }
             ast::Item::ExternBlock(eb) => {
                 println!("extern");
-                for ef in eb.fns() {
-                    let params = describe_params(ef.param_list());
-                    let ret = describe_ret_type(ef.ret_type());
-                    println!("  extern fn {}({params}) -> {ret}", tok_text(ef.name()));
+                for item in eb.items() {
+                    match item {
+                        ast::ExternItem::ExternFn(ef) => {
+                            let params = describe_params(ef.param_list());
+                            let ret = describe_ret_type(ef.ret_type());
+                            println!("  extern fn {}({params}) -> {ret}", tok_text(ef.name()));
+                        }
+                        ast::ExternItem::ExternTypeDef(et) => {
+                            println!("  extern type {}", tok_text(et.name()));
+                        }
+                    }
                 }
             }
         }

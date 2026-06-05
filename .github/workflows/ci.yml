@@ -5,12 +5,133 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Weekly Monday 06:00 UTC – catch regressions from upstream dep changes
+    - cron: '0 6 * * 1'
+
+env:
+  CARGO_TERM_COLOR: always
+  # Deny warnings across the workspace
+  RUSTFLAGS: -D warnings
+
+# Cancel in-flight runs for the same branch when new commits land
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+
+  # ── Lint & Format ─────────────────────────────────────────────────────
+  lint:
+    name: Lint (clippy + fmt)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ── Unit + Integration + Property Tests ───────────────────────────────
+  test:
+    name: Test (stable)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+        env:
+          RUST_MIN_STACK: 8388608  # 8 MB – proptest strategies may recurse
+
+  # ── Corpus + Strict-C Gate ────────────────────────────────────────────
+  # Every eyesrc/ program must compile end-to-end (check_all.sh: Eye + clang),
+  # and its generated C must pass pedantic clang flags (check-c-strict.sh).
+  # The strict gate catches the "Eye accepts, C is wrong" bug class: missing
+  # coercions, illegal identifiers, nonstandard constructs, varargs mismatches.
+  corpus:
+    name: Corpus + strict C
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build
+      - run: ./eyesrc/check_all.sh
+      - run: ./scripts/check-c-strict.sh
+
+  # ── MSRV Check ────────────────────────────────────────────────────────
+  msrv:
+    name: MSRV check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Find the MSRV from the edition or a rust-toolchain.toml.
+      # We check against Rust 1.85.0 (the first stable that supports edition 2024).
+      # Adjust if you set an explicit MSRV in Cargo.toml later.
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace
+
+  # ── Benchmarks (regression gate, not published) ───────────────────────
+  bench:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Run each benchmark group with a small sample to verify they compile
+      # and execute without error. Full statistical benches are run locally.
+      - run: cargo bench --workspace -- --sample-size 10 --measurement-time 1
+        env:
+          RUST_MIN_STACK: 8388608
+
+  # ── Fuzz Targets (nightly-only) ──────────────────────────────────────
+  fuzz:
+    name: Fuzz (build check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-fuzz --locked
+      # Build-check every fuzz target (compilation only, no run).
+      # Add `--sanitizer address` for ASan builds in a nightly CI step.
+      - run: cargo fuzz build --fuzz-dir fuzz
+      # Smoke test: run each target for 1-2 seconds to catch panics.
+      - run: cargo fuzz run fuzz_lexer --fuzz-dir fuzz -- -max_total_time=2
+      - run: cargo fuzz run fuzz_parser --fuzz-dir fuzz -- -max_total_time=2
+      - run: cargo fuzz run fuzz_full --fuzz-dir fuzz -- -max_total_time=2
+
+  # ── Docs ──────────────────────────────────────────────────────────────
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Document all workspace crates (including private items) to catch
+      # broken intra-doc links or syntax errors in doc comments.
+      - run: cargo doc --workspace --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # ── SemVer Compatibility (optional) ───────────────────────────────────
+  # Uncomment if you add public API surface that needs SemVer tracking.
+  # api:
+  #   name: API compatibility
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@nightly
+  #     - uses: Swatinem/rust-cache@v2
+  #     - run: cargo install cargo-semver-checks --locked
+  #     - run: cargo semver-checks --workspace

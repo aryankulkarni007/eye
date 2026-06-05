@@ -1,10 +1,10 @@
-//! Eye language server: semantic highlighting and parser diagnostics.
+//! Eye language server: semantic highlighting and compiler diagnostics.
 //!
 //! Split by concern:
 //! - [`legend`]: semantic token legend and server capabilities
 //! - [`documents`]: open buffer store
 //! - [`highlight`]: semantic token computation (CST + lexer)
-//! - [`diagnostics`]: parser diagnostics as LSP diagnostics
+//! - [`diagnostics`]: lexer, parser and HIR diagnostics as LSP diagnostics
 //! - [`server`]: JSON-RPC loop
 
 pub mod diagnostics;

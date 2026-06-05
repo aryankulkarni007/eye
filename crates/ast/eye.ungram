@@ -15,15 +15,27 @@
 
 SourceFile = items:Item*
 
-Item = StructDef | FnDef | EnumDef | UnionDef | ExternBlock
+Item = ConstDef | GlobalDef | StructDef | FnDef | EnumDef | UnionDef | ExternBlock
+
+ConstDef = 'const' ty:TypeRef name:'ident' '=' value:Expr ';'
+
+// A top-level `let`/`mut` is addressable static storage (a global). Unlike a
+// const (a value), it has an address; `let` is read-only, `mut` is mutable.
+GlobalDef = ('let' | 'mut') ty:TypeRef name:'ident' '=' value:Expr ';'
 
 StructDef = 'structure' name:'ident' FieldList ';'
 
 UnionDef = 'union' name:'ident' FieldList ';'
 
-ExternBlock = 'extern' '{' fns:ExternFn* '}'
+ExternBlock = 'extern' '{' items:ExternItem* '}'
+
+ExternItem = ExternFn | ExternTypeDef
 
 ExternFn = name:'ident' ParamList ('->' ret_type:TypeRef)? ';'
+
+// An opaque FFI type: a named C type whose layout Eye never sees. Legal only
+// behind a pointer (`FILE*`) or reference; emitted as a forward typedef.
+ExternTypeDef = 'type' name:'ident' ';'
 
 FieldList = '{' fields:Field* '}'
 
@@ -35,20 +47,24 @@ Variant = '|'? name:'ident'
 
 FnDef = name:'ident' ParamList ('->' ret_type:TypeRef)? body:Block
 
-ParamList = '(' params:Param* ')'
+// `variadic` (`...`) is parsed only in an extern signature, after at least
+// one named parameter; the parser rejects it elsewhere.
+ParamList = '(' params:Param* variadic:Variadic? ')'
 
 Param = ty:TypeRef name:'ident' ','?
 
+Variadic = '...'
+
 Block = '{' stmts:Stmt* tail_expr:Expr? '}'
 
-Stmt = LetStmt | ExprStmt
+Stmt = LetStmt | ExprStmt | ConstDef
 
-LetStmt = ty:TypeRef? name:'ident' '=' value:Expr ';'
+LetStmt = ty:TypeRef? name:'ident'? pat:StructPat? '=' value:Expr ';'
 
 ExprStmt = Expr ';'
 
 // --- TYPE SYSTEM UPDATES ---
-TypeRef = IdentType | RefType | PtrType | ArrayType
+TypeRef = IdentType | RefType | PtrType | ArrayType | FnType
 
 IdentType = name:'ident'
 
@@ -58,12 +74,17 @@ PtrType = inner:TypeRef '*'
 
 ArrayType = '[' elem:TypeRef ';' len:Expr ']'
 
+FnType = '(' params:FnTypeParam* ')' ('->' ret_type:TypeRef)?
+
+FnTypeParam = ty:TypeRef ','?
+
 Expr =
   Literal
   | NameRef
   | CallExpr
   | StructLit
   | ArrayLit
+  | ArrayRepeat
   | IndexExpr
   | BinExpr
   | PrefixExpr
@@ -73,6 +94,7 @@ Expr =
   | LoopExpr
   | BreakExpr
   | ContinueExpr
+  | ReturnExpr
   | RefExpr
   | DerefExpr
   | CastExpr
@@ -88,6 +110,8 @@ CallExpr = callee:Expr ArgList
 ArgList = '(' args:Expr* ')'
 
 ArrayLit = '[' elems:Expr* ']'
+
+ArrayRepeat = '[' value:Expr ';' count:Expr ']'
 
 IndexExpr = base:Expr '[' index:Expr ']'
 
@@ -107,6 +131,8 @@ BreakExpr = 'break' expr:Expr?
 
 ContinueExpr = 'continue'
 
+ReturnExpr = 'return' expr:Expr?
+
 RefExpr = '&' expr:Expr
 
 DerefExpr = '*' expr:Expr
@@ -125,12 +151,25 @@ MatchExpr = 'match' scrut:Expr arm_list:MatchArmList
 
 MatchArmList = '{' arms:MatchArm* '}'
 
-MatchArm = pat:Pat '->' body:Expr ','?
+MatchArm = pat:Pat guard:MatchGuard? '->' body:Expr ','?
 
-Pat = PathPat | BareIdentPat | WildcardPat
+MatchGuard = 'if' expr:Expr
+
+Pat = PathPat | BareIdentPat | WildcardPat | LiteralPat
 
 PathPat = qualifier:NameRef '.' name:NameRef
 
 BareIdentPat = name:NameRef
 
 WildcardPat = '_'
+
+LiteralPat = Literal
+
+// Struct destructuring (irrefutable). Used by `let` today; match arms add it with
+// guards later. Every field must be bound (exhaustive; no `..` / ignore yet).
+StructPat = ty:NameRef field_list:StructPatFieldList
+
+StructPatFieldList = '{' fields:StructPatField* '}'
+
+// `x` binds the field `x`; `x: px` binds the field `x` to the name `px`.
+StructPatField = name:'ident' (':' binding:NameRef)?

@@ -6,17 +6,20 @@ use std::{
     thread,
 };
 
-use codegen::core::gen_mir;
-use hir::core::HIR;
+pub fn emit_and_compile(
+    input_path: &Path,
+    generated_c: &str,
+    format: bool,
+    release: bool,
+) -> anyhow::Result<()> {
+    let mut generated_c = generated_c.to_owned();
 
-pub fn emit_and_compile(input_path: &Path, hir: &HIR) -> anyhow::Result<()> {
-    // Track 2 is cut over: codegen lowers HIR to MIR, then mechanically prints
-    // MIR to C. The old HIR-walk emitter is deleted.
-    println!("generating c code...");
-    let mut generated_c = gen_mir(hir);
-
-    println!("formatting c code...");
-    generated_c = format_with_clang_format(generated_c);
+    // clang-format forks a process and pipes the whole source; skip it on the
+    // hot path unless the caller asked for a readable `.c` (`--format`).
+    if format {
+        println!("formatting c code...");
+        generated_c = format_with_clang_format(generated_c);
+    }
 
     let c_output_path = input_path.with_extension("c");
     let binary_path = input_path.with_extension("");
@@ -24,13 +27,15 @@ pub fn emit_and_compile(input_path: &Path, hir: &HIR) -> anyhow::Result<()> {
     c_file.write_all(generated_c.as_bytes())?;
     println!("c source written to {}", c_output_path.display());
 
+    // Default to `-O0` for the dev/test loop (links far faster); `--release`
+    // opts into `-O2` for a shipping build.
+    let opt_level = if release { "-O2" } else { "-O0" };
     println!("invoking c compiler...");
     let compile_status = Command::new("clang")
         .arg(&c_output_path)
         .arg("-o")
         .arg(&binary_path)
-        .arg("-O2")
-        .arg("-Wno-parentheses-equality") // NOTE: <- suppress the pedantic parens warning
+        .arg(opt_level)
         .status();
 
     match compile_status {
@@ -76,7 +81,7 @@ fn format_with_clang_format(source: String) -> String {
         }
     };
 
-    let input_bytes = source.clone().into_bytes();
+    let input_bytes = source.as_bytes().to_vec();
     let writer = thread::spawn(move || stdin.write_all(&input_bytes));
 
     let output = match child.wait_with_output() {

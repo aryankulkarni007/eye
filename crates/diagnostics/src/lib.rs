@@ -96,7 +96,7 @@ pub enum Severity {
 }
 
 /// The error class. The letter prefix sorts and groups codes by concern; the
-/// eight classes are the locked partition from `docs/DIAGNOSTICS.md`.
+/// eight classes are the locked partition from `docs/features/DIAGNOSTICS.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     Lex,

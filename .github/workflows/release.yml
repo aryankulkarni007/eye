@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Build release binaries for every supported target ────────────────
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            suffix: ""
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            suffix: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            suffix: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            suffix: ".exe"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          BIN="eye${{ matrix.suffix }}"
+          ARCHIVE="eye-${{ matrix.target }}"
+          mkdir -p "$ARCHIVE"
+          cp "target/${{ matrix.target }}/release/$BIN" "$ARCHIVE/"
+          # Copy LSP server as well
+          cp "target/${{ matrix.target }}/release/eye-lsp${{ matrix.suffix }}" "$ARCHIVE/" || true
+          cp README.md LICENSE "$ARCHIVE/" 2>/dev/null || true
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a "${ARCHIVE}.zip" "${ARCHIVE}"
+            echo "ARCHIVE_PATH=${ARCHIVE}.zip" >> $GITHUB_ENV
+          else
+            tar czf "${ARCHIVE}.tar.gz" "${ARCHIVE}"
+            echo "ARCHIVE_PATH=${ARCHIVE}.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE_PATH }}
+
+  # ── Create GitHub Release ────────────────────────────────────────────
+  release:
+    name: Create Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compute checksums
+        run: |
+          cd artifacts
+          for f in */*.tar.gz */*.zip; do
+            sha256sum "$f" >> checksums.txt
+          done
+          cat checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Eye ${{ github.ref_name }}
+          body_path: CHANGELOG.md 2>/dev/null || echo ""
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'pre') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
+          files: |
+            artifacts/*/*.tar.gz
+            artifacts/*/*.zip
+            artifacts/checksums.txt
+          generate_release_notes: true
