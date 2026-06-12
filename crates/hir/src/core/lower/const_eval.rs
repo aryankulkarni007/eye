@@ -23,14 +23,16 @@
 
 use ast::AstNode;
 use diagnostics::Sink;
-use la_arena::Arena;
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use smol_str::SmolStr;
 use syntax::SyntaxNodePtr;
 
 use super::scopes::{Binding, Scopes};
 use super::types::parse_int_literal;
-use crate::core::{ConstError, ConstId, ConstValue, GlobalId, HIR, HirError, LocalConst, Text};
+use crate::core::{
+    ConstError, ConstId, ConstValue, GlobalId, HIR, HirError, LocalConst, LocalConstId, Text,
+    TypedArena,
+};
 
 /// A lookup of const values by name. The top-level pass uses the finished
 /// name -> value map directly; body lowering layers block-scope consts over it
@@ -52,7 +54,7 @@ impl ConstEnv for FxHashMap<Text, ConstValue> {
 /// shadowing a const name hides it - the name is not a const there.
 pub(super) struct ScopedConsts<'a> {
     pub scopes: &'a Scopes,
-    pub local_consts: &'a Arena<LocalConst>,
+    pub local_consts: &'a TypedArena<LocalConst, LocalConstId>,
     pub globals: &'a FxHashMap<Text, ConstValue>,
 }
 
@@ -330,7 +332,11 @@ fn parse_literal(lit: &ast::Literal) -> Option<ConstValue> {
     let text = token.text();
     match lit.literal_kind()? {
         ast::LiteralKind::Int => Some(ConstValue::Int(parse_int_literal(text)? as i128)),
-        ast::LiteralKind::Float => text.parse::<f64>().ok().filter(|f| f.is_finite()).map(ConstValue::Float),
+        ast::LiteralKind::Float => text
+            .parse::<f64>()
+            .ok()
+            .filter(|f| f.is_finite())
+            .map(ConstValue::Float),
         // U3: non-finite float literals (inf, nan) from overflow not
         // rejected. Fix independently of type inference.
         ast::LiteralKind::Bool => Some(ConstValue::Bool(text == "true")),

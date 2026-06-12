@@ -6,7 +6,67 @@ use smol_str::SmolStr;
 use syntax::SyntaxNodePtr;
 
 use super::const_eval::{ConstEnv, fold_const_length};
-use crate::core::{ConstError, HirError, Literal, TypeInterner, TypeKind, TypeRef};
+use crate::core::{
+    ConstError, HIR, HirError, Literal, Text, TypeInterner, TypeKind, TypeRef, VisitTypeRef,
+};
+
+/// The primitive type names the pipeline accepts in a `Path` type. Mirrors
+/// the C backend's primitive rendering table (`codegen::core::types`): a
+/// `Path` name outside this list and the declared items would be emitted
+/// verbatim into C ("unknown type name", CLEAK L6).
+pub(super) fn is_primitive_type_name(n: &str) -> bool {
+    matches!(
+        n,
+        "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "usize"
+            | "isize"
+            | "float32"
+            | "float64"
+            | "bool"
+            | "char"
+            | "string"
+            | "ptr"
+    )
+}
+
+/// Every `Path` name inside `ty` that does not resolve to a declared type:
+/// not a primitive, struct, union, enum, or opaque extern type (L6, R012).
+/// Walks refs, pointers, arrays, and fn types, so `&Foo` and `[Foo; 2]`
+/// report `Foo`.
+pub(super) fn unknown_type_names(ty: TypeRef, types: &TypeInterner, hir: &HIR) -> Vec<Text> {
+    struct Unknown<'h> {
+        hir: &'h HIR,
+        out: Vec<Text>,
+    }
+    impl VisitTypeRef for Unknown<'_> {
+        fn visit_ty(&mut self, ty: TypeRef, types: &TypeInterner) -> bool {
+            if let TypeKind::Path(name) = types.lookup(ty) {
+                let known = is_primitive_type_name(name)
+                    || self.hir.items.structs.contains_key(name)
+                    || self.hir.items.unions.contains_key(name)
+                    || self.hir.items.enums.contains_key(name)
+                    || self.hir.items.opaques.contains_key(name);
+                if !known {
+                    self.out.push(name.clone());
+                }
+            }
+            true
+        }
+    }
+    let mut visitor = Unknown {
+        hir,
+        out: Vec::new(),
+    };
+    types.walk(ty, &mut visitor);
+    visitor.out
+}
 
 pub(super) fn lower_type_ref(
     ty: &ast::TypeRef,

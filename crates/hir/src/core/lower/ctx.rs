@@ -2,7 +2,7 @@
 
 use diagnostics::Sink;
 use smol_str::SmolStr;
-use syntax::{SyntaxNodePtr, SyntaxToken};
+use syntax::{StringTable, SyntaxNodePtr, SyntaxToken};
 
 use rustc_hash::FxHashMap;
 
@@ -13,15 +13,22 @@ use crate::core::{
 };
 
 impl<'a> LoweringCtx<'a> {
-    pub fn new(hir: &'a HIR, const_values: &'a FxHashMap<Text, ConstValue>) -> Self {
+    pub fn new(
+        hir: &'a HIR,
+        types: crate::core::TypeInterner,
+        const_values: &'a FxHashMap<Text, ConstValue>,
+        interner: &'a dyn StringTable,
+    ) -> Self {
         Self {
             hir,
+            types,
             body: Body::default(),
             scopes: super::Scopes::new(),
             diagnostics: Sink::new(),
             fn_ret: None,
             const_values,
             fn_block_ptr: None,
+            interner,
         }
     }
 
@@ -41,13 +48,19 @@ impl<'a> LoweringCtx<'a> {
         self.body
             .source_map
             .expr
-            .get(id)
+            .get(id.into())
             .cloned()
             .unwrap_or(default)
     }
 
-    pub(super) fn text(token: Option<SyntaxToken>) -> Text {
-        token.map(|t| SmolStr::from(t.text())).unwrap_or_default()
+    pub(super) fn text(&self, token: Option<SyntaxToken>) -> Text {
+        token
+            .map(|t| {
+                self.interner
+                    .get(t.text())
+                    .unwrap_or_else(|| SmolStr::from(t.text()))
+            })
+            .unwrap_or_default()
     }
 
     pub(super) fn missing_expr(&mut self, ptr: SyntaxNodePtr) -> ExprId {
@@ -71,26 +84,26 @@ impl<'a> LoweringCtx<'a> {
         ty: TypeRef,
     ) -> ExprId {
         let id = self.body.exprs.alloc(expr);
-        self.body.source_map.expr.insert(id, ptr);
-        self.body.expr_types.insert(id, ty);
+        self.body.source_map.expr.insert(id.into(), ptr);
+        self.body.expr_types.insert(id.into(), ty);
         id
     }
 
     pub(super) fn alloc_expr(&mut self, expr: Expr, ptr: SyntaxNodePtr) -> ExprId {
         let id = self.body.exprs.alloc(expr);
-        self.body.source_map.expr.insert(id, ptr);
+        self.body.source_map.expr.insert(id.into(), ptr);
         id
     }
 
     pub(super) fn alloc_stmt(&mut self, stmt: Stmt, ptr: SyntaxNodePtr) -> StmtId {
         let id = self.body.stmts.alloc(stmt);
-        self.body.source_map.stmt.insert(id, ptr);
+        self.body.source_map.stmt.insert(id.into(), ptr);
         id
     }
 
     pub(super) fn alloc_pat(&mut self, pat: Pat, ptr: SyntaxNodePtr) -> PatId {
         let id = self.body.pats.alloc(pat);
-        self.body.source_map.pat.insert(id, ptr);
+        self.body.source_map.pat.insert(id.into(), ptr);
         id
     }
 
@@ -120,12 +133,29 @@ impl<'a> LoweringCtx<'a> {
 
     pub(super) fn alloc_block(&mut self, block: Block, ptr: SyntaxNodePtr) -> BlockId {
         let id = self.body.blocks.alloc(block);
-        self.body.block_source_map.insert(id, ptr);
+        self.body.block_source_map.insert(id.into(), ptr);
         id
     }
 
-    pub(super) fn finish(self) -> (Body, Sink<HirError>) {
-        (self.body, self.diagnostics)
+    pub(super) fn finish(self) -> (Body, Sink<HirError>, crate::core::TypeInterner) {
+        (self.body, self.diagnostics, self.types)
+    }
+
+    /// R012 for body-position type annotations (`let` types, cast targets,
+    /// local `const` types): every `Path` name in the type must be a declared
+    /// type. Bodies lower after item collection, so unlike item signatures
+    /// (validated post-collect by `collect::validate_type_names`) this can
+    /// check eagerly.
+    pub(super) fn check_type_names(&mut self, ty: TypeRef, ptr: SyntaxNodePtr) {
+        // `ty` may be body-local (interned during this body's lowering), so
+        // resolve through the working interner, not the frozen scope one.
+        let names = {
+            let types = &self.types;
+            super::types::unknown_type_names(ty, types, self.hir)
+        };
+        for name in names {
+            self.emit(ptr, crate::core::ResolveError::UnknownTypeName { name });
+        }
     }
 
     /// Resolve a `NameRef`. Lexical scopes first, then module-level values,
@@ -163,14 +193,14 @@ impl<'a> LoweringCtx<'a> {
         let block = &self.body.blocks[block_id];
         block
             .tail
-            .and_then(|expr_id| self.body.expr_types.get(expr_id).cloned())
+            .and_then(|expr_id| self.body.expr_types.get(expr_id.into()).cloned())
     }
 
     /// Look up the type of a struct or union field given the receiver type and
     /// field name.
     pub(super) fn lookup_field_type(&self, struct_ty: TypeRef, field_name: &Text) -> TypeRef {
         let kind = {
-            let types = self.hir.types.borrow();
+            let types = &self.types;
             types.lookup(struct_ty).clone()
         };
         match kind {
@@ -191,14 +221,14 @@ impl<'a> LoweringCtx<'a> {
                 if let Some(field_id) = field_id {
                     return self.hir.fields[field_id].ty;
                 }
-                self.hir.types.borrow_mut().error_type()
+                self.types.error_type()
             }
             TypeKind::Ref(inner) | TypeKind::Ptr(inner) => {
                 // NOTE: auto-deref: look through one level of indirection
                 self.lookup_field_type(inner, field_name)
             }
             // arrays and function pointers have no named fields
-            _ => self.hir.types.borrow_mut().error_type(),
+            _ => self.types.error_type(),
         }
     }
 }

@@ -39,12 +39,12 @@ pub fn compile_file(input_path: &Path) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Root node is not a valid SourceFile"))?;
 
     // hir lowering
-    let hir = lower_source_file(file_ast);
+    let hir = lower_source_file(file_ast, &lexed.interner);
     if !hir.diagnostics.is_empty() {
         return Err(anyhow::anyhow!("HIR errors in {}", input_path.display()));
     }
 
     // mir lowering + c code generation
-    let _c_source = codegen::core::gen_mir(&hir);
+    let _c_source = codegen::core::gen_mir(&hir, &mir::lower_all(&hir));
     Ok(())
 }

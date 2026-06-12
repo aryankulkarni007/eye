@@ -127,20 +127,35 @@ is established. New order (docs/design/CLEAK.md "Fix order"):
 3. DONE: mechanical fixes - M3 exhaustive-match uninit-temp UB (last arm now
    `else`), L8 C-keyword names (R010 at collect), L9 `f(void)` prototypes,
    L10 empty-string `data[1]`, L11 `%p`/`ptr` printf specs + `(void*)` casts.
-4. NEXT ACTION: coercion-point unification - one `coerce(expr, expected)`
-   replacing the 4 scattered `maybe_decay` sites and covering struct-lit
-   fields + array-lit elements (closes L1/L2/most-of-L4, un-breaks lang.eye;
-   remove its XFAIL entry when green). Mechanical companions in the same
-   pass: L3 call arity, L5 struct-name existence, L6 field-type names, L7
-   `ptr` indexing reject, M1 literal range check at annotated sites.
-5. THEN: typeck split (Horizon 1), scoped by CLEAK's T section; then match
-   S4/S5 on the typed pipeline; freeze LAST (acceptance test: lang.eye
-   compiles and runs clean, strict gate fully green with no XFAIL).
+4. DONE (2026-06-11 later): coercion-point unification -
+   `LoweringCtx::coerce` (crates/hir/src/core/lower/coerce.rs) at all six
+   expected-type sites (let init / call arg / return / tail / struct-lit
+   field / array-lit element). Closed L1, L2, L4's literal half, plus
+   companions: L3 arity (T026, variadic = minimum; indirect calls stay
+   unchecked pending fn-type variadic flag), L5 unknown struct literal
+   (R011), L6 unknown type names (R012, post-collect for signatures + eager
+   for body annotations/casts; sizeof exempt by design), L7 `ptr` indexing
+   (T027) + deref sibling (T028), M1/M1b literal range sweep (T030), P1
+   `ptr` arithmetic reject (T029, decided: reject). NEW miscompile found and
+   fixed: M4 positional struct literal silently dropped its values (T031,
+   named-only now). lang.eye's blocker is gone (compiled + ran); it is XFAIL
+   again only because it now uses `const [char*; 24]` (scalar-only const
+   floor, DEFER row - a feature gap, not a C-leak).
+5. NEXT ACTION: typeck split (Horizon 1), scoped by CLEAK's T section (M2
+   operand unification, cross-element/array types, struct-lit value types,
+   arg types, cast lattice, `mir_type_of` fallback hardening, fn-type
+   variadic flag); then match S4/S5 on the typed pipeline; freeze LAST
+   (acceptance test: lang.eye compiles and runs clean, strict gate fully
+   green with no XFAIL).
 
-State: 297 tests green, clippy 0, corpus 41/41 + 2 XFAIL, strict gate 41/41,
-all uncommitted. `println` reclassification (prime-era stdlib eviction) and
-match S4/S5 scope notes from the earlier 2026-06-11 session still stand;
-match work is now sequenced after typeck.
+State: 305 tests green, clippy clean (one accepted Arc Send/Sync note in the
+new eye-database crate), corpus 43/43 with 2 documented XFAIL (linkedlist
+intentional, lang.eye const-aggregate), strict gate 41/41, all uncommitted.
+The salsa driver migration (eye-database crate, in progress this session)
+gained the stop-at-first-errored-phase contract; snapshot harness terminators
+now key on `c source written`. `println` reclassification (prime-era stdlib
+eviction) and match S4/S5 scope notes from the earlier 2026-06-11 session
+still stand; match work is now sequenced after typeck.
 
 ## Compiler architecture
 

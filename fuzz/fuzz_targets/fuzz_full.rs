@@ -34,11 +34,11 @@ fuzz_target!(|data: &[u8]| {
     };
 
     // Phase 4: HIR lowering + diagnostics (must not panic)
-    let hir = lower_source_file(file_ast);
+    let hir = lower_source_file(file_ast, &lexed.interner);
     if !hir.diagnostics.is_empty() {
         return; // skip – semantic errors
     }
 
     // Phase 5: MIR lowering + C codegen (must not panic)
-    let _c_source = codegen::core::gen_mir(&hir);
+    let _c_source = codegen::core::gen_mir(&hir, &mir::lower_all(&hir));
 });

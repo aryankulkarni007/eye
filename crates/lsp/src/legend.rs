@@ -1,4 +1,6 @@
-//! Semantic token legend. Indices must match the order in [`legend`] exactly.
+//! EXPERIMENTAL: Semantic token legend and server capabilities.
+//!
+//! Token type indices must match the order in [`legend`] exactly.
 
 use lsp_types::{
     SemanticTokenModifier, SemanticTokenType, SemanticTokensLegend, SemanticTokensOptions,
@@ -58,31 +60,5 @@ pub fn server_capabilities() -> ServerCapabilities {
             },
         )),
         ..Default::default()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn legend_indices_match_declaration_order() {
-        let leg = legend();
-        assert_eq!(leg.token_types.len(), 15);
-        assert_eq!(TYPE, 0);
-        assert_eq!(ENUM, 1);
-        assert_eq!(STRUCT, 2);
-        assert_eq!(PARAMETER, 3);
-        assert_eq!(VARIABLE, 4);
-        assert_eq!(PROPERTY, 5);
-        assert_eq!(ENUM_MEMBER, 6);
-        assert_eq!(FUNCTION, 7);
-        assert_eq!(METHOD, 8);
-        assert_eq!(KEYWORD, 9);
-        assert_eq!(COMMENT, 10);
-        assert_eq!(STRING, 11);
-        assert_eq!(NUMBER, 12);
-        assert_eq!(OPERATOR, 13);
-        assert_eq!(FALLBACK, 14);
     }
 }

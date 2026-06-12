@@ -37,10 +37,7 @@ pub enum TypeKind {
     /// `*T` — a raw-pointer type.
     Ptr(TypeRef),
     /// `[T; N]` — a fixed-size array.
-    Array {
-        elem: TypeRef,
-        len: u64,
-    },
+    Array { elem: TypeRef, len: u64 },
     /// `(A, B) -> R` — a function-pointer type.
     Fn {
         params: Vec<TypeRef>,
@@ -55,10 +52,17 @@ pub enum TypeKind {
 ///
 /// All well-known primitive types (`int32`, `bool`, ...) are pre-injected at
 /// construction.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeInterner {
     arena: Vec<TypeKind>,
     map: FxHashMap<TypeKind, TypeRef>,
+    /// Pre-cached read-only handles for the most-requested builtin types.
+    /// Avoids needing `&mut self` just to look up `int32`, `uint8`, `usize`,
+    /// or the error sentinel.
+    error_ty: TypeRef,
+    int32_ty: TypeRef,
+    uint8_ty: TypeRef,
+    usize_ty: TypeRef,
 }
 
 impl TypeInterner {
@@ -67,28 +71,48 @@ impl TypeInterner {
         let mut this = TypeInterner {
             arena: Vec::new(),
             map: FxHashMap::with_capacity_and_hasher(32, FxBuildHasher),
+            error_ty: TypeRef(0),
+            int32_ty: TypeRef(0),
+            uint8_ty: TypeRef(0),
+            usize_ty: TypeRef(0),
         };
         this.inject_builtins();
         this
     }
 
     fn inject_builtins(&mut self) {
-        self.intern(TypeKind::Error);
+        self.error_ty = self.intern(TypeKind::Error);
         for name in &[
-            "int8", "int16", "int32", "int64",
-            "uint8", "uint16", "uint32", "uint64",
-            "float32", "float64",
-            "bool", "char", "string",
-            "usize", "isize", "ptr", "void",
+            "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32",
+            "float64", "bool", "char", "string", "usize", "isize", "ptr", "void",
         ] {
             self.intern(TypeKind::Path(Text::from(*name)));
         }
+        // Pre-cached handles for the most-requested builtins (read-only
+        // lookups that avoid needing `&mut self`).
+        self.int32_ty = self.intern(TypeKind::Path(Text::from("int32")));
+        self.uint8_ty = self.intern(TypeKind::Path(Text::from("uint8")));
+        self.usize_ty = self.intern(TypeKind::Path(Text::from("usize")));
     }
 
-    /// Convenience: intern or retrieve the canonical error sentinel type.
-    pub fn error_type(&mut self) -> TypeRef {
-        // Pre-injected, so always returns the same handle
-        self.intern(TypeKind::Error)
+    /// Convenience: retrieve the canonical error sentinel type (read-only).
+    pub fn error_type(&self) -> TypeRef {
+        self.error_ty
+    }
+
+    /// Retrieve the pre-injected `int32` handle (read-only).
+    pub fn int32_ty(&self) -> TypeRef {
+        self.int32_ty
+    }
+
+    /// Retrieve the pre-injected `uint8` handle (read-only).
+    pub fn uint8_ty(&self) -> TypeRef {
+        self.uint8_ty
+    }
+
+    /// Retrieve the pre-injected `usize` handle (read-only).
+    pub fn usize_ty(&self) -> TypeRef {
+        self.usize_ty
     }
 
     /// Intern a [`TypeKind`], returning its canonical [`TypeRef`] handle.
@@ -261,5 +285,3 @@ pub trait VisitTypeRef {
     /// returned `false` for the same node (i.e. the subtree was pruned).
     fn visit_ty_post(&mut self, _ty: TypeRef, _types: &TypeInterner) {}
 }
-
-

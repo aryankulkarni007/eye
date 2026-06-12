@@ -4,7 +4,7 @@
 //! Each benchmark measures the full pipeline (lex → parse → HIR → MIR → codegen)
 //! on a representative `.eye` program.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use ast::AstNode;
 use hir::core::lower_source_file;
@@ -77,28 +77,28 @@ fn hir_lower(c: &mut Criterion) {
     let mut group = c.benchmark_group("hir-lower");
     group.sample_size(30);
 
-    let minimal_parse = {
+    let (minimal_parse, minimal_interner) = {
         let source = SourceText::new(MINIMAL_PROGRAM.to_string());
         let lexed = Lexer::new(&source).tokenize();
-        parser::parse(&lexed.tokens, &source)
+        (parser::parse(&lexed.tokens, &source), lexed.interner)
     };
-    let complex_parse = {
+    let (complex_parse, complex_interner) = {
         let source = SourceText::new(COMPLEX_PROGRAM.to_string());
         let lexed = Lexer::new(&source).tokenize();
-        parser::parse(&lexed.tokens, &source)
+        (parser::parse(&lexed.tokens, &source), lexed.interner)
     };
 
     group.bench_function("minimal", |b| {
         let file = ast::SourceFile::cast(minimal_parse.green.clone()).unwrap();
         b.iter(|| {
-            let _ = lower_source_file(black_box(file.clone()));
+            let _ = lower_source_file(black_box(file.clone()), &minimal_interner);
         });
     });
 
     group.bench_function("complex", |b| {
         let file = ast::SourceFile::cast(complex_parse.green.clone()).unwrap();
         b.iter(|| {
-            let _ = lower_source_file(black_box(file.clone()));
+            let _ = lower_source_file(black_box(file.clone()), &complex_interner);
         });
     });
 
@@ -114,7 +114,7 @@ fn mir_lower(c: &mut Criterion) {
         let lexed = Lexer::new(&source).tokenize();
         let parse = parser::parse(&lexed.tokens, &source);
         let file = ast::SourceFile::cast(parse.green).unwrap();
-        lower_source_file(file)
+        lower_source_file(file, &lexed.interner)
     };
 
     group.bench_function("first_fn", |b| {
@@ -124,6 +124,7 @@ fn mir_lower(c: &mut Criterion) {
         b.iter(|| {
             let _ = lower_function(
                 black_box(&hir),
+                &hir.types,
                 black_box(body),
                 black_box(hir.functions[fn_id].params.len()),
                 black_box(hir.functions[fn_id].ret),
@@ -144,8 +145,8 @@ fn full_pipeline(c: &mut Criterion) {
             let lexed = Lexer::new(&source).tokenize();
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
-            let hir = lower_source_file(file);
-            let _ = codegen::core::gen_mir(&hir);
+            let hir = lower_source_file(file, &lexed.interner);
+            let _ = codegen::core::gen_mir(&hir, &mir::lower_all(&hir));
         });
     });
 
@@ -155,8 +156,8 @@ fn full_pipeline(c: &mut Criterion) {
             let lexed = Lexer::new(&source).tokenize();
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
-            let hir = lower_source_file(file);
-            let _ = codegen::core::gen_mir(&hir);
+            let hir = lower_source_file(file, &lexed.interner);
+            let _ = codegen::core::gen_mir(&hir, &mir::lower_all(&hir));
         });
     });
 

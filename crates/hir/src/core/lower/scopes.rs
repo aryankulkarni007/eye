@@ -25,7 +25,8 @@ impl Scopes {
     }
 
     pub fn push(&mut self) {
-        self.stack.push(FxHashMap::with_capacity_and_hasher(4, FxBuildHasher));
+        self.stack
+            .push(FxHashMap::with_capacity_and_hasher(4, FxBuildHasher));
     }
 
     pub fn pop(&mut self) {

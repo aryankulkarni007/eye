@@ -4,34 +4,39 @@ expression: mir
 ---
 fn main:
 MirBody {
-    locals: Arena {
-        len: 2,
-        data: [
-            MirLocal {
-                ty: TypeRef(
-                    3,
-                ),
-                name: Some(
-                    "x",
-                ),
-                mutable: false,
-            },
-            MirLocal {
-                ty: TypeRef(
-                    3,
-                ),
-                name: Some(
-                    "y",
-                ),
-                mutable: false,
-            },
-        ],
+    locals: TypedArena {
+        inner: Arena {
+            len: 2,
+            data: [
+                MirLocal {
+                    ty: TypeRef(
+                        3,
+                    ),
+                    name: Some(
+                        "x",
+                    ),
+                    mutable: false,
+                },
+                MirLocal {
+                    ty: TypeRef(
+                        3,
+                    ),
+                    name: Some(
+                        "y",
+                    ),
+                    mutable: false,
+                },
+            ],
+        },
+        _phantom: PhantomData<fn() -> mir::core::LocalId>,
     },
     params: [],
     body: MirBlock {
         stmts: [
             Let {
-                local: Idx::<MirLocal>(0),
+                local: LocalId(
+                    Idx::<MirLocal>(0),
+                ),
                 init: Some(
                     Use(
                         Const(
@@ -43,13 +48,17 @@ MirBody {
                 ),
             },
             Let {
-                local: Idx::<MirLocal>(1),
+                local: LocalId(
+                    Idx::<MirLocal>(1),
+                ),
                 init: Some(
                     Binary(
                         Add,
                         Copy(
                             Local(
-                                Idx::<MirLocal>(0),
+                                LocalId(
+                                    Idx::<MirLocal>(0),
+                                ),
                             ),
                         ),
                         Const(
@@ -70,7 +79,9 @@ MirBody {
                         ),
                         Copy(
                             Local(
-                                Idx::<MirLocal>(1),
+                                LocalId(
+                                    Idx::<MirLocal>(1),
+                                ),
                             ),
                         ),
                     ],

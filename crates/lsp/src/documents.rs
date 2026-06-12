@@ -1,42 +1,62 @@
-//! Open document buffer keyed by URI.
+//! Open-document state backed by salsa [`SourceFileInput`] handles.
+//!
+//! Each open file gets a salsa input handle; mutating the handle's text
+//! bumps the database revision so cached queries are automatically
+//! invalidated.
 
+use database::{Database, SourceFileInput};
+use salsa::Setter as _;
 use rustc_hash::FxHashMap;
 
+/// Maps URIs to their salsa input handles.
+///
+/// EXPERIMENTAL: single-file only. A multi-file database would hold
+/// `FxHashMap<FileId, SourceFileInput>` plus a URI-to-FileId index.
 #[derive(Debug, Default)]
 pub struct DocumentStore {
-    by_uri: FxHashMap<String, String>,
+    files: FxHashMap<String, SourceFileInput>,
 }
 
 impl DocumentStore {
-    pub fn open(&mut self, uri: &str, text: String) {
-        self.by_uri.insert(uri.to_string(), text);
+    /// Register a newly opened document, creating a salsa input handle.
+    pub fn open(&mut self, db: &mut Database, uri: &str, path: String, text: String) {
+        let input = SourceFileInput::new(db, path, text);
+        self.files.insert(uri.to_string(), input);
     }
 
-    pub fn change(&mut self, uri: &str, text: String) {
-        self.by_uri.insert(uri.to_string(), text);
+    /// Update a document's text. Bumps the database revision, which
+    /// automatically invalidates any cached query results.
+    pub fn change(&mut self, db: &mut Database, uri: &str, text: String) {
+        if let Some(input) = self.files.get_mut(uri) {
+            input.set_text(db).to(text);
+        }
     }
 
+    /// Remove a closed document.
     pub fn close(&mut self, uri: &str) {
-        self.by_uri.remove(uri);
+        self.files.remove(uri);
     }
 
-    pub fn get(&self, uri: &str) -> Option<&str> {
-        self.by_uri.get(uri).map(String::as_str)
+    /// The salsa input handle for an open document, if any.
+    pub fn get(&self, uri: &str) -> Option<&SourceFileInput> {
+        self.files.get(uri)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use database::Database;
 
     #[test]
     fn open_change_close() {
+        let mut db = Database::default();
         let mut store = DocumentStore::default();
-        store.open("file:///a.eye", "let x = 1;".into());
-        assert_eq!(store.get("file:///a.eye"), Some("let x = 1;"));
-        store.change("file:///a.eye", "let y = 2;".into());
-        assert_eq!(store.get("file:///a.eye"), Some("let y = 2;"));
+        store.open(&mut db, "file:///a.eye", "a.eye".into(), "let x = 1;".into());
+        assert!(store.get("file:///a.eye").is_some());
+        store.change(&mut db, "file:///a.eye", "let y = 2;".into());
+        assert!(store.get("file:///a.eye").is_some());
         store.close("file:///a.eye");
-        assert_eq!(store.get("file:///a.eye"), None);
+        assert!(store.get("file:///a.eye").is_none());
     }
 }

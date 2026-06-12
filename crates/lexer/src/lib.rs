@@ -141,6 +141,13 @@ impl Interner {
     }
 
     /// Number of distinct strings interned.
+    /// Retrieve the canonical [`SmolStr`] for `s` if it was already interned.
+    /// Returns `None` if `s` is not in the table. The clone is O(1) — short
+    /// strings (≤22 bytes) are inline; long strings bump an `Arc` refcount.
+    pub fn get(&self, s: &str) -> Option<SmolStr> {
+        self.map.get(s).map(|&sym| self.vec[sym.0 as usize].clone())
+    }
+
     pub fn len(&self) -> usize {
         self.vec.len()
     }
@@ -193,6 +200,7 @@ impl std::ops::Deref for SourceHolder {
     }
 }
 
+#[derive(Debug)]
 pub struct SourceText {
     pub source: SourceHolder,
     pub lstart: Vec<usize>,
@@ -363,6 +371,44 @@ impl<'a> Lexer<'a> {
             interner,
             diags,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EXPERIMENTAL: `StringTable` impl + per-file context (QUERY.md)
+// ---------------------------------------------------------------------------
+
+use syntax::StringTable;
+
+impl StringTable for Interner {
+    fn get(&self, s: &str) -> Option<SmolStr> {
+        self.map.get(s).map(|&sym| self.vec[sym.0 as usize].clone())
+    }
+}
+
+/// EXPERIMENTAL: Per-source-file context bundling the source text and the
+/// lexer's string table. This is the single-file precursor to a multi-file
+/// `SourceCache` (QUERY.md) that would map `FileId → SourceFile`.
+///
+/// The `StringTable` impl delegates to the inner [`Interner`], so HIR lowering
+/// can request canonical strings without knowing which concrete type owns the
+/// table — crucial when the source comes from a project database rather than a
+/// single invocation.
+#[derive(Debug)]
+pub struct SourceFile {
+    pub text: SourceText,
+    pub interner: Interner,
+}
+
+impl SourceFile {
+    pub fn new(text: SourceText, interner: Interner) -> Self {
+        Self { text, interner }
+    }
+}
+
+impl StringTable for SourceFile {
+    fn get(&self, s: &str) -> Option<SmolStr> {
+        self.interner.get(s)
     }
 }
 

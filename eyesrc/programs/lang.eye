@@ -26,10 +26,13 @@
 -- parser at some point
 
 extern {
+    memcpy(ptr dst, ptr src, usize n) -> ptr;
+    rand() -> int32;
     printf(string fmt, ...) -> int32;
     malloc(usize size) -> ptr;
     free(ptr p);
-    exit(int code);
+    strlen(string s) -> usize;
+    exit(int32 code);
 }
 
 -- in the generated C code this is expanded to 0
@@ -72,9 +75,7 @@ init(Arena* arena, usize size) -> ptr {
     -- NOTE: this language is not supposed to have
     -- NUL types but casting to 0 is (void *)0 in C
     -- which is the definition of NULL
-    if size == 0 {
-        return NULL;
-    };
+    if size == 0 { return NULL; };
 
     arena.cap = size;
     arena.buffer = malloc(arena.cap);
@@ -91,26 +92,23 @@ init(Arena* arena, usize size) -> ptr {
 
 alloc(Arena* arena, usize size) -> ptr {
     let usize current_addr = (arena.buffer + arena.off) as usize;
-    if arena.off + size > arena.cap {
-        return NULL;
-    };
+    if arena.off + size > arena.cap { return NULL; };
 
     arena.off += size;
     current_addr as ptr
 }
 
 align_alloc(Arena *arena, usize size) -> ptr {
-    let usize current_addr = (arena.buffer + arena.off) as usize;
-    let usize mask = 8 - 1;
-    let usize padding = (7 - (current_addr & mask)) & mask;
+    let usize addr = (arena.buffer + arena.off) as usize;
+    let usize alignment = 8;
+    let usize mask = alignment - 1;
+    let usize padding = (-addr) & mask;
 
     let usize total_size = size + padding;
-    if arena.off + total_size > arena.cap {
-        return NULL;
-    };
+    if arena.off + total_size > arena.cap { return NULL; };
 
     arena.off += total_size;
-    current_addr as ptr
+    addr as ptr
 }
 
 reset(Arena* arena) {
@@ -128,7 +126,156 @@ reset(Arena* arena) {
 }
 
 generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
+    -- NOTE: that these should be able to be const globals or locals
+    -- but current code doesn't allow for aggregates in const-expr
+    let [char*; 24] consonants = [
+                                    "p", "b", "t",  "d",  "k",  "g", "f",  "v",
+                                    "s", "z", "sh", "zh", "ch", "j", "th", "dh",
+                                    "m", "n", "ng", "l",  "r",  "w", "y",  "h"
+                                 ];
+    let [char*; 10] vowels = [
+        "a", -- cat
+        "A", -- father
+        "e", -- bed
+        "i", -- machine
+        "I", -- bit
+        "o", -- boat
+        "O", -- thought
+        "u", -- goose
+        "U", -- book
+        "@", -- schwa
+    ];
 
+    mut usize onset_count = 0;
+    mut usize coda_count = 0;
+
+    mut bool seen_nucleus = false;
+    mut usize i = 0;
+    loop {
+        if i >= strlen(syl.str) { break; }
+        seen_nucleus = if syl.str == 'v' { true; };
+        if syl.str[i] == 'c' && !seen_nucleus { onset_count += 1; }
+        if syl.str[i] == 'c' && seen_nucleus  { coda_count += 1;  }
+        i += 1;
+    };
+
+    if !seen_nucleus {
+        println("{} missing mandatory nucleus", syl.str);
+        exit(1);
+    }
+
+    init(arena, 1024); -- arbitrary arena size
+    let usize cons_len = len(consonants);
+    let usize vowel_len = len(vowels);
+
+    -- NOTE: had to hardcode here
+    mut [char*; 10] word_arr = [""; 10];
+    mut usize idx = 0;
+    loop {
+        if idx >= wc { break; }
+        let int32* onset_head = if onset_count > 0 {
+            -- FIXME: shouldn't be allowed to omit semi even if the fn return
+            -- doesn't match the required type
+            malloc(sizeof(int32) * onset_count)
+        } else { NULL };
+
+        let int32* coda_head = if coda_count > 0 {
+            malloc(sizeof(int32) * coda_count)
+        } else { NULL };
+
+        const float64 RAND_MAX = 0x7fffffff;
+        mut int32* tmp = onset_head;
+        mut usize ii = 0;
+        loop {
+            if ii >= onset_count { break; }
+            -- NOTE: the compiler needs to check that Rvalue matches the declared type
+            -- typechecker responsibility
+            let int32 onset_idx = (rand() as float64 / (RAND_MAX + 1) * cons_len) as int32;
+            memcpy(tmp, &onset_idx, sizeof(int32));
+            tmp += 1;
+            ii += 1; -- onset_head fill loop
+        }
+
+        -- FIXME: compiler should error if we try to redeclare a previously declared variable
+        mut int32* tmp = coda_head;
+        mut usize ij = 0;
+        loop {
+            if ii >= coda_count { break; }
+            -- NOTE: the compiler needs to check that Rvalue matches the declared type
+            -- typechecker responsibility - i guess this is coerced to the right type auto
+            -- but i suspect not
+            let int32 coda_idx = (rand() as float64 / (RAND_MAX + 1) * cons_len) as int32;
+            memcpy(tmp, &coda_idx, sizeof(int32));
+            tmp += 1;
+            ii += 1; -- coda_head fill loop
+        }
+
+        if onset_head != NULL {
+            let char* onset = consonants[onset_head[0]];
+            let usize onset_bytes = strlen(onset);
+            let char* onset_a = align_alloc(arena, onset_bytes) as char*;
+            if onset_a == NULL { exit(1); }
+
+            word_arr[i] = onset_a;
+            memcpy(onset_a, onset, onset_bytes);
+
+            mut usize loc_i = 1;
+            loop {
+                if loc_i >= onset_count { break; }
+                let char* loc_onset = consonants[onset_head[loc_i]];
+                let usize loc_onset_bytes = strlen(loc_onset);
+                let char* loc_onset_a = alloc(arena, loc_onset_bytes) as ptr;
+                if loc_onset_a == NULL { exit(1); }
+                memcpy(loc_onset_a, loc_onset, loc_onset_bytes);
+                loc_i += 1;
+            }
+
+        }
+
+        let int32 nucleus_idx = (rand() as float64 / (RAND_MAX + 1) * vowel_len) as int32;
+        let char* nucleus = vowels[nucleus_idx];
+        let usize nucleus_bytes = strlen(nucleus);
+        let char* nucleus_a = alloc(arena, nucleus_bytes) as ptr;
+
+        if onset_head == NULL { word_arr[i] = nucleus_a; }
+        if nucleus_a == NULL  { exit(1);                 }
+
+        memcpy(nucleus_a, nucleus, nucleus_bytes);
+
+        if coda_head != NULL {
+            mut usize loc_i = 0;
+            loop {
+                if loc_i >= coda_count - 1 { break; }
+
+                let char* loc_coda = consonants[coda_head[loc_i]];
+                let usize loc_coda_bytes = strlen(loc_coda);
+                let char* loc_coda_a = alloc(arena, loc_coda_bytes) as ptr;
+
+                if loc_coda_a == NULL { exit(1); }
+                memcpy(loc_coda_a, loc_coda, loc_coda_bytes);
+                loc_i += 1;
+            }
+
+            let char* coda = consonants[coda_head[loc_i]];
+            let usize coda_bytes = strlen(coda) + 1;
+            let char* coda_a = alloc(arena, coda_bytes) as ptr;
+            if coda_a == NULL { exit(1); }
+            memcpy(coda_a, coda, coda_bytes);
+        }
+
+        if coda_head == NULL {
+            let char* null = alloc(arena, 1) as ptr;
+            if null == NULL { exit(1); }
+            *null = '\0';
+        }
+
+        free(onset_head);
+        free(coda_head);
+        idx += 1; -- main loop
+    }
+
+    lang.words = word_arr;
+    return;
 }
 
 print_lang(Language lang) {
@@ -142,6 +289,7 @@ print_lang(Language lang) {
     }
     println("");
 }
+
 
 main() {
     -- no cli args in eye support yet (hardcode it)
@@ -175,4 +323,5 @@ main() {
     -- FIXME: compiler doesn't error on incorrect args and ordering
     -- and all possible issues with that
     generate_lang(&lang, &arena, syllable, 10);
+    print_lang(lang);
 }

@@ -72,6 +72,22 @@ pub enum ResolveError {
         /// `"function"`, ...), for the message.
         what: &'static str,
     },
+    /// A struct literal whose name is not a declared struct or union
+    /// (`Foo { x: 1 }` with no `Foo`). Without this check the literal emits
+    /// `(Foo){ .x = 1 }` and clang reports an undeclared identifier.
+    UnknownStructLiteral {
+        name: Text,
+    },
+    /// A type annotation names a type that is not declared: not a primitive,
+    /// struct, union, enum, or opaque extern type. Without this check the name
+    /// is emitted verbatim and clang reports "unknown type name". Checked on
+    /// every declared type: fields, parameters, return types, globals, consts,
+    /// `let` annotations, and casts. `sizeof` arguments are deliberately
+    /// exempt - `sizeof(ctype)` leans on the C backend as the layout
+    /// authority (docs/features/SIZEOF.md).
+    UnknownTypeName {
+        name: Text,
+    },
 }
 
 /// `T`: type-rule violations.
@@ -156,7 +172,7 @@ pub enum TypeError {
         name: Text,
     },
     /// A call expression that produces no value (void) where a value is
-    /// expected — e.g. `let int32 x = f()` where `f` returns nothing, or
+    /// expected - e.g. `let int32 x = f()` where `f` returns nothing, or
     /// `return f()` in a typed function.
     VoidValueInValuePosition,
     /// A `let` / `mut` binding with no type annotation. Type inference is on
@@ -165,16 +181,48 @@ pub enum TypeError {
     MissingTypeAnnotation {
         name: Text,
     },
-    // EXPERIMENTAL(L3): reject calls with wrong argument count.
-    // c.f. docs/design/CLEAK.md L3.
+    /// A call with the wrong number of arguments (CLEAK L3). For a variadic
+    /// extern signature `expected` is the minimum (the named parameters); a
+    /// non-variadic call must match the count exactly. Argument *types* are
+    /// not checked here (that is the typeck pass); the count never needs
+    /// inference.
     CallArityMismatch {
         name: Text,
         expected: usize,
         found: usize,
+        /// `true` when the callee is variadic, so `expected` is a minimum.
+        variadic: bool,
     },
-    // EXPERIMENTAL(L7): reject indexing on opaque `ptr` (void*).
-    // c.f. docs/design/CLEAK.md L7.
+    /// Indexing a value of type `ptr` (CLEAK L7). `ptr` is the untyped
+    /// pointer (C `void*`): it has no element type, so `p[i]` cannot be
+    /// sized and clang rejects the subscript.
     IndexOnPtr,
+    /// Dereferencing a value of type `ptr`. It has no pointee type, so `*p`
+    /// has no value type; clang rejects the indirection under `-pedantic`.
+    DerefOfPtr,
+    /// Arithmetic or bitwise operation on a value of type `ptr` (CLEAK P1).
+    /// `void*` arithmetic is a GNU extension, not standard C, and there is no
+    /// element size to scale by. Comparisons (`==`, `<`, ...) stay allowed.
+    ArithmeticOnPtr {
+        op: &'static str,
+    },
+    /// An integer literal whose value does not fit the integer type the
+    /// context gives it (CLEAK M1): the declared type at a `let`, argument,
+    /// return, or field, or the `int32` literal default. Without this check
+    /// the raw decimal is emitted into C and the value silently truncates
+    /// (clang only warns).
+    IntLiteralOutOfRange {
+        /// The literal as written, including a leading `-` when negated.
+        value: String,
+        ty: Text,
+        min: String,
+        max: String,
+    },
+    /// A struct literal field with no field name (`Point { 1, 2 }`).
+    /// Positional initialization is not supported: lowering carries fields by
+    /// name only, so a positional value would be silently dropped (the struct
+    /// would be zero-initialized).
+    StructLitPositional,
 }
 
 /// `P`: match-analysis errors.
@@ -349,6 +397,12 @@ impl fmt::Display for ResolveError {
                     "`{name}` cannot be used as a {what} name: it is a C keyword, and the C backend emits the name verbatim"
                 )
             }
+            ResolveError::UnknownStructLiteral { name } => {
+                write!(f, "`{name}` is not a declared struct or union")
+            }
+            ResolveError::UnknownTypeName { name } => {
+                write!(f, "unknown type name `{name}`")
+            }
         }
     }
 }
@@ -440,20 +494,57 @@ impl fmt::Display for TypeError {
                 "cannot assign to `{name}`, which is immutable; declare it with `mut` to allow mutation"
             ),
             TypeError::VoidValueInValuePosition => {
-                write!(f, "expression produces no value (void) where a value is expected")
+                write!(
+                    f,
+                    "expression produces no value (void) where a value is expected"
+                )
             }
             TypeError::MissingTypeAnnotation { name } => write!(
                 f,
                 "binding `{name}` needs a type annotation (type inference is not yet supported); e.g. `let int32 {name} = ...`"
             ),
-            TypeError::CallArityMismatch { name, expected, found } => {
-                let args = if *expected == 1 { "argument" } else { "arguments" };
+            TypeError::CallArityMismatch {
+                name,
+                expected,
+                found,
+                variadic,
+            } => {
+                let args = if *expected == 1 {
+                    "argument"
+                } else {
+                    "arguments"
+                };
                 let were = if *found == 1 { "was" } else { "were" };
-                write!(f, "`{name}` takes {expected} {args}, but {found} {were} given")
+                let at_least = if *variadic { "at least " } else { "" };
+                write!(
+                    f,
+                    "`{name}` takes {at_least}{expected} {args}, but {found} {were} given"
+                )
             }
             TypeError::IndexOnPtr => write!(
                 f,
                 "cannot index `ptr`: `ptr` has no element type; cast to a pointer type first"
+            ),
+            TypeError::DerefOfPtr => write!(
+                f,
+                "cannot dereference `ptr`: `ptr` has no pointee type; cast to a pointer type first"
+            ),
+            TypeError::ArithmeticOnPtr { op } => write!(
+                f,
+                "cannot apply `{op}` to `ptr`: `ptr` is untyped, so there is no element size; cast to a pointer type or an integer first"
+            ),
+            TypeError::IntLiteralOutOfRange {
+                value,
+                ty,
+                min,
+                max,
+            } => write!(
+                f,
+                "integer literal `{value}` does not fit in `{ty}` (range {min}..={max})"
+            ),
+            TypeError::StructLitPositional => write!(
+                f,
+                "struct literal fields must be named (`Point {{ x: 1, y: 2 }}`); positional initialization is not supported"
             ),
         }
     }
@@ -581,6 +672,8 @@ impl Diagnostic for HirError {
                 ResolveError::UnresolvedName { .. } => Code::new(Class::Resolve, 8),
                 ResolveError::StructNameAsValue { .. } => Code::new(Class::Resolve, 9),
                 ResolveError::NameIsCKeyword { .. } => Code::new(Class::Resolve, 10),
+                ResolveError::UnknownStructLiteral { .. } => Code::new(Class::Resolve, 11),
+                ResolveError::UnknownTypeName { .. } => Code::new(Class::Resolve, 12),
             },
             HirError::Type(e) => match e {
                 TypeError::ArrayInitLenMismatch { .. } => Code::new(Class::Type, 1),
@@ -610,6 +703,10 @@ impl Diagnostic for HirError {
                 TypeError::MissingTypeAnnotation { .. } => Code::new(Class::Type, 25),
                 TypeError::CallArityMismatch { .. } => Code::new(Class::Type, 26),
                 TypeError::IndexOnPtr => Code::new(Class::Type, 27),
+                TypeError::DerefOfPtr => Code::new(Class::Type, 28),
+                TypeError::ArithmeticOnPtr { .. } => Code::new(Class::Type, 29),
+                TypeError::IntLiteralOutOfRange { .. } => Code::new(Class::Type, 30),
+                TypeError::StructLitPositional => Code::new(Class::Type, 31),
             },
             HirError::Pattern(e) => match e {
                 PatternError::UnreachableAfterWildcard => Code::new(Class::Pattern, 1),

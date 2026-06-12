@@ -8,6 +8,7 @@ name = "lexer"
 
 [dependencies]
 token.workspace = true
+syntax.workspace = true
 diagnostics.workspace = true
 thiserror.workspace = true
 logos.workspace = true

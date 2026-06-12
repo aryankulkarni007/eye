@@ -69,7 +69,7 @@ pub fn dump_hir(hir: &HIR) {
         println!("      pats: {}", body.pats.len());
         println!("      exprs: {}", body.exprs.len());
         for (eid, expr) in body.exprs.iter() {
-            let ty = body.expr_types.get(eid);
+            let ty = body.expr_types.get(eid.into());
             let ty_str = ty.map(|t| format!(": {:?}", t)).unwrap_or_default();
             let variant = variant_name(expr);
             println!("        Expr({:?}): {}{ty_str}", eid, variant);

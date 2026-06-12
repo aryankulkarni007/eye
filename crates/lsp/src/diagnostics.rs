@@ -167,7 +167,7 @@ mod tests {
         let parse = parser::parse(&lexed.tokens, &source);
         assert!(parse.diagnostics.is_empty());
         let file = ast::SourceFile::cast(parse.green.clone()).unwrap();
-        let hir = hir::core::lower_source_file(file);
+        let hir = hir::core::lower_source_file(file, &lexed.interner);
         let diags = diags_to_lsp(
             &source,
             &uri,

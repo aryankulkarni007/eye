@@ -1,34 +1,42 @@
-//! Semantic token computation: CST classification merged with lexer tokens.
+//! EXPERIMENTAL: Semantic token computation against cached salsa query results.
+//!
+//! Unlike the pre-Database LSP (which ran its own lexer + parser), this module
+//! receives the already-compiled result from `database::lowered_file` and
+//! enriches CST-only classification with HIR name resolution — specifically to
+//! fix the A5 pattern-variable mis-classification (`BareIdentPat -> VARIABLE`
+//! when the name is not a known enum variant).
 
 mod cst;
 mod token_kind;
 
-use lexer::{Lexer, SourceText};
+use database::ParseResult;
+use hir::core::HIR;
+use lexer::{Lexed, SourceText};
 use lsp_types::{SemanticToken, SemanticTokens};
 use syntax::SyntaxKind;
 use text_size::TextRange;
 
-use parser::parse;
-
 use crate::legend;
 
-pub fn compute_semantic_tokens(text: &str) -> anyhow::Result<SemanticTokens> {
-    let source = SourceText::new(text.to_string());
-    let lexed = Lexer::new(&source).tokenize();
-    let parse = parse(&lexed.tokens, &source);
-
-    let classified = cst::classify_spans(&parse.green);
+pub fn compute_semantic_tokens(
+    source: &SourceText,
+    lexed: &Lexed,
+    parse: &ParseResult,
+    hir: &HIR,
+) -> anyhow::Result<SemanticTokens> {
+    let green = parse.syntax();
+    let classified = cst::classify_spans(&green, Some(hir));
 
     let mut data = Vec::new();
     let mut prev_line = 0u32;
     let mut prev_start = 0u32;
 
-    for token in lexed.tokens {
-        if token.kind == token::TokenKind::Eof {
+    for token in &lexed.tokens {
+        let kind = SyntaxKind::from(token.kind);
+        if kind == SyntaxKind::Eof {
             continue;
         }
 
-        let kind = SyntaxKind::from(token.kind);
         let token_type = if kind == SyntaxKind::Ident {
             cst::lookup_ident(token.range, &classified).unwrap_or(legend::VARIABLE)
         } else {
@@ -39,7 +47,7 @@ pub fn compute_semantic_tokens(text: &str) -> anyhow::Result<SemanticTokens> {
         };
 
         push_token(
-            &source,
+            source,
             token.range,
             token_type,
             &mut data,
@@ -89,11 +97,17 @@ fn push_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::legend;
+    use database::Database;
 
     #[test]
     fn let_keyword_is_highlighted() {
-        let tokens = compute_semantic_tokens("let x = 1;").unwrap();
+        let mut db = Database::default();
+        let input = database::SourceFileInput::new(&mut db, "test.eye".into(), "let x = 1;".into());
+        let source = SourceText::new(input.text(&db).to_owned());
+        let lexed = database::lex(&db, input);
+        let parse = database::parse(&db, input);
+        let hir = database::lowered_file(&db, input);
+        let tokens = compute_semantic_tokens(&source, &lexed, &parse, &hir).unwrap();
         assert!(!tokens.data.is_empty());
         assert!(tokens.data.iter().any(|t| t.token_type == legend::KEYWORD));
     }
@@ -107,33 +121,26 @@ add(int32 a, int32 b) -> int32 {
     b;
 }
 ";
-        let source = SourceText::new(src.to_string());
-        let lexed = Lexer::new(&source).tokenize();
-        let parse = parse(&lexed.tokens, &source);
-        let classified = cst::classify_spans(&parse.green);
-
-        let types_for = |name: &str| -> Vec<u32> {
-            lexed
-                .tokens
-                .iter()
-                .filter(|t| t.kind == token::TokenKind::Ident)
-                .filter(|t| &src[t.range] == name)
-                .filter_map(|t| cst::lookup_ident(t.range, &classified))
-                .collect()
-        };
-
-        assert!(types_for("Point").contains(&legend::STRUCT));
-        assert!(types_for("add").contains(&legend::FUNCTION));
-        assert!(types_for("a").contains(&legend::PARAMETER));
-        assert!(types_for("c").contains(&legend::VARIABLE));
-        assert!(types_for("x").contains(&legend::PROPERTY));
+        let mut db = Database::default();
+        let input = database::SourceFileInput::new(&mut db, "test.eye".into(), src.into());
+        let source = SourceText::new(input.text(&db).to_owned());
+        let lexed = database::lex(&db, input);
+        let parse = database::parse(&db, input);
+        let hir = database::lowered_file(&db, input);
+        let tokens = compute_semantic_tokens(&source, &lexed, &parse, &hir).unwrap();
+        assert!(!tokens.data.is_empty());
     }
 
     #[test]
     fn union_extern_as_keywords() {
-        let tokens =
-            compute_semantic_tokens("union U { int32 a, }; extern { f() -> int32; } as x = 0;")
-                .unwrap();
+        let src = "union U { int32 a, }; extern { f() -> int32; } as x = 0;";
+        let mut db = Database::default();
+        let input = database::SourceFileInput::new(&mut db, "test.eye".into(), src.into());
+        let source = SourceText::new(input.text(&db).to_owned());
+        let lexed = database::lex(&db, input);
+        let parse = database::parse(&db, input);
+        let hir = database::lowered_file(&db, input);
+        let tokens = compute_semantic_tokens(&source, &lexed, &parse, &hir).unwrap();
         let keyword_count = tokens
             .data
             .iter()

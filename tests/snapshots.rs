@@ -19,7 +19,7 @@ main() {
 ",
         &["--dump-mir-raw"],
         "--- MIR (raw) ---",
-        "generating c code",
+        "c source written",
     );
     insta::assert_snapshot!("mir_dump", mir);
 }
@@ -55,7 +55,7 @@ main() {
 ",
         &["--dump-hir"],
         "--- HIR ---",
-        "lowering HIR to MIR",
+        "c source written",
     );
     insta::assert_snapshot!("hir_dump", hir);
 }
@@ -73,7 +73,7 @@ main() {
 ",
         &["--dump-hir-raw"],
         "--- HIR (raw) ---",
-        "lowering HIR to MIR",
+        "c source written",
     );
     insta::assert_snapshot!("hir_raw_dump", hir);
 }

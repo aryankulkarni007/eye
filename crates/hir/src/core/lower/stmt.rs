@@ -9,8 +9,8 @@ use super::LoweringCtx;
 use super::const_eval::{ScopedConsts, fold_with_map};
 use super::types::lower_type_ref;
 use crate::core::{
-    fx_set, Block, BlockId, ExprId, LocalConst, Pat, PatternError, Stmt, StmtId,
-    StructPatBinding, Text, TypeError, TypeInterner, TypeKind, TypeRef, VisitTypeRef,
+    Block, BlockId, ExprId, LocalConst, Pat, PatternError, Stmt, StmtId, StructPatBinding, Text,
+    TypeError, TypeInterner, TypeKind, TypeRef, VisitTypeRef, fx_set,
 };
 
 impl<'a> LoweringCtx<'a> {
@@ -51,39 +51,46 @@ impl<'a> LoweringCtx<'a> {
                 self.lower_let_destructure(l, ptr)
             }
             ast::Stmt::LetStmt(l) => {
-                let name: Text = Self::text(l.name());
-                let ty = l
-                    .ty()
-                    .map(|t| {
-                        let consts = ScopedConsts {
-                            scopes: &self.scopes,
-                            local_consts: &self.body.local_consts,
-                            globals: self.const_values,
-                        };
-                        lower_type_ref(&t, &mut self.diagnostics, &consts, &mut self.hir.types.borrow_mut())
-                    });
+                let name: Text = self.text(l.name());
+                let ty = l.ty().map(|t| {
+                    let consts = ScopedConsts {
+                        scopes: &self.scopes,
+                        local_consts: &self.body.local_consts,
+                        globals: self.const_values,
+                    };
+                    lower_type_ref(
+                        &t,
+                        &mut self.diagnostics,
+                        &consts,
+                        &mut self.types,
+                    )
+                });
                 // Type inference is on hiatus, so a binding needs an explicit
                 // type. Without one it would reach codegen as an `Error` type
                 // (`void* /* ERROR TY */`); reject it cleanly here instead.
                 if ty.is_none() {
                     self.emit(ptr, TypeError::MissingTypeAnnotation { name: name.clone() });
                 }
+                // R012: the annotation's type names must be declared.
+                if let Some(t) = ty {
+                    self.check_type_names(t, ptr);
+                }
                 let mutable = matches!(l.kind(), Some(ast::LetKind::Mut));
                 let init = l.value().map(|e| self.lower_expr(&e));
-                // A `&[T; N]` initializer decays to a `&T`/`string` binding
-                // (HORIZON0 C3): `let string s = "hi"`. Insert the decay before
-                // the type check so the cast's type matches the declaration.
+                // The initializer goes through the single coercion point
+                // against the declared type: `&[T; N]` decay (`let string s =
+                // "hi"`, HORIZON0 C3), array-literal re-typing, and
+                // integer-literal typing. Runs before the type check so a
+                // decay cast's type matches the declaration.
                 let init = match (ty.as_ref(), init) {
-                    (Some(declared), Some(id)) => Some(self.maybe_decay(declared, id)),
+                    (Some(declared), Some(id)) => Some(self.coerce(declared, id)),
                     _ => init,
                 };
                 self.check_array_init_len(ptr, ty.as_ref(), init);
                 self.check_explicit_let_init_type(ptr, ty.as_ref(), init);
                 self.record_match_result_override(ty.as_ref(), init);
-                self.record_array_init_override(ty.as_ref(), init);
 
-                let (pat_id, local_id) =
-                    self.alloc_bind_pat(name.clone(), ty, mutable, ptr);
+                let (pat_id, local_id) = self.alloc_bind_pat(name.clone(), ty, mutable, ptr);
                 self.scopes.define(name, local_id);
 
                 self.alloc_stmt(
@@ -107,7 +114,7 @@ impl<'a> LoweringCtx<'a> {
                 // declaration, so no cycle is possible). The folded value lives
                 // in `body.local_consts`; references inline it, so the
                 // statement itself emits nothing in MIR.
-                let name: Text = Self::text(c.name());
+                let name: Text = self.text(c.name());
                 let (ty, value) = {
                     let consts = ScopedConsts {
                         scopes: &self.scopes,
@@ -117,14 +124,21 @@ impl<'a> LoweringCtx<'a> {
                     // A missing type or initializer was already diagnosed by
                     // the parser; fall back to poison without re-reporting.
                     let ty = match c.ty() {
-                        Some(t) => lower_type_ref(&t, &mut self.diagnostics, &consts, &mut self.hir.types.borrow_mut()),
-                        None => self.hir.types.borrow_mut().error_type(),
+                        Some(t) => lower_type_ref(
+                            &t,
+                            &mut self.diagnostics,
+                            &consts,
+                            &mut self.types,
+                        ),
+                        None => self.types.error_type(),
                     };
                     let value = c
                         .value()
                         .and_then(|e| fold_with_map(&e, &consts, &mut self.diagnostics));
                     (ty, value)
                 };
+                // R012: the declared type's names must be declared types.
+                self.check_type_names(ty, ptr);
                 let id = self.body.local_consts.alloc(LocalConst {
                     name: name.clone(),
                     ty,
@@ -146,7 +160,7 @@ impl<'a> LoweringCtx<'a> {
         let init = l.value().map(|e| self.lower_expr(&e));
 
         let sp = l.pat().expect("caller checked l.pat() is Some");
-        let ty_name: Text = Self::text(sp.ty().and_then(|n| n.name()));
+        let ty_name: Text = self.text(sp.ty().and_then(|n| n.name()));
         let struct_id = self.hir.items.structs.get(&ty_name).copied();
         if struct_id.is_none() {
             self.emit(
@@ -162,9 +176,9 @@ impl<'a> LoweringCtx<'a> {
         let mut seen: FxHashSet<Text> = fx_set(field_count);
         if let Some(fl) = sp.field_list() {
             for pf in fl.fields() {
-                let field_name: Text = Self::text(pf.name());
+                let field_name: Text = self.text(pf.name());
                 let binding_name: Text = match pf.binding() {
-                    Some(b) => Self::text(b.name()),
+                    Some(b) => self.text(b.name()),
                     None => field_name.clone(),
                 };
                 // Resolve the field's type fully before any `&mut self` call.
@@ -243,7 +257,7 @@ impl<'a> LoweringCtx<'a> {
         init: Option<ExprId>,
     ) {
         let Some(declared_len) = ty.copied().and_then(|t| {
-            let types = self.hir.types.borrow();
+            let types = &self.types;
             match types.lookup(t) {
                 &TypeKind::Array { len, .. } => Some(len),
                 _ => None,
@@ -254,13 +268,19 @@ impl<'a> LoweringCtx<'a> {
         let Some(init_id) = init else {
             return;
         };
-        let Some(init_len) = self.body.expr_types.get(init_id).copied().and_then(|t| {
-            let types = self.hir.types.borrow();
-            match types.lookup(t) {
-                &TypeKind::Array { len, .. } => Some(len),
-                _ => None,
-            }
-        }) else {
+        let Some(init_len) = self
+            .body
+            .expr_types
+            .get(init_id.into())
+            .copied()
+            .and_then(|t| {
+                let types = &self.types;
+                match types.lookup(t) {
+                    &TypeKind::Array { len, .. } => Some(len),
+                    _ => None,
+                }
+            })
+        else {
             return;
         };
         if declared_len != init_len {
@@ -299,7 +319,7 @@ impl<'a> LoweringCtx<'a> {
         if !matches!(self.body.exprs[init_id], crate::core::Expr::Call { .. }) {
             return;
         }
-        let Some(actual) = self.body.expr_types.get(init_id).copied() else {
+        let Some(actual) = self.body.expr_types.get(init_id.into()).copied() else {
             self.emit(
                 self.expr_ptr(init_id, ptr),
                 TypeError::VoidValueInValuePosition,
@@ -307,19 +327,21 @@ impl<'a> LoweringCtx<'a> {
             return;
         };
         {
-            let types = self.hir.types.borrow();
-            if type_ref_contains_error(expected, &types) || type_ref_contains_error(actual, &types) {
+            let types = &self.types;
+            if type_ref_contains_error(expected, types) || type_ref_contains_error(actual, types)
+            {
                 return;
             }
             if let (TypeKind::Array { len: exp_len, .. }, TypeKind::Array { len: act_len, .. }) =
                 (types.lookup(expected), types.lookup(actual))
-                && exp_len != act_len {
-                    return;
-                }
+                && exp_len != act_len
+            {
+                return;
+            }
         }
         if actual != expected {
-            let expected_str = self.hir.types.borrow().display(expected).to_string();
-            let got_str = self.hir.types.borrow().display(actual).to_string();
+            let expected_str = self.types.display(expected).to_string();
+            let got_str = self.types.display(actual).to_string();
             self.emit(
                 self.expr_ptr(init_id, ptr),
                 TypeError::LetTypeMismatch {
@@ -342,7 +364,11 @@ impl<'a> LoweringCtx<'a> {
     /// reached.
     fn yields_no_value(&self, id: ExprId) -> bool {
         let (then_block, else_block) = match &self.body.exprs[id] {
-            crate::core::Expr::If { then_branch, else_branch, .. } => (*then_branch, *else_branch),
+            crate::core::Expr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => (*then_branch, *else_branch),
             _ => return false,
         };
         match else_block {
@@ -382,70 +408,7 @@ impl<'a> LoweringCtx<'a> {
         if !matches!(self.body.exprs[match_id], crate::core::Expr::Match { .. }) {
             return;
         }
-        self.body.expr_types.insert(match_id, *declared);
-    }
-
-    /// A literal array initializer takes its element type from its elements,
-    /// which default integer literals to `int32`. When the `let` declares the
-    /// array type (e.g. `[usize; 2] = [100, 200]`), that type wins: re-type the
-    /// literal onto the declared type so its wrapper matches the binding.
-    fn record_array_init_override(&mut self, declared: Option<&TypeRef>, init: Option<ExprId>) {
-        let (Some(declared), Some(init_id)) = (declared, init) else {
-            return;
-        };
-        self.coerce_array_literal_type(declared, init_id);
-    }
-
-    /// Re-type an array literal - and recursively every nested array literal -
-    /// onto a declared array type so each level's wrapper matches it. Without
-    /// the recursion only the outer literal is re-typed, leaving inner literals
-    /// at their `int32` default (e.g. `[[usize; 2]; 2] = [[1, 0], [0, 1]]`
-    /// would emit a `usize` outer wrapper holding `int32` inner wrappers - a C
-    /// type error). C converts the element constants inside the brace
-    /// initializer. Each level is length-guarded: a literal whose length
-    /// disagrees with the declared length keeps its own type so the existing
-    /// length diagnostic still fires rather than the wrapper being reshaped
-    /// around the wrong element count. Shared by the `let`, return, and
-    /// call-argument coercion sites, all of which face the same nesting.
-    pub(super) fn coerce_array_literal_type(&mut self, declared: &TypeRef, init_id: ExprId) {
-        let (elem, declared_len) = {
-            let types = self.hir.types.borrow();
-            match types.lookup(*declared) {
-                &TypeKind::Array { elem, len } => (elem, len),
-                _ => return,
-            }
-        };
-        if !matches!(
-            self.body.exprs[init_id],
-            crate::core::Expr::ArrayLit(_) | crate::core::Expr::ArrayRepeat { .. }
-        ) {
-            return;
-        }
-        let lit_len = match self.body.expr_types.get(init_id).copied() {
-            Some(ty) => {
-                let types = self.hir.types.borrow();
-                match types.lookup(ty) {
-                    &TypeKind::Array { len, .. } => len,
-                    _ => return,
-                }
-            }
-            None => return,
-        };
-        if lit_len != declared_len {
-            return;
-        }
-        self.body.expr_types.insert(init_id, *declared);
-        // Elements to re-type against the declared element type: every element
-        // of a literal, or the single repeated value of `[value; N]`. Collected
-        // first to release the borrow on `exprs` before the recursive call.
-        let children: Vec<ExprId> = match &self.body.exprs[init_id] {
-            crate::core::Expr::ArrayLit(elems) => elems.to_vec(),
-            crate::core::Expr::ArrayRepeat { value, .. } => vec![*value],
-            _ => return,
-        };
-        for e in children {
-            self.coerce_array_literal_type(&elem, e);
-        }
+        self.body.expr_types.insert(match_id.into(), *declared);
     }
 
     /// Cross-arm result-type consistency for every value-position `match` in the
@@ -493,32 +456,31 @@ impl<'a> LoweringCtx<'a> {
             .collect();
 
         for match_id in value_matches {
-            let Some(result_ty) = self.body.expr_types.get(match_id).copied() else {
+            let Some(result_ty) = self.body.expr_types.get(match_id.into()).copied() else {
                 continue;
             };
             let arm_bodies: Vec<ExprId> = match &self.body.exprs[match_id] {
                 crate::core::Expr::Match { arms, .. } => arms.iter().map(|a| a.body).collect(),
                 _ => continue,
             };
-            let types = self.hir.types.borrow();
-            for body_id in arm_bodies {
-                let Some(arm_ty) = self.body.expr_types.get(body_id).copied() else {
-                    continue;
-                };
-                if !types_compatible(arm_ty, result_ty, &types) {
-                    let Some(arm_ptr) = self.body.source_map.expr.get(body_id).cloned() else {
-                        continue;
-                    };
-                    let expected = types.display(result_ty).to_string();
-                    let found = types.display(arm_ty).to_string();
-                    self.emit(
-                        arm_ptr,
-                        TypeError::MatchArmTypeMismatch {
-                            expected,
-                            found,
-                        },
-                    );
-                }
+            // Collect mismatches first (immutable pass over the interner),
+            // then emit, so the interner borrow does not overlap `emit`'s
+            // `&mut self`.
+            let mismatches: Vec<_> = arm_bodies
+                .iter()
+                .filter_map(|&body_id| {
+                    let arm_ty = self.body.expr_types.get(body_id.into()).copied()?;
+                    if types_compatible(arm_ty, result_ty, &self.types) {
+                        return None;
+                    }
+                    let arm_ptr = self.body.source_map.expr.get(body_id.into()).cloned()?;
+                    let expected = self.types.display(result_ty).to_string();
+                    let found = self.types.display(arm_ty).to_string();
+                    Some((arm_ptr, expected, found))
+                })
+                .collect();
+            for (arm_ptr, expected, found) in mismatches {
+                self.emit(arm_ptr, TypeError::MatchArmTypeMismatch { expected, found });
             }
         }
     }
@@ -542,65 +504,40 @@ impl<'a> LoweringCtx<'a> {
                 Stmt::Expr(e) => matches!(self.body.exprs[*e], crate::core::Expr::Return(Some(_))),
                 _ => false,
             });
-            if !has_return
-                && let Some(ptr) = self.fn_block_ptr {
-                    let expected = self.hir.types.borrow().display(ret).to_string();
-                    self.emit(ptr, TypeError::ReturnMissingValue { expected });
-                }
+            if !has_return && let Some(ptr) = self.fn_block_ptr {
+                let expected = self.types.display(ret).to_string();
+                self.emit(ptr, TypeError::ReturnMissingValue { expected });
+            }
             return;
         };
         // A tail else-less / void-branch `if` yields no value for the return.
         if self.yields_no_value(tail) {
-            if let Some(ptr) = self.body.source_map.expr.get(tail).cloned() {
+            if let Some(ptr) = self.body.source_map.expr.get(tail.into()).cloned() {
                 self.emit(ptr, TypeError::VoidValueInValuePosition);
             }
             return;
         }
         if matches!(self.body.exprs[tail], crate::core::Expr::Match { .. }) {
-            self.body.expr_types.insert(tail, ret);
+            self.body.expr_types.insert(tail.into(), ret);
             return;
         }
-        // An array-literal tail defaults its elements to int32; the declared
-        // array return type wins, same as a `let` initializer. Coerce only when
-        // the lengths agree so a wrong-length literal still hits the mismatch
-        // diagnostic below.
-        if matches!(self.body.exprs[tail], crate::core::Expr::ArrayLit(_)) {
-            let types = self.hir.types.borrow();
-            let ret_len = match types.lookup(ret) {
-                TypeKind::Array { len, .. } => *len,
-                _ => { drop(types); return; }
-            };
-            let lit_len = match self.body.expr_types.get(tail).copied() {
-                Some(t) => match types.lookup(t) {
-                    TypeKind::Array { len, .. } => *len,
-                    _ => { drop(types); return; }
-                },
-                None => { drop(types); return; }
-            };
-            if lit_len == ret_len {
-                drop(types);
-                self.coerce_array_literal_type(&ret, tail);
-                return;
-            }
-        }
-        let Some(actual) = self.body.expr_types.get(tail).copied() else {
+        // An array-literal tail was already re-typed onto the declared return
+        // type by the coercion point (`fn_body` runs `coerce` on the tail
+        // before this check), so it needs no special case here: a matching
+        // length compares equal, a wrong length falls through to the
+        // mismatch diagnostic below.
+        let Some(actual) = self.body.expr_types.get(tail.into()).copied() else {
             return;
         };
         {
-            let types = self.hir.types.borrow();
-            if !types_compatible(actual, ret, &types) {
-                let Some(ptr) = self.body.source_map.expr.get(tail).cloned() else {
+            let types = &self.types;
+            if !types_compatible(actual, ret, types) {
+                let Some(ptr) = self.body.source_map.expr.get(tail.into()).cloned() else {
                     return;
                 };
                 let expected = types.display(ret).to_string();
                 let found = types.display(actual).to_string();
-                self.emit(
-                    ptr,
-                    TypeError::ReturnTypeMismatch {
-                        expected,
-                        found,
-                    },
-                );
+                self.emit(ptr, TypeError::ReturnTypeMismatch { expected, found });
             }
         }
     }
@@ -617,67 +554,58 @@ impl<'a> LoweringCtx<'a> {
             (None, None) => {}
             (None, Some(_)) => self.emit(ret_ptr, TypeError::ReturnValueInVoid),
             (Some(expected), None) => {
-                let expected_str = self.hir.types.borrow().display(expected).to_string();
-                self.emit(ret_ptr, TypeError::ReturnMissingValue { expected: expected_str })
+                let expected_str = self.types.display(expected).to_string();
+                self.emit(
+                    ret_ptr,
+                    TypeError::ReturnMissingValue {
+                        expected: expected_str,
+                    },
+                )
             }
             (Some(ret), Some(val)) => {
                 // A returned else-less / void-branch `if` yields no value.
                 if self.yields_no_value(val) {
                     self.emit(
-                        self.body.source_map.expr.get(val).cloned().unwrap_or(ret_ptr),
+                        self.body
+                            .source_map
+                            .expr
+                            .get(val.into())
+                            .cloned()
+                            .unwrap_or(ret_ptr),
                         TypeError::VoidValueInValuePosition,
                     );
                     return;
                 }
-                // An array-literal return defaults its elements to int32; the
-                // declared array return type wins when the lengths agree, same
-                // as the tail and a `let` initializer. A wrong length still
-                // falls through to the mismatch check below.
-                if matches!(self.body.exprs[val], crate::core::Expr::ArrayLit(_)) {
-                    let types = self.hir.types.borrow();
-                    let ret_len = match types.lookup(ret) {
-                        TypeKind::Array { len, .. } => *len,
-                        _ => { drop(types); return; }
-                    };
-                    let lit_len = match self.body.expr_types.get(val).copied() {
-                        Some(t) => match types.lookup(t) {
-                            TypeKind::Array { len, .. } => *len,
-                            _ => { drop(types); return; }
-                        },
-                        None => { drop(types); return; }
-                    };
-                    if lit_len == ret_len {
-                        drop(types);
-                        self.coerce_array_literal_type(&ret, val);
-                        return;
-                    }
-                }
-                let Some(actual) = self.body.expr_types.get(val).copied() else {
+                // An array-literal return was already re-typed onto the
+                // declared return type by the coercion point (the
+                // `ReturnExpr` arm runs `coerce` before this check): a
+                // matching length compares equal, a wrong length falls
+                // through to the mismatch diagnostic below.
+                let Some(actual) = self.body.expr_types.get(val.into()).copied() else {
                     self.emit(
-                        self.body.source_map.expr.get(val).cloned().unwrap_or(ret_ptr),
+                        self.body
+                            .source_map
+                            .expr
+                            .get(val.into())
+                            .cloned()
+                            .unwrap_or(ret_ptr),
                         TypeError::VoidValueInValuePosition,
                     );
                     return;
                 };
                 {
-                    let types = self.hir.types.borrow();
-                    if !types_compatible(actual, ret, &types) {
+                    let types = &self.types;
+                    if !types_compatible(actual, ret, types) {
                         let ptr = self
                             .body
                             .source_map
                             .expr
-                            .get(val)
+                            .get(val.into())
                             .cloned()
                             .unwrap_or(ret_ptr);
                         let expected = types.display(ret).to_string();
                         let found = types.display(actual).to_string();
-                        self.emit(
-                            ptr,
-                            TypeError::ReturnTypeMismatch {
-                                expected,
-                                found,
-                            },
-                        );
+                        self.emit(ptr, TypeError::ReturnTypeMismatch { expected, found });
                     }
                 }
             }

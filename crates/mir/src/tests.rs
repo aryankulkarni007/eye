@@ -18,10 +18,10 @@ use lexer::{Lexer, SourceText};
 /// Parse `src`, lower to HIR, lower the first function's body to MIR.
 fn lower_first_fn(src: &str) -> (HIR, FnId, MirBody) {
     let source = SourceText::new(src.to_string());
-    let tokens = Lexer::new(&source).tokenize().tokens;
-    let parse = parser::parse(&tokens, &source);
+    let lexed = Lexer::new(&source).tokenize();
+    let parse = parser::parse(&lexed.tokens, &source);
     let file = SourceFile::cast(parse.green).expect("root is SourceFile");
-    let hir = lower_source_file(file);
+    let hir = lower_source_file(file, &lexed.interner);
     assert!(
         hir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
@@ -33,12 +33,11 @@ fn lower_first_fn(src: &str) -> (HIR, FnId, MirBody) {
         .values()
         .next()
         .expect("at least one function");
-    let body_id = hir.functions[fn_id]
-        .body
-        .expect("function has a body");
+    let body_id = hir.functions[fn_id].body.expect("function has a body");
     let body = &hir.bodies[body_id];
     let mir = lower_function(
         &hir,
+        &hir.types,
         body,
         hir.functions[fn_id].params.len(),
         hir.functions[fn_id].ret,
@@ -48,10 +47,7 @@ fn lower_first_fn(src: &str) -> (HIR, FnId, MirBody) {
 
 /// Count statements of a given kind in a flat stmt list (no recursion).
 fn count_kind(stmts: &[MirStmt], kind: &str) -> usize {
-    stmts
-        .iter()
-        .filter(|s| variant_name(s) == kind)
-        .count()
+    stmts.iter().filter(|s| variant_name(s) == kind).count()
 }
 
 fn variant_name(s: &MirStmt) -> &'static str {
@@ -170,10 +166,7 @@ main() {
     // The match call might be lowered directly (no Switch if trivial) or
     // through a temp. At minimum we can assert the program lowered without
     // panicking and that the body has at least one stmt.
-    assert!(
-        !mir.body.stmts.is_empty(),
-        "match body must produce stmts"
-    );
+    assert!(!mir.body.stmts.is_empty(), "match body must produce stmts");
 }
 
 // ---------------------------------------------------------------------------

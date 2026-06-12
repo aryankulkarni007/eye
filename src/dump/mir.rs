@@ -1,10 +1,14 @@
-use hir::core::HIR;
+
+use hir::core::{FnId, HIR};
 use mir::core::{MirBody, MirStmt, RValue};
+use rustc_hash::FxHashMap;
 use std::fmt::Write as _;
 
 /// Print every function's MIR body as a readable summary (counts, not full
-/// field listings).
-pub fn dump_mir(hir: &HIR) {
+/// field listings). `mirs` is the pre-lowered MIR map (the database's
+/// `mir_map` query result), shared with C generation so the dump never
+/// re-lowers a body.
+pub fn dump_mir(hir: &HIR, mirs: &FxHashMap<FnId, MirBody>) {
     let fn_names: rustc_hash::FxHashMap<_, _> = hir
         .items
         .functions
@@ -12,21 +16,17 @@ pub fn dump_mir(hir: &HIR) {
         .map(|(name, &fid)| (fid, name.clone()))
         .collect();
 
-    for (fn_id, function) in hir.functions.iter() {
-        let body_id = match &function.body {
-            Some(b) => *b,
-            None => continue,
+    for (fn_id, _) in hir.functions.iter() {
+        let Some(mir) = mirs.get(&fn_id) else {
+            continue;
         };
-        let body = &hir.bodies[body_id];
-        let mir =
-            mir::lower::lower_function(hir, body, function.params.len(), function.ret);
         let name = fn_names.get(&fn_id).map(|s| s.as_str()).unwrap_or("<anon>");
-        print_mir_summary(name, &mir);
+        print_mir_summary(name, mir);
     }
 }
 
 /// Print every function's MIR body as the full Debug representation.
-pub fn dump_mir_raw(hir: &HIR) {
+pub fn dump_mir_raw(hir: &HIR, mirs: &FxHashMap<FnId, MirBody>) {
     let fn_names: rustc_hash::FxHashMap<_, _> = hir
         .items
         .functions
@@ -34,14 +34,10 @@ pub fn dump_mir_raw(hir: &HIR) {
         .map(|(name, &fid)| (fid, name.clone()))
         .collect();
 
-    for (fn_id, function) in hir.functions.iter() {
-        let body_id = match &function.body {
-            Some(b) => *b,
-            None => continue,
+    for (fn_id, _) in hir.functions.iter() {
+        let Some(mir) = mirs.get(&fn_id) else {
+            continue;
         };
-        let body = &hir.bodies[body_id];
-        let mir =
-            mir::lower::lower_function(hir, body, function.params.len(), function.ret);
         let name = fn_names.get(&fn_id).map(|s| s.as_str()).unwrap_or("<anon>");
         println!("fn {}:", name);
         println!("{:#?}", mir);

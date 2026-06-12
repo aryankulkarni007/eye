@@ -9,21 +9,28 @@
 use super::arrays::{array_wrapper_name, fn_typedef_name};
 use super::types::{CDeclarator, CType, spec_for_type};
 use hir::core::{
-    ConstValue, Enum, Expr, FieldId, Function, HIR, Literal, Resolution, Text, TypeKind, TypeNode,
-    TypeRef, topo_order,
+    ConstValue, Enum, Expr, FieldId, FnId, Function, HIR, Literal, Resolution, Text, TypeKind,
+    TypeNode, TypeRef, topo_order,
 };
 use mir::core::{ArmTest, MirBlock, MirBody, MirStmt, Operand, Place, RValue, SwitchArm, Type};
-use mir::lower::lower_function;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use std::fmt::Write as _;
 
-/// Generate a complete C translation unit from the HIR via MIR.
-pub fn gen_mir(hir: &HIR) -> String {
-    MirGen::new(hir).gen_all()
+/// Generate a complete C translation unit from the HIR plus each defined
+/// function's pre-lowered MIR (keyed by [`FnId`]). MIR lowering happens
+/// upstream - in the database's `mir_map` query (memoized, shared with
+/// `--dump-mir`) or in [`mir::lower_all`] for direct callers - so the emitter
+/// never lowers a body twice.
+pub fn gen_mir(hir: &HIR, mirs: &FxHashMap<FnId, MirBody>) -> String {
+    MirGen::new(hir, mirs).gen_all()
 }
 
 struct MirGen<'a> {
     hir: &'a HIR,
+    /// Pre-lowered MIR per defined function. A function absent here (an
+    /// `extern`, or a body MIR the caller chose not to lower) emits as a
+    /// prototype / empty body.
+    mirs: &'a FxHashMap<FnId, MirBody>,
     output: String,
     indent: usize,
     local_names: Vec<Text>,
@@ -142,11 +149,12 @@ fn write_c_char_literal(c: char, out: &mut String) {
 }
 
 impl<'a> MirGen<'a> {
-    fn new(hir: &'a HIR) -> Self {
+    fn new(hir: &'a HIR, mirs: &'a FxHashMap<FnId, MirBody>) -> Self {
         let (strings, string_index) = collect_strings(hir);
-        let error_ty = hir.types.borrow_mut().error_type();
+        let error_ty = hir.types.error_type();
         Self {
             hir,
+            mirs,
             output: String::new(),
             indent: 0,
             local_names: Vec::new(),
@@ -208,10 +216,10 @@ impl<'a> MirGen<'a> {
             any_fwd = true;
         }
         {
-            let types = self.hir.types.borrow();
+            let types = &self.hir.types;
             for node in &nodes {
                 if let TypeNode::Array { elem, len } = node {
-                    let name = array_wrapper_name(*elem, *len, &types);
+                    let name = array_wrapper_name(*elem, *len, types);
                     self.w(format_args!("typedef struct {0} {0};\n", name));
                     any_fwd = true;
                 }
@@ -231,13 +239,25 @@ impl<'a> MirGen<'a> {
         // array per unique literal, also file-scope before the functions.
         self.gen_string_statics();
 
-        let extern_fns = self.hir.functions.iter().filter(|(_, f)| f.is_extern);
-        for (_, f) in extern_fns {
-            self.gen_function(f);
+        let extern_fns: Vec<FnId> = self
+            .hir
+            .functions
+            .iter()
+            .filter(|(_, f)| f.is_extern)
+            .map(|(id, _)| id)
+            .collect();
+        for id in extern_fns {
+            self.gen_function(id);
         }
-        let defined_fns = self.hir.functions.iter().filter(|(_, f)| !f.is_extern);
-        for (_, f) in defined_fns {
-            self.gen_function(f);
+        let defined_fns: Vec<FnId> = self
+            .hir
+            .functions
+            .iter()
+            .filter(|(_, f)| !f.is_extern)
+            .map(|(id, _)| id)
+            .collect();
+        for id in defined_fns {
+            self.gen_function(id);
         }
 
         // C entry shim. The runtime requires `int main(void)`; the user's `main`
@@ -256,8 +276,8 @@ impl<'a> MirGen<'a> {
             .map(|(_, m)| m.ret);
         if let Some(ret) = main_ret {
             self.output.push_str("int main(void) {\n");
-            let types = self.hir.types.borrow();
-            if ret.is_some_and(|r| main_ret_is_integer(r, &types)) {
+            let types = &self.hir.types;
+            if ret.is_some_and(|r| main_ret_is_integer(r, types)) {
                 self.output.push_str("\treturn (int)__eye_main();\n");
             } else {
                 self.output.push_str("\t__eye_main();\n\treturn 0;\n");
@@ -302,34 +322,38 @@ impl<'a> MirGen<'a> {
         }
     }
 
-    fn gen_function(&mut self, r#fn: &Function) {
+    fn gen_function(&mut self, fn_id: FnId) {
+        let r#fn = &self.hir.functions[fn_id];
         // `main` is an ordinary Eye function. The C runtime reserves the symbol
         // `main` for the `int main(void)` entry point, so the user's `main` is
         // emitted under an internal name and a shim is generated in `gen_all`.
         let name = c_fn_name(r#fn);
         if r#fn.is_extern {
-            let types = self.hir.types.borrow();
+            let types = &self.hir.types;
             match r#fn.ret {
-                Some(ret) => self.output
-                    .write_fmt(format_args!("{} {}(", CType::new(ret, &types), name))
+                Some(ret) => self
+                    .output
+                    .write_fmt(format_args!("{} {}(", CType::new(ret, types), name))
                     .expect("writing to String cannot fail"),
-                None => self.output
+                None => self
+                    .output
                     .write_fmt(format_args!("void {}(", name))
                     .expect("writing to String cannot fail"),
             }
-            drop(types);
             self.comma_params(r#fn, false);
             self.output.push_str(");\n");
             return;
         }
 
         {
-            let types = self.hir.types.borrow();
+            let types = &self.hir.types;
             match r#fn.ret {
-                Some(ret) => self.output
-                    .write_fmt(format_args!("{} {}(", CType::new(ret, &types), name))
+                Some(ret) => self
+                    .output
+                    .write_fmt(format_args!("{} {}(", CType::new(ret, types), name))
                     .expect("writing to String cannot fail"),
-                None => self.output
+                None => self
+                    .output
                     .write_fmt(format_args!("void {}(", name))
                     .expect("writing to String cannot fail"),
             }
@@ -337,14 +361,10 @@ impl<'a> MirGen<'a> {
         self.comma_params(r#fn, true);
         self.output.push_str(") {\n");
         self.block("}\n\n", |s| {
-            if let Some(body_id) = r#fn.body {
-                let body = &s.hir.bodies[body_id];
-                let mir = lower_function(s.hir, body, r#fn.params.len(), r#fn.ret);
-                // EXPERIMENTAL(A2): per-function cache. LocalId indices are
-                // per-function, so the cache must not leak across functions.
+            if let Some(mir) = s.mirs.get(&fn_id) {
                 s.place_types.clear();
-                s.local_names = Self::local_names(&mir);
-                s.gen_block(&mir, &mir.body);
+                s.local_names = Self::local_names(mir);
+                s.gen_block(mir, &mir.body);
                 s.local_names.clear();
             }
         });
@@ -358,18 +378,22 @@ impl<'a> MirGen<'a> {
             self.output.push_str("void");
             return;
         }
-        let types = self.hir.types.borrow();
+        let types = &self.hir.types;
         for (i, param) in r#fn.params.iter().enumerate() {
             if i > 0 {
                 self.output.push_str(", ");
             }
             if with_names {
                 self.output
-                    .write_fmt(format_args!("{} {}", CType::new(param.ty, &types), param.name))
+                    .write_fmt(format_args!(
+                        "{} {}",
+                        CType::new(param.ty, types),
+                        param.name
+                    ))
                     .expect("writing to String cannot fail");
             } else {
                 self.output
-                    .write_fmt(format_args!("{}", CType::new(param.ty, &types)))
+                    .write_fmt(format_args!("{}", CType::new(param.ty, types)))
                     .expect("writing to String cannot fail");
             }
         }
@@ -392,9 +416,9 @@ impl<'a> MirGen<'a> {
                 let l = &mir.locals[*local];
                 let name = local_name(&self.local_names, *local);
                 {
-                    let types = self.hir.types.borrow();
+                    let types = &self.hir.types;
                     self.output
-                        .write_fmt(format_args!("{}", CDeclarator::new(l.ty, name, &types)))
+                        .write_fmt(format_args!("{}", CDeclarator::new(l.ty, name, types)))
                         .expect("writing to String cannot fail");
                 }
                 if let Some(rv) = init {
@@ -624,7 +648,7 @@ impl<'a> MirGen<'a> {
                 }
             }
             TypeNode::Array { elem, len } => {
-                let types = self.hir.types.borrow();
+                let types = &self.hir.types;
                 // `len` is 0 only for the empty string literal (`""` types as
                 // `&[uint8; 0]`; a `[T; 0]` array type is rejected upstream). A
                 // zero-length array member is a GCC/clang extension, so the
@@ -632,33 +656,38 @@ impl<'a> MirGen<'a> {
                 // backing static already carries the NUL byte this slot aliases.
                 self.w(format_args!(
                     "struct {} {{ {} data[{}]; }};\n",
-                    array_wrapper_name(*elem, *len, &types),
-                    CType::new(*elem, &types),
+                    array_wrapper_name(*elem, *len, types),
+                    CType::new(*elem, types),
                     (*len).max(1)
                 ));
             }
             TypeNode::Fn { params, ret } => {
-                let types = self.hir.types.borrow();
-                let name = fn_typedef_name(params, *ret, &types);
+                let types = &self.hir.types;
+                let name = fn_typedef_name(params, *ret, types);
                 match ret {
-                    Some(r) => self.output
-                        .write_fmt(format_args!("typedef {} (*{})(", CType::new(*r, &types), name))
+                    Some(r) => self
+                        .output
+                        .write_fmt(format_args!(
+                            "typedef {} (*{})(",
+                            CType::new(*r, types),
+                            name
+                        ))
                         .expect("writing to String cannot fail"),
-                    None => self.output
+                    None => self
+                        .output
                         .write_fmt(format_args!("typedef void (*{})(", name))
                         .expect("writing to String cannot fail"),
                 }
-                drop(types);
                 if params.is_empty() {
                     self.output.push_str("void");
                 } else {
-                    let types = self.hir.types.borrow();
+                    let types = &self.hir.types;
                     for (i, p) in params.iter().enumerate() {
                         if i > 0 {
                             self.output.push_str(", ");
                         }
                         self.output
-                            .write_fmt(format_args!("{}", CType::new(*p, &types)))
+                            .write_fmt(format_args!("{}", CType::new(*p, types)))
                             .expect("writing to String cannot fail");
                     }
                 }
@@ -672,12 +701,16 @@ impl<'a> MirGen<'a> {
     fn gen_record_def(&mut self, kw: &str, name: &Text, fields: &[FieldId]) {
         self.w(format_args!("{kw} {name} {{\n"));
         self.block("};\n\n", |s| {
-            let types = s.hir.types.borrow();
+            let types = &s.hir.types;
             for &field_id in fields {
                 let field = &s.hir.fields[field_id];
                 s.push_indent();
                 s.output
-                    .write_fmt(format_args!("{} {};\n", CType::new(field.ty, &types), field.name))
+                    .write_fmt(format_args!(
+                        "{} {};\n",
+                        CType::new(field.ty, types),
+                        field.name
+                    ))
                     .expect("writing to String cannot fail");
             }
         });
@@ -698,18 +731,17 @@ impl<'a> MirGen<'a> {
                 self.gen_operand(mir, operand);
             }
             RValue::Cast(operand, ty) => {
-                let types = self.hir.types.borrow();
+                let types = &self.hir.types;
                 self.output
-                    .write_fmt(format_args!("({})", CType::new(*ty, &types)))
+                    .write_fmt(format_args!("({})", CType::new(*ty, types)))
                     .expect("writing to String cannot fail");
-                drop(types);
                 self.gen_operand(mir, operand);
             }
             // `sizeof(T)`: the C backend is the layout authority.
             RValue::SizeOf(ty) => {
-                let types = self.hir.types.borrow();
+                let types = &self.hir.types;
                 self.output
-                    .write_fmt(format_args!("sizeof({})", CType::new(*ty, &types)))
+                    .write_fmt(format_args!("sizeof({})", CType::new(*ty, types)))
                     .expect("writing to String cannot fail");
             }
             RValue::Ref(place) => {
@@ -762,14 +794,16 @@ impl<'a> MirGen<'a> {
             // node, so unlike the HIR path there is no type-recovery fallback:
             // the emitter trusts the lowering (R2 / I2).
             RValue::ArrayLit { ty, elems } => {
-                let types = self.hir.types.borrow();
+                let types = &self.hir.types;
                 let TypeKind::Array { elem, len } = types.lookup(*ty) else {
                     unreachable!("ArrayLit rvalue carries a non-array type: {ty:?}");
                 };
                 self.output
-                    .write_fmt(format_args!("({}){{{{ ", array_wrapper_name(*elem, *len, &types)))
+                    .write_fmt(format_args!(
+                        "({}){{{{ ",
+                        array_wrapper_name(*elem, *len, types)
+                    ))
                     .expect("writing to String cannot fail");
-                drop(types);
                 for (i, el) in elems.iter().enumerate() {
                     if i > 0 {
                         self.output.push_str(", ");
@@ -782,14 +816,16 @@ impl<'a> MirGen<'a> {
             // (already evaluated-once) operand. A future native backend can lower
             // this to a fill loop / memset instead.
             RValue::ArrayRepeat { ty, value, count } => {
-                let types = self.hir.types.borrow();
+                let types = &self.hir.types;
                 let TypeKind::Array { elem, len } = types.lookup(*ty) else {
                     unreachable!("ArrayRepeat rvalue carries a non-array type: {ty:?}");
                 };
                 self.output
-                    .write_fmt(format_args!("({}){{{{ ", array_wrapper_name(*elem, *len, &types)))
+                    .write_fmt(format_args!(
+                        "({}){{{{ ",
+                        array_wrapper_name(*elem, *len, types)
+                    ))
                     .expect("writing to String cannot fail");
-                drop(types);
                 for i in 0..*count {
                     if i > 0 {
                         self.output.push_str(", ");
@@ -799,11 +835,10 @@ impl<'a> MirGen<'a> {
                 self.output.push_str(" }}");
             }
             RValue::StructLit { ty, fields } => {
-                let types = self.hir.types.borrow();
+                let types = &self.hir.types;
                 self.output
-                    .write_fmt(format_args!("({}){{ ", CType::new(*ty, &types)))
+                    .write_fmt(format_args!("({}){{ ", CType::new(*ty, types)))
                     .expect("writing to String cannot fail");
-                drop(types);
                 for (i, (name, value)) in fields.iter().enumerate() {
                     if i > 0 {
                         self.output.push_str(", ");
@@ -872,11 +907,15 @@ impl<'a> MirGen<'a> {
         for (_, g) in self.hir.globals.iter() {
             let Some(value) = &g.value else { continue };
             let qual = if g.mutable { "static" } else { "static const" };
-            let types = self.hir.types.borrow();
+            let types = &self.hir.types;
             self.output
-                .write_fmt(format_args!("{} {} {} = ", qual, CType::new(g.ty, &types), g.name))
+                .write_fmt(format_args!(
+                    "{} {} {} = ",
+                    qual,
+                    CType::new(g.ty, types),
+                    g.name
+                ))
                 .expect("writing to String cannot fail");
-            drop(types);
             match value {
                 ConstValue::Int(v) => {
                     self.output.push_str(itoa::Buffer::new().format(*v));
@@ -932,7 +971,10 @@ impl<'a> MirGen<'a> {
     // from string_index. collect_strings runs first and always populates all
     // strings, so this never fires on correct data. Use expect() for defense.
     fn string_id(&self, s: &Text) -> usize {
-        self.string_index.get(s).copied().expect("string literal in string_index")
+        self.string_index
+            .get(s)
+            .copied()
+            .expect("string literal in string_index")
     }
 
     fn gen_literal(&mut self, lit: &Literal) {
@@ -945,10 +987,9 @@ impl<'a> MirGen<'a> {
             // work. The print intrinsic emits the byte form (`%s`) separately.
             Literal::String(s) => {
                 let n = hir::core::decode_string_literal(s).len() as u64;
-                let mut types = self.hir.types.borrow_mut();
-                let uint8_ty = types.intern(TypeKind::Path(Text::from("uint8")));
-                let wrapper = array_wrapper_name(uint8_ty, n, &types);
-                drop(types);
+                let types = &self.hir.types;
+                let uint8_ty = types.uint8_ty();
+                let wrapper = array_wrapper_name(uint8_ty, n, types);
                 self.w(format_args!("({}*)__eye_str{}", wrapper, self.string_id(s)));
             }
             Literal::Bool(b) => self.output.push_str(if *b { "true" } else { "false" }),
@@ -1015,12 +1056,12 @@ impl<'a> MirGen<'a> {
             Operand::Const(Literal::String(s)) => self.w(format_args!("\"{}\"", s)),
             Operand::Copy(place) => {
                 let (is_str, is_pointer) = {
-                    let types = self.hir.types.borrow();
+                    let types = &self.hir.types;
                     let ty = self.place_type(mir, place);
                     // Everything `spec_for_type` formats as `%p` except `ptr`
                     // itself, which is already `void*` and needs no cast.
                     (
-                        is_byte_string(ty, &types),
+                        is_byte_string(ty, types),
                         matches!(
                             types.lookup(ty),
                             TypeKind::Ref(_) | TypeKind::Ptr(_) | TypeKind::Fn { .. }
@@ -1051,8 +1092,8 @@ impl<'a> MirGen<'a> {
             Operand::Const(Literal::Bool(_)) => "%d",
             Operand::Const(Literal::Char(_)) => "%c",
             Operand::Copy(place) => {
-                let types = self.hir.types.borrow();
-                spec_for_type(self.place_type(mir, place), &types)
+                let types = &self.hir.types;
+                spec_for_type(self.place_type(mir, place), types)
             }
         }
     }
@@ -1082,7 +1123,7 @@ impl<'a> MirGen<'a> {
             // reference/raw-pointer base.
             Place::Index(base, _) => {
                 let base_ty = self.place_type(mir, base);
-                let types = self.hir.types.borrow();
+                let types = &self.hir.types;
                 match types.lookup(base_ty) {
                     TypeKind::Array { elem, .. } => *elem,
                     TypeKind::Ref(inner) | TypeKind::Ptr(inner) => match types.lookup(*inner) {
@@ -1095,7 +1136,7 @@ impl<'a> MirGen<'a> {
             // `*p` has the pointee type.
             Place::Deref(base) => {
                 let base_ty = self.place_type(mir, base);
-                let types = self.hir.types.borrow();
+                let types = &self.hir.types;
                 match types.lookup(base_ty) {
                     TypeKind::Ref(inner) | TypeKind::Ptr(inner) => *inner,
                     _ => base_ty,
@@ -1108,7 +1149,7 @@ impl<'a> MirGen<'a> {
 
     fn index_access(&mut self, mir: &MirBody, place: &Place) -> IndexAccess {
         let ty = self.place_type(mir, place);
-        let types = self.hir.types.borrow();
+        let types = &self.hir.types;
         match types.lookup(ty) {
             TypeKind::Array { .. } => IndexAccess::ArrayValue,
             TypeKind::Ref(inner) | TypeKind::Ptr(inner)
@@ -1122,7 +1163,7 @@ impl<'a> MirGen<'a> {
 
     fn place_is_pointer_like(&mut self, mir: &MirBody, place: &Place) -> bool {
         let ty = self.place_type(mir, place);
-        let types = self.hir.types.borrow();
+        let types = &self.hir.types;
         matches!(types.lookup(ty), TypeKind::Ref(_) | TypeKind::Ptr(_))
     }
 
@@ -1131,7 +1172,7 @@ impl<'a> MirGen<'a> {
     /// field arena, so a union member resolves the same way.
     fn field_type(&mut self, mir: &MirBody, base: &Place, name: &hir::core::Text) -> Type {
         let base_ty = self.place_type(mir, base);
-        let types = self.hir.types.borrow();
+        let types = &self.hir.types;
         let struct_name = match types.lookup(base_ty) {
             TypeKind::Path(n) => n.clone(),
             TypeKind::Ref(inner) | TypeKind::Ptr(inner) => match types.lookup(*inner) {
@@ -1140,7 +1181,6 @@ impl<'a> MirGen<'a> {
             },
             _ => return self.error_ty,
         };
-        drop(types);
         let field_id = self
             .hir
             .items
@@ -1170,7 +1210,7 @@ impl<'a> MirGen<'a> {
     fn local_names(mir: &MirBody) -> Vec<Text> {
         let mut names: Vec<Text> = Vec::with_capacity(mir.locals.len());
         for (id, local) in mir.locals.iter() {
-            let raw = u32::from(id.into_raw());
+            let raw = u32::from(id.raw_idx());
             let idx = raw as usize;
             if names.len() <= idx {
                 names.resize(idx + 1, Text::from(""));
@@ -1200,6 +1240,6 @@ impl<'a> MirGen<'a> {
 }
 
 fn local_name(names: &[Text], id: mir::core::LocalId) -> &str {
-    let raw = u32::from(id.into_raw()) as usize;
+    let raw = u32::from(id.raw_idx()) as usize;
     names.get(raw).expect("MIR local name was precomputed")
 }

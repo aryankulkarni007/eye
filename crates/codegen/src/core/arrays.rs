@@ -123,13 +123,7 @@ mod tests {
         let cases = [
             (t.intern(TypeKind::Ref(int)), ref_int),
             (t.intern(TypeKind::Ptr(int)), ptr_int),
-            (
-                t.intern(TypeKind::Array {
-                    elem: int,
-                    len: 2,
-                }),
-                arr_2_3int,
-            ),
+            (t.intern(TypeKind::Array { elem: int, len: 2 }), arr_2_3int),
             (
                 t.intern(TypeKind::Fn {
                     params: vec![],

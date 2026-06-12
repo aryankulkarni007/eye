@@ -21,18 +21,15 @@
 //! [`Switch`]: MirStmt::Switch
 
 use ast::{BinOp, UnaryOp};
-use hir::core::{EnumId, FnId, Literal, Text, TypeRef};
-use la_arena::{Arena, Idx};
+use hir::core::{EnumId, FnId, Literal, Text, TypeRef, TypedArena};
 use thin_vec::ThinVec;
 
 /// MIR reuses the HIR (unresolved) type representation rather than maintaining a
 /// parallel type system. Every MIR local and temp carries one.
 pub type Type = TypeRef;
 
-/// A MIR local: a source local, a parameter, or a generated temp. Each is typed.
-/// `name` is the source name for parameters and `let` bindings; generated temps
-/// leave it `None` and the emitter derives a name from the [`LocalId`].
-pub type LocalId = Idx<MirLocal>;
+// EXPERIMENTAL(typed-arena): newtype wrapping Idx<MirLocal>.
+hir::arena_id!(LocalId, MirLocal);
 
 #[derive(Debug)]
 pub struct MirLocal {
@@ -49,9 +46,12 @@ pub struct MirLocal {
 /// of use through [`MirStmt::Let`], so the emitter never iterates this arena to
 /// declare. Parameters live here too (so places that reference them resolve to a
 /// name) but are declared by the function signature, not by a `Let`.
+///
+/// EXPERIMENTAL(typed-arena): `locals` uses [`TypedArena`] so every index
+/// carries [`LocalId`] at the type level.
 #[derive(Debug)]
 pub struct MirBody {
-    pub locals: Arena<MirLocal>,
+    pub locals: TypedArena<MirLocal, LocalId>,
     /// Locals that are parameters, in declaration order. The emitter skips
     /// declaring these; the function signature already does.
     pub params: ThinVec<LocalId>,
@@ -275,7 +275,7 @@ pub enum Place {
 impl PartialEq for Place {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Local(a), Self::Local(b)) => u32::from(a.into_raw()) == u32::from(b.into_raw()),
+            (Self::Local(a), Self::Local(b)) => a == b,
             (Self::Global(a), Self::Global(b)) => a == b,
             (Self::Field(a, an), Self::Field(b, bn)) => a == b && an == bn,
             (Self::Index(a, ai), Self::Index(b, bi)) => a == b && ai == bi,
@@ -292,7 +292,7 @@ impl std::hash::Hash for Place {
         match self {
             Self::Local(id) => {
                 0u8.hash(state);
-                u32::from(id.into_raw()).hash(state);
+                id.hash(state);
             }
             Self::Global(name) => {
                 1u8.hash(state);

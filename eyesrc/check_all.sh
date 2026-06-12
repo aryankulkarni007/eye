@@ -22,8 +22,10 @@ if [ "${1:-}" = "-v" ]; then verbose=true; fi
 # starts passing is reported as stale so the list cannot rot.
 #   linkedlist.eye  intentionally broken: self-referential initializer needs
 #                   null / two-phase init (documented in the file header).
-#   lang.eye        known bug: string decay missing at struct-literal field
-#                   init (docs/planning/ledger.md). Remove when fixed.
+#   lang.eye        uses `const [char*; 24]` - an aggregate const, beyond the
+#                   scalar-only const floor (docs/planning/DEFER.md). Its
+#                   original blocker (string decay at struct-literal fields,
+#                   CLEAK L1) is FIXED. Remove when const aggregates land.
 XFAIL=(
     "eyesrc/programs/linkedlist.eye"
     "eyesrc/programs/lang.eye"

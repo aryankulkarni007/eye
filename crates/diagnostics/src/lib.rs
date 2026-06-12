@@ -146,7 +146,7 @@ impl fmt::Display for Code {
 
 /// Per-crate accumulator. Stores concrete typed entries so in-crate tests can
 /// `matches!` a variant without downcasting. Never halts a pass.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Sink<K> {
     entries: Vec<(Span, K)>,
 }

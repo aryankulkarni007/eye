@@ -25,6 +25,9 @@ token.workspace = true
 diagnostics.workspace = true
 text-size.workspace = true
 rustc-hash.workspace = true
+database.workspace = true
+
+salsa.workspace = true
 
 [dev-dependencies]
 insta = { workspace = true }

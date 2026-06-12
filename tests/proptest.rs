@@ -167,12 +167,12 @@ proptest! {
             return Ok(());
         };
 
-        let hir = lower_source_file(file_ast);
+        let hir = lower_source_file(file_ast, &lexed.interner);
         if !hir.diagnostics.is_empty() {
             return Ok(());
         }
 
-        let _c_source = codegen::core::gen_mir(&hir);
+        let _c_source = codegen::core::gen_mir(&hir, &mir::lower_all(&hir));
     }
 }
 

@@ -119,7 +119,16 @@ pub(crate) fn source_file(p: &mut Parser) {
             fn_def(p);
         } else {
             p.sync(
-                &[T![const], T![let], T![mut], T![structure], T![union], T![extern], T![enum], SyntaxKind::Ident],
+                &[
+                    T![const],
+                    T![let],
+                    T![mut],
+                    T![structure],
+                    T![union],
+                    T![extern],
+                    T![enum],
+                    SyntaxKind::Ident,
+                ],
                 crate::SyntaxError::ExpectedItem,
             );
         }
@@ -137,7 +146,11 @@ fn const_def(p: &mut Parser) {
     let def_start = p.cursor_range(); // 'const' - anchor for diagnostics
     p.advance(); // 'const'
     type_ref(p);
-    p.expect_after(SyntaxKind::Ident, def_start, crate::SyntaxError::ExpectedConstName);
+    p.expect_after(
+        SyntaxKind::Ident,
+        def_start,
+        crate::SyntaxError::ExpectedConstName,
+    );
     let had_eq = p.eat(T![=]);
     expr(p);
     let had_semi = p.eat(T![;]);
@@ -162,7 +175,11 @@ fn global_def(p: &mut Parser) {
     let def_start = p.cursor_range(); // 'let' or 'mut' - anchor for diagnostics
     p.advance(); // 'let' or 'mut'
     type_ref(p);
-    p.expect_after(SyntaxKind::Ident, def_start, crate::SyntaxError::ExpectedBindingName);
+    p.expect_after(
+        SyntaxKind::Ident,
+        def_start,
+        crate::SyntaxError::ExpectedBindingName,
+    );
     let had_eq = p.eat(T![=]);
     expr(p);
     let had_semi = p.eat(T![;]);
@@ -181,7 +198,11 @@ fn struct_def(p: &mut Parser) {
     let m = p.open();
     let kw = p.cursor_range(); // 'structure' - anchor for diagnostics
     p.advance(); // 'structure'
-    p.expect_after(SyntaxKind::Ident, kw, crate::SyntaxError::ExpectedStructName);
+    p.expect_after(
+        SyntaxKind::Ident,
+        kw,
+        crate::SyntaxError::ExpectedStructName,
+    );
     let header = TextRange::new(kw.start(), p.cursor_range().start());
     field_list(p, header);
     let had_semi = p.eat(T![;]);
@@ -226,7 +247,10 @@ fn extern_block(p: &mut Parser) {
         } else if p.at(SyntaxKind::Ident) {
             extern_fn(p);
         } else {
-            p.sync(&[T!['}'], SyntaxKind::Ident, T![type]], crate::SyntaxError::ExpectedExternSignature);
+            p.sync(
+                &[T!['}'], SyntaxKind::Ident, T![type]],
+                crate::SyntaxError::ExpectedExternSignature,
+            );
         }
     }
     if !p.eat(T!['}']) {
@@ -266,7 +290,11 @@ fn extern_type(p: &mut Parser) {
     let m = p.open();
     let kw = p.cursor_range(); // 'type' keyword - anchor for diagnostics
     p.advance(); // 'type'
-    p.expect_after(SyntaxKind::Ident, kw, crate::SyntaxError::ExpectedExternTypeName);
+    p.expect_after(
+        SyntaxKind::Ident,
+        kw,
+        crate::SyntaxError::ExpectedExternTypeName,
+    );
     let had_semi = p.eat(T![;]);
     if !had_semi {
         let span = TextRange::new(kw.start(), p.last_consumed_range().end());
@@ -311,7 +339,11 @@ fn field(p: &mut Parser) {
     let m = p.open();
     type_ref(p);
     let field_start = p.cursor_range();
-    p.expect_after(SyntaxKind::Ident, field_start, crate::SyntaxError::ExpectedFieldName);
+    p.expect_after(
+        SyntaxKind::Ident,
+        field_start,
+        crate::SyntaxError::ExpectedFieldName,
+    );
     m.complete(p, SyntaxKind::Field);
 }
 
@@ -319,7 +351,11 @@ fn enum_def(p: &mut Parser) {
     let m = p.open();
     let def_start = p.cursor_range(); // 'enum' - anchor for diagnostics
     p.advance(); // 'enum'
-    p.expect_after(SyntaxKind::Ident, def_start, crate::SyntaxError::ExpectedEnumName);
+    p.expect_after(
+        SyntaxKind::Ident,
+        def_start,
+        crate::SyntaxError::ExpectedEnumName,
+    );
     let had_eq = p.eat(T![=]);
 
     // First variant. At least one variant required. Leading `|` is always
@@ -475,7 +511,11 @@ fn param_list(p: &mut Parser, ctx: TextRange, variadic_ok: bool) {
         let param_m = p.open();
         type_ref(p);
         let param_start = p.cursor_range();
-        p.expect_after(SyntaxKind::Ident, param_start, crate::SyntaxError::ExpectedParamName);
+        p.expect_after(
+            SyntaxKind::Ident,
+            param_start,
+            crate::SyntaxError::ExpectedParamName,
+        );
         param_m.complete(p, SyntaxKind::Param);
         named_params += 1;
         if !p.eat(T![,]) {
@@ -544,10 +584,7 @@ fn block(p: &mut Parser, ctx: TextRange) {
         let range = if had_open {
             // point to the last consumed content token (or the opening brace
             // if nothing was parsed inside the block)
-            TextRange::new(
-                open_brace.start(),
-                p.last_consumed_range().end(),
-            )
+            TextRange::new(open_brace.start(), p.last_consumed_range().end())
         } else {
             p.cursor_range()
         };
@@ -601,7 +638,11 @@ fn let_stmt(p: &mut Parser) {
         if has_type {
             type_ref(p);
         }
-        p.expect_after(SyntaxKind::Ident, stmt_start, crate::SyntaxError::ExpectedBindingName);
+        p.expect_after(
+            SyntaxKind::Ident,
+            stmt_start,
+            crate::SyntaxError::ExpectedBindingName,
+        );
     }
     let had_eq = p.eat(T![=]);
     expr(p);
@@ -1107,7 +1148,11 @@ fn struct_pat_field(p: &mut Parser) {
     if p.eat(T![:]) {
         let colon_range = p.last_consumed_range();
         let nm = p.open();
-        p.expect_after(SyntaxKind::Ident, colon_range, crate::SyntaxError::ExpectedBindingName);
+        p.expect_after(
+            SyntaxKind::Ident,
+            colon_range,
+            crate::SyntaxError::ExpectedBindingName,
+        );
         nm.complete(p, SyntaxKind::NameRef);
     }
     m.complete(p, SyntaxKind::StructPatField);
@@ -1161,8 +1206,7 @@ fn array_lit(p: &mut Parser) -> CompletedMarker {
                 }
                 p.set_no_struct_lit(prev);
                 if !p.eat(T![']']) {
-                    let range =
-                        TextRange::new(open_bracket.start(), p.last_consumed_range().end());
+                    let range = TextRange::new(open_bracket.start(), p.last_consumed_range().end());
                     p.error_at(range, crate::SyntaxError::ExpectedArrayLitClose);
                 }
                 return m.complete(p, SyntaxKind::ArrayRepeat);

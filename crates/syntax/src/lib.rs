@@ -301,6 +301,31 @@ macro_rules! T {
     [_]         => { $crate::SyntaxKind::Underscore };
 }
 
+// ---------------------------------------------------------------------------
+// EXPERIMENTAL: shared string table trait for the query-driven pipeline
+// (QUERY.md). Defined here so both `lexer` (the concrete `Interner`) and `hir`
+// (which consumes it) share a single dependency rather than coupling directly.
+// ---------------------------------------------------------------------------
+
+pub use smol_str::SmolStr;
+
+/// EXPERIMENTAL: A read-only string table that maps `&str` to a canonical
+/// [`SmolStr`] when the string has been pre-interned (e.g. by the lexer).
+/// The returned clone is O(1) - short strings (<=22 bytes) are inline; long
+/// strings bump an `Arc` refcount.
+///
+/// Why a trait?  The lexer's [`Interner`] is the only implementation today,
+/// but in a multi-file query architecture (QUERY.md) a `SourceFile` wrapper
+/// would also implement this, letting HIR lowering request strings without
+/// caring which concrete type owns the table.
+///
+/// # Stability
+/// Experimental (2026-06-11). The trait may gain lookup-by-id methods when
+/// `Symbol` handles are threaded downstream.
+pub trait StringTable {
+    fn get(&self, s: &str) -> Option<SmolStr>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

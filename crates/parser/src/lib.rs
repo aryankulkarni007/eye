@@ -218,12 +218,7 @@ impl<'t> Parser<'t> {
     /// `start` range, spanning to the current cursor. Used when the expected
     /// token belongs to a construct beginning at `start` so the underline
     /// covers the full incomplete construct rather than just the next token.
-    pub fn expect_after(
-        &mut self,
-        kind: SyntaxKind,
-        start: TextRange,
-        err: impl Into<ParseError>,
-    ) {
+    pub fn expect_after(&mut self, kind: SyntaxKind, start: TextRange, err: impl Into<ParseError>) {
         if !self.eat(kind) {
             let span = TextRange::new(start.start(), self.cursor_range().end());
             self.error_at(span, err);
@@ -585,14 +580,10 @@ main() {
         let src = "log(string fmt, ...) {\n}\n";
         let parse = parse_src(src);
         assert!(
-            parse
-                .diagnostics
-                .entries()
-                .iter()
-                .any(|(_, d)| matches!(
-                    d,
-                    ParseError::Grammar(GrammarError::VariadicOutsideExtern)
-                )),
+            parse.diagnostics.entries().iter().any(|(_, d)| matches!(
+                d,
+                ParseError::Grammar(GrammarError::VariadicOutsideExtern)
+            )),
             "expected a variadic-outside-extern diagnostic, got: {:?}",
             parse.diagnostics
         );
@@ -618,14 +609,10 @@ main() {
         let src = "extern {\n    bare(...) -> int32;\n}\n";
         let parse = parse_src(src);
         assert!(
-            parse
-                .diagnostics
-                .entries()
-                .iter()
-                .any(|(_, d)| matches!(
-                    d,
-                    ParseError::Grammar(GrammarError::VariadicNeedsNamedParam)
-                )),
+            parse.diagnostics.entries().iter().any(|(_, d)| matches!(
+                d,
+                ParseError::Grammar(GrammarError::VariadicNeedsNamedParam)
+            )),
             "expected a variadic-needs-named-param diagnostic, got: {:?}",
             parse.diagnostics
         );
@@ -652,10 +639,7 @@ main() {
                 .diagnostics
                 .entries()
                 .iter()
-                .any(|(_, d)| matches!(
-                    d,
-                    ParseError::Grammar(GrammarError::StructPatInMatchArm)
-                )),
+                .any(|(_, d)| matches!(d, ParseError::Grammar(GrammarError::StructPatInMatchArm))),
             "expected a struct-pat-in-match-arm diagnostic, got: {:?}",
             parse.diagnostics
         );
@@ -1173,7 +1157,10 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         let diags = parse.diagnostics.entries();
         assert!(!diags.is_empty(), "expected a diagnostic for missing '{{'");
         assert_non_empty_spans(diags);
-        assert_eq!(parse.green.to_string(), "main() {\n    if x\n        y = 5;\n}\n");
+        assert_eq!(
+            parse.green.to_string(),
+            "main() {\n    if x\n        y = 5;\n}\n"
+        );
     }
 
     /// Missing `(` after function name should point to the function name.
@@ -1193,20 +1180,38 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         let diags = parse.diagnostics.entries();
         assert!(!diags.is_empty(), "expected a diagnostic for missing ']'");
         assert_non_empty_spans(diags);
-        assert_eq!(parse.green.to_string(), "main() {\n    let xs = [1, 2, 3\n}\n");
+        assert_eq!(
+            parse.green.to_string(),
+            "main() {\n    let xs = [1, 2, 3\n}\n"
+        );
     }
 
     /// `[v; N]` parses as an `ArrayRepeat`; the list form `[a, b, c]` stays an
     /// `ArrayLit`. The `;` after the first element selects the repeat form.
     #[test]
     fn array_repeat_vs_list_literal() {
-        let repeat = format!("{:#?}", parse_src("main() {\n    let xs = [7; 3];\n}\n").green);
-        assert!(repeat.contains("ArrayRepeat"), "expected ArrayRepeat in:\n{repeat}");
-        assert!(!repeat.contains("ArrayLit"), "got ArrayLit for repeat in:\n{repeat}");
+        let repeat = format!(
+            "{:#?}",
+            parse_src("main() {\n    let xs = [7; 3];\n}\n").green
+        );
+        assert!(
+            repeat.contains("ArrayRepeat"),
+            "expected ArrayRepeat in:\n{repeat}"
+        );
+        assert!(
+            !repeat.contains("ArrayLit"),
+            "got ArrayLit for repeat in:\n{repeat}"
+        );
 
-        let list = format!("{:#?}", parse_src("main() {\n    let xs = [1, 2, 3];\n}\n").green);
+        let list = format!(
+            "{:#?}",
+            parse_src("main() {\n    let xs = [1, 2, 3];\n}\n").green
+        );
         assert!(list.contains("ArrayLit"), "expected ArrayLit in:\n{list}");
-        assert!(!list.contains("ArrayRepeat"), "got ArrayRepeat for list in:\n{list}");
+        assert!(
+            !list.contains("ArrayRepeat"),
+            "got ArrayRepeat for list in:\n{list}"
+        );
     }
 
     /// Missing `}` in match arm list should point to the opening `{`.

@@ -930,7 +930,10 @@ fn guarded_binding_catchall_in_statement_position() {
     );
     // 0: "zero". 20: guard true, binding x -> "big 20". 5: guard false, falls to
     // `_` -> "other".
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "zero\nbig 20\nother\n");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "zero\nbig 20\nother\n"
+    );
 }
 
 /// `main` is an ordinary function; the C entry point is a backend shim. An
@@ -1277,7 +1280,8 @@ fn field_assign_through_let_binding_rejected() {
 /// not just plain `=`. (`mut` avoids an immutability error masking the result.)
 #[test]
 fn compound_assignment_in_if_condition_rejected() {
-    let out = common::compile_expect_failure("main() {\n    mut int32 x = 0;\n    if x += 5 { }\n}\n");
+    let out =
+        common::compile_expect_failure("main() {\n    mut int32 x = 0;\n    if x += 5 { }\n}\n");
     let rendered = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -1658,15 +1662,19 @@ fn array_fill_eye_repeat_literal() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines, [
-        "a 7 7 7 len 3",
-        "flags 1 1 len 4",
-        "big 0 0",
-        "ps 1 2 1 2",
-        "grid 9 9 9",
-        // next() ran exactly once; the temp was copied 4 times.
-        "same 1 1 1 1 calls 1",
-    ], "full stdout:\n{stdout}");
+    assert_eq!(
+        lines,
+        [
+            "a 7 7 7 len 3",
+            "flags 1 1 len 4",
+            "big 0 0",
+            "ps 1 2 1 2",
+            "grid 9 9 9",
+            // next() ran exactly once; the temp was copied 4 times.
+            "same 1 1 1 1 calls 1",
+        ],
+        "full stdout:\n{stdout}"
+    );
 }
 
 /// C seam: a variadic extern (`printf(string fmt, ...)`). The prototype gains
@@ -1807,3 +1815,39 @@ fn variadic_misuse_is_rejected() {
 }
 
 // ---- snapshot tests live in tests/snapshots.rs ----
+
+/// CLEAK L1/L2 (coercion-point unification): string decay at struct-literal
+/// fields and array-literal elements, through codegen to a running binary.
+/// Also covers an integer literal adopting a wide annotated type (M1's
+/// positive side): the printed `int64` value only survives if the literal's
+/// C temp is 64-bit.
+#[test]
+fn coercion_point_decay_and_wide_literals_run() {
+    let source = "\
+structure Syllable {
+    string sound,
+};
+
+main() {
+    let Syllable s = Syllable { sound: \"cvc\" };
+    let [string; 2] xs = [\"ab\", \"cd\"];
+    let int64 big = 5000000000;
+    println(\"{}\", s.sound);
+    println(\"{} {}\", xs[0], xs[1]);
+    println(\"{}\", big);
+}
+";
+    let (out, _) = common::run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "cvc\nab cd\n5000000000\n",
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

@@ -1,5 +1,13 @@
-//! LSP notification handlers.
+//! EXPERIMENTAL: LSP notification handlers backed by the salsa [`Database`].
+//!
+//! On every `didOpen` / `didChange` the handler mutates the salsa input and
+//! re-queries. Diagnostics phase-gate exactly like the CLI driver: lexer,
+//! then parser, then HIR. The HIR phase goes through the *per-function*
+//! query path (`database::hir_diagnostics`), so an edit that re-parses but
+//! leaves a function's body node intact re-checks only the changed bodies.
 
+use database::Database;
+use lexer::SourceText;
 use lsp_server::{Connection, Message};
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Url,
@@ -7,37 +15,34 @@ use lsp_types::{
 
 use crate::diagnostics::{diags_to_lsp, publish_diagnostics_notification};
 use crate::documents::DocumentStore;
-use ast::AstNode;
-use hir::core::lower_source_file;
-use lexer::{Lexer, SourceText};
-use parser::parse;
 
 pub fn handle_notification(
     connection: &Connection,
     not: lsp_server::Notification,
+    db: &mut Database,
     documents: &mut DocumentStore,
 ) -> anyhow::Result<()> {
     match not.method.as_str() {
         "textDocument/didOpen" => {
             let params: DidOpenTextDocumentParams = serde_json::from_value(not.params)?;
-            let uri = params.text_document.uri.to_string();
+            let uri = params.text_document.uri;
             let text = params.text_document.text;
-            documents.open(&uri, text.clone());
-            publish_diagnostics(connection, &params.text_document.uri, &text)?;
+            documents.open(db, uri.as_str(), uri.path().to_owned(), text.clone());
+            publish_diagnostics(connection, &uri, db, documents)?;
         }
         "textDocument/didChange" => {
             let params: DidChangeTextDocumentParams = serde_json::from_value(not.params)?;
-            let uri = params.text_document.uri.to_string();
+            let uri = params.text_document.uri;
             if let Some(change) = params.content_changes.into_iter().last() {
-                documents.change(&uri, change.text.clone());
-                publish_diagnostics(connection, &params.text_document.uri, &change.text)?;
+                documents.change(db, uri.as_str(), change.text.clone());
+                publish_diagnostics(connection, &uri, db, documents)?;
             }
         }
         "textDocument/didClose" => {
             let params: DidCloseTextDocumentParams = serde_json::from_value(not.params)?;
-            let uri = params.text_document.uri.to_string();
-            documents.close(&uri);
-            let notification = publish_diagnostics_notification(&params.text_document.uri, vec![]);
+            let uri = params.text_document.uri;
+            documents.close(uri.as_str());
+            let notification = publish_diagnostics_notification(&uri, vec![]);
             connection
                 .sender
                 .send(Message::Notification(notification))?;
@@ -47,16 +52,22 @@ pub fn handle_notification(
     Ok(())
 }
 
-/// Run the compiler pipeline far enough to collect every diagnostic, then
-/// publish them. The phases short-circuit exactly as the `eye` driver does
-/// (`src/main.rs`): a lexer error blocks parsing, a parse error blocks HIR
-/// lowering - a downstream phase fed a broken tree only emits noise. The first
-/// phase to report wins; when all phases are clean we publish an empty list,
-/// which clears any stale diagnostics in the editor.
-fn publish_diagnostics(connection: &Connection, uri: &Url, text: &str) -> anyhow::Result<()> {
-    let source = SourceText::new(text.to_string());
+/// Query the database and publish every diagnostic (lexer, parser, HIR),
+/// short-circuiting exactly as the CLI driver does.
+fn publish_diagnostics(
+    connection: &Connection,
+    uri: &Url,
+    db: &Database,
+    documents: &DocumentStore,
+) -> anyhow::Result<()> {
+    let Some(input) = documents.get(uri.as_str()) else {
+        return Ok(());
+    };
 
-    let diags = compute_diagnostics(&source, uri);
+    let source = SourceText::new(input.text(db).to_owned());
+    let input = *input;
+
+    let diags = compute_diagnostics(db, input, source, uri);
     let notification = publish_diagnostics_notification(uri, diags);
     connection
         .sender
@@ -64,36 +75,43 @@ fn publish_diagnostics(connection: &Connection, uri: &Url, text: &str) -> anyhow
     Ok(())
 }
 
-fn compute_diagnostics(source: &SourceText, uri: &Url) -> Vec<lsp_types::Diagnostic> {
-    // 1. lexer: no tree exists yet, so spans are tight byte ranges (root None).
-    let lexed = Lexer::new(source).tokenize();
+fn compute_diagnostics(
+    db: &Database,
+    input: database::SourceFileInput,
+    source: SourceText,
+    uri: &Url,
+) -> Vec<lsp_types::Diagnostic> {
+    // Phase 1 -- lexer: no tree exists, so root is None.
+    let lexed = database::lex(db, input);
     if !lexed.diags.is_empty() {
-        return diags_to_lsp(source, uri, lexed.diags.into_diags(), None, "eye-lexer");
+        return diags_to_lsp(
+            &source,
+            uri,
+            lexed.diags.clone().into_diags(),
+            None,
+            "eye-lexer",
+        );
     }
 
-    // 2. parser: a tree now exists; pass it so pointer spans can be trimmed.
-    let parse = parse(&lexed.tokens, source);
+    // Phase 2 -- parser: tree exists.
+    let parse = database::parse(db, input);
+    let root = parse.syntax();
     if !parse.diagnostics.is_empty() {
         return diags_to_lsp(
-            source,
+            &source,
             uri,
-            parse.diagnostics.into_diags(),
-            Some(&parse.green),
+            parse.diagnostics.clone().into_diags(),
+            Some(&root),
             "eye-parser",
         );
     }
 
-    // 3. HIR: semantic diagnostics (name resolution, types, const-eval, ...) -
-    // the bulk of useful editor feedback, invisible to lexer and parser alike.
-    let Some(file) = ast::SourceFile::cast(parse.green.clone()) else {
-        return Vec::new();
-    };
-    let hir = lower_source_file(file);
+    // Phase 3 -- HIR: item-scope + per-function body diagnostics.
     diags_to_lsp(
-        source,
+        &source,
         uri,
-        hir.diagnostics.into_diags(),
-        Some(&parse.green),
+        database::hir_diagnostics(db, input).into_diags(),
+        Some(&root),
         "eye-hir",
     )
 }

@@ -1,21 +1,26 @@
-//! Arena index aliases. Every HIR node is addressed by a typed [`Idx`].
+//! EXPERIMENTAL(typed-arena): Arena index newtypes.
+//!
+//! Every HIR node is addressed by a typed newtype rather than a raw [`Idx`],
+//! so `StructId` and `FnId` are distinct types that the compiler refuses to
+//! mix up.
 
-use la_arena::Idx;
+use crate::arena_id;
 
-use super::*;
+use super::body::*;
+use super::items::*;
 
-pub type StructId = Idx<Struct>;
-pub type UnionId = Idx<Union>;
-pub type ConstId = Idx<Const>;
-pub type GlobalId = Idx<Global>;
-pub type EnumId = Idx<Enum>;
-pub type OpaqueId = Idx<OpaqueType>;
-pub type FnId = Idx<Function>;
-pub type FieldId = Idx<Field>;
-pub type ExprId = Idx<Expr>;
-pub type StmtId = Idx<Stmt>;
-pub type PatId = Idx<Pat>;
-pub type LocalId = Idx<Local>;
-pub type LocalConstId = Idx<LocalConst>;
-pub type BlockId = Idx<Block>;
-pub type BodyId = Idx<Body>;
+arena_id!(StructId, Struct);
+arena_id!(UnionId, Union);
+arena_id!(ConstId, Const);
+arena_id!(GlobalId, Global);
+arena_id!(EnumId, Enum);
+arena_id!(OpaqueId, OpaqueType);
+arena_id!(FnId, Function);
+arena_id!(FieldId, Field);
+arena_id!(ExprId, Expr);
+arena_id!(StmtId, Stmt);
+arena_id!(PatId, Pat);
+arena_id!(LocalId, Local);
+arena_id!(LocalConstId, LocalConst);
+arena_id!(BlockId, Block);
+arena_id!(BodyId, Body);

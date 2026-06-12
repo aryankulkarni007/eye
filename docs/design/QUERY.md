@@ -1,9 +1,9 @@
 # Query-driven compiler architecture
 
-Status: **DESIGNED, NOT BUILT.** This is the response to LIMITS.md. It defines
-the target architecture: a demand-driven, incrementally-cached compiler built
-around a central `Db` trait. It does not prescribe a framework - the design is
-salsa-shaped but implementable with a lightweight custom memoization layer.
+Status: **DESIGNED, SUPERSEDED.** This document defines the *why* and *what* of
+the query-driven architecture. The *how* (concrete implementation) is now
+[`SALSA.md`](SALSA.md), which uses Salsa 3.x from the start instead of the
+custom memoization layer described here.
 
 ## Why now
 

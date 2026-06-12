@@ -1,7 +1,5 @@
 # Eye
 
-[![CI](https://github.com/anomalyco/eye/actions/workflows/ci.yml/badge.svg)](https://github.com/anomalyco/eye/actions/workflows/ci.yml)
-
 > **Quick install:** `curl -fsSL https://raw.githubusercontent.com/anomalyco/eye/main/scripts/install.sh | sh`
 
 A small, statically-typed language that transpiles to C and links through
@@ -15,39 +13,39 @@ arena-backed HIR, and a stateless code generator.
 
 ## Documentation
 
-| File                                             | Purpose                                                                                                     |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| [`docs/dev/README.md`](docs/dev/README.md)       | **Doc index** - the full map of the `docs/` set by category and status                                      |
-| [`docs/dev/CAPABILITIES.md`](docs/dev/CAPABILITIES.md) | **Current capabilities** - what compiles and runs today, and the mechanism behind each              |
-| [`docs/planning/FUTURE.md`](docs/planning/FUTURE.md) | **Status ledger** - what ships per version (v0.1-v0.7), limitations, oversights, roadmap, future forks     |
-| [`docs/design/VISION.md`](docs/design/VISION.md) | Long-term language vision (kernel vs stdlib, supermacros) - not current implementation                      |
-| [`docs/dev/adding-features.md`](docs/dev/adding-features.md) | How to extend the pipeline (lexer → HIR → MIR → codegen)                                         |
-| [`docs/dev/editor-setup.md`](docs/dev/editor-setup.md) | Configure `eye-lsp` in VS Code / Cursor                                                                     |
-| [`docs/features/MATCH.md`](docs/features/MATCH.md) | Kernel-scope design note for `match` as discrete discriminant dispatch                                    |
-| [`docs/features/LSP.md`](docs/features/LSP.md)   | Capability audit for the current `eye-lsp` server                                                           |
-| [`docs/planning/M5.md`](docs/planning/M5.md)     | Historical design brief for v0.3 match codegen hoist                                                        |
-| [`crates/ast/eye.ungram`](crates/ast/eye.ungram) | Grammar source; run `cargo run -p xtask -- codegen` after edits                                             |
+| File                                                         | Purpose                                                                                                |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| [`docs/dev/README.md`](docs/dev/README.md)                   | **Doc index** - the full map of the `docs/` set by category and status                                 |
+| [`docs/dev/CAPABILITIES.md`](docs/dev/CAPABILITIES.md)       | **Current capabilities** - what compiles and runs today, and the mechanism behind each                 |
+| [`docs/planning/FUTURE.md`](docs/planning/FUTURE.md)         | **Status ledger** - what ships per version (v0.1-v0.7), limitations, oversights, roadmap, future forks |
+| [`docs/design/VISION.md`](docs/design/VISION.md)             | Long-term language vision (kernel vs stdlib, supermacros) - not current implementation                 |
+| [`docs/dev/adding-features.md`](docs/dev/adding-features.md) | How to extend the pipeline (lexer → HIR → MIR → codegen)                                               |
+| [`docs/dev/editor-setup.md`](docs/dev/editor-setup.md)       | Configure `eye-lsp` in VS Code / Cursor                                                                |
+| [`docs/features/MATCH.md`](docs/features/MATCH.md)           | Kernel-scope design note for `match` as discrete discriminant dispatch                                 |
+| [`docs/features/LSP.md`](docs/features/LSP.md)               | Capability audit for the current `eye-lsp` server                                                      |
+| [`docs/planning/M5.md`](docs/planning/M5.md)                 | Historical design brief for v0.3 match codegen hoist                                                   |
+| [`crates/ast/eye.ungram`](crates/ast/eye.ungram)             | Grammar source; run `cargo run -p xtask -- codegen` after edits                                        |
 
 ## Layout
 
-| Path             | Purpose                                                    |
-| ---------------- | ---------------------------------------------------------- |
-| `src/main.rs`    | `eye` binary - driver wiring the pipeline together         |
-| `crates/token`   | Static token kinds and `T![...]` macro                     |
-| `crates/lexer`   | Logos-based lexer, interner, source-text helpers           |
-| `crates/syntax`  | `SyntaxKind` + rowan-typed `SyntaxNode`/`Token`            |
-| `crates/parser`  | Pratt parser, error recovery, snapshot tests               |
-| `crates/ast`     | Generated typed AST over the CST                           |
-| `crates/diagnostics` | Shared diagnostic taxonomy (8 classes), `Span`, `Sink`     |
-| `crates/hir`     | Name resolution + arena-allocated HIR + semantic diagnostics |
-| `crates/mir`     | Mid-level IR + HIR -> MIR lowering                         |
-| `crates/codegen` | MIR -> C emitter (dumb printer)                            |
-| `crates/lsp`     | `eye-lsp` language server (semantic tokens + parser diags) |
-| `crates/xtask`   | Codegen helpers (regenerating AST from ungrammar)          |
-| `eyesrc/lang/`   | Feature-demonstration sample programs                      |
-| `eyesrc/programs/` | Full algorithm sample programs                          |
-| `eyesrc/ffi/`    | Foreign-function interface sample programs                 |
-| `tests/`         | Workspace-level integration tests                          |
+| Path                 | Purpose                                                      |
+| -------------------- | ------------------------------------------------------------ |
+| `src/main.rs`        | `eye` binary - driver wiring the pipeline together           |
+| `crates/token`       | Static token kinds and `T![...]` macro                       |
+| `crates/lexer`       | Logos-based lexer, interner, source-text helpers             |
+| `crates/syntax`      | `SyntaxKind` + rowan-typed `SyntaxNode`/`Token`              |
+| `crates/parser`      | Pratt parser, error recovery, snapshot tests                 |
+| `crates/ast`         | Generated typed AST over the CST                             |
+| `crates/diagnostics` | Shared diagnostic taxonomy (8 classes), `Span`, `Sink`       |
+| `crates/hir`         | Name resolution + arena-allocated HIR + semantic diagnostics |
+| `crates/mir`         | Mid-level IR + HIR -> MIR lowering                           |
+| `crates/codegen`     | MIR -> C emitter (dumb printer)                              |
+| `crates/lsp`         | `eye-lsp` language server (semantic tokens + parser diags)   |
+| `crates/xtask`       | Codegen helpers (regenerating AST from ungrammar)            |
+| `eyesrc/lang/`       | Feature-demonstration sample programs                        |
+| `eyesrc/programs/`   | Full algorithm sample programs                               |
+| `eyesrc/ffi/`        | Foreign-function interface sample programs                   |
+| `tests/`             | Workspace-level integration tests                            |
 
 ## Prerequisites
 
@@ -135,11 +133,11 @@ cargo test --workspace
 The compiler is fuzzed with [`cargo-fuzz`](https://rust-fuzz.github.io/book/).
 Three fuzz targets live in `fuzz/`:
 
-| Target         | Description                                                  |
-| -------------- | ------------------------------------------------------------ |
-| `fuzz_lexer`   | Random UTF-8 → lexer (catch panics in logos callbacks)       |
-| `fuzz_parser`  | Random UTF-8 → lexer + parser (catch panics in event stream) |
-| `fuzz_full`    | Clean-parsed programs → HIR → MIR → codegen (catch semantic panics) |
+| Target        | Description                                                         |
+| ------------- | ------------------------------------------------------------------- |
+| `fuzz_lexer`  | Random UTF-8 → lexer (catch panics in logos callbacks)              |
+| `fuzz_parser` | Random UTF-8 → lexer + parser (catch panics in event stream)        |
+| `fuzz_full`   | Clean-parsed programs → HIR → MIR → codegen (catch semantic panics) |
 
 ```sh
 # install cargo-fuzz (nightly required)
@@ -189,15 +187,15 @@ See [`scripts/install.sh`](scripts/install.sh) for the full install script.
 
 ## CI/CD
 
-| Job               | Description                                         |
-| ----------------- | --------------------------------------------------- |
-| `lint`            | `cargo fmt --check` + `cargo clippy -D warnings`   |
-| `test`            | Full test suite on Linux, macOS, Windows             |
-| `msrv`            | Minimum supported Rust version (1.85.0) check        |
-| `bench`           | Criterion benchmark compilation + smoke execution    |
-| `fuzz`            | Build + 2s smoke test of every fuzz target           |
-| `docs`            | `cargo doc --document-private-items -D warnings`     |
-| `release`         | Builds binaries for 4 targets, creates GitHub Release |
+| Job       | Description                                           |
+| --------- | ----------------------------------------------------- |
+| `lint`    | `cargo fmt --check` + `cargo clippy -D warnings`      |
+| `test`    | Full test suite on Linux, macOS, Windows              |
+| `msrv`    | Minimum supported Rust version (1.85.0) check         |
+| `bench`   | Criterion benchmark compilation + smoke execution     |
+| `fuzz`    | Build + 2s smoke test of every fuzz target            |
+| `docs`    | `cargo doc --document-private-items -D warnings`      |
+| `release` | Builds binaries for 4 targets, creates GitHub Release |
 
 Cross-platform testing, benchmark regression gating, and fuzz smoke tests
 run on every pull request. Release binaries are automatically built and

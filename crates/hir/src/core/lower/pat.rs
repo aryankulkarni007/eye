@@ -25,8 +25,8 @@ impl<'a> LoweringCtx<'a> {
                 None => self.alloc_pat(Pat::Missing, ptr),
             },
             ast::Pat::PathPat(pp) => {
-                let qual: Text = Self::text(pp.qualifier().and_then(|n| n.name()));
-                let vname: Text = Self::text(pp.name().and_then(|n| n.name()));
+                let qual: Text = self.text(pp.qualifier().and_then(|n| n.name()));
+                let vname: Text = self.text(pp.name().and_then(|n| n.name()));
                 let Some(&qual_enum) = self.hir.items.enums.get(&qual) else {
                     self.emit(
                         ptr,
@@ -71,7 +71,7 @@ impl<'a> LoweringCtx<'a> {
                 }
             }
             ast::Pat::BareIdentPat(bp) => {
-                let name: Text = Self::text(bp.name().and_then(|n| n.name()));
+                let name: Text = self.text(bp.name().and_then(|n| n.name()));
                 // Scrutinee enum known: resolve strictly against its variants
                 // so cross-enum bare patterns become a clean diagnostic.
                 if let Some(eid) = scrut_enum {

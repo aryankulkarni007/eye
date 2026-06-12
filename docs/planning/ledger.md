@@ -4,6 +4,14 @@ Tracking items moved from deferred to in-progress as work proceeds.
 Completed items below are summarised; the original full diagnostic is
 preserved at the commit listed in each entry.
 
+# MISC
+
+- [ ] const perfect
+- [ ] minimalised match seam, optimised for future design and generality
+- [ ] sizeof, alignof
+- [ ] array element checking
+- [ ] evict print intrinsic -> or move to stdlib (and len intrinsic)
+
 ---
 
 ## In progress
@@ -17,7 +25,7 @@ items. Freeze and typeck are blocked behind them.
       `coerce(expr, expected)` point applied at every site with a known
       expected type, replacing the 4 scattered `maybe_decay` calls.
 
-- [X] Call arity unchecked (L3): `f(1, 2, 3)` against a 2-param function
+- [x] Call arity unchecked (L3): `f(1, 2, 3)` against a 2-param function
       reaches clang. **FIXED** (2026-06-11): count check added to codegen's
       `gen_call_args` (`crates/codegen/src/core/mir_emit.rs`). Skipped for
       variadic. Marked EXPERIMENTAL.
@@ -25,7 +33,7 @@ items. Freeze and typeck are blocked behind them.
 - [ ] Array-literal element types unchecked (L4): `[1, true, "x"]` into
       `[int32; 3]` - string errors in clang, bool converts silently.
 
-- [X] Unknown struct name in struct literal (L5): `Foo { x: 1 }` with no
+- [x] Unknown struct name in struct literal (L5): `Foo { x: 1 }` with no
       `Foo` emits undeclared-identifier C. **FIXED** (2026-06-11): reject
       before codegen in `collect_items` (`crates/hir/src/core/lower/collect.rs`).
       Marked EXPERIMENTAL.
@@ -35,13 +43,13 @@ items. Freeze and typeck are blocked behind them.
       for forward references (`Outer { Tag t }` before `union Tag`). Reverted.
       Needs post-collect pass with stored syntax spans.
 
-- [X] Indexing `ptr` emits void-subscript C (L7): reject, `ptr` has no
+- [x] Indexing `ptr` emits void-subscript C (L7): reject, `ptr` has no
       element type. **FIXED** (2026-06-11): reject `index_access` on `ptr`
       type in codegen (`crates/codegen/src/core/mir_emit.rs`).
       Marked EXPERIMENTAL.
 
 - [ ] Integer-literal range vs annotation unchecked (M1): `let int32 x =
-      5000000000;` builds and stores 705032704. Also reaches printf varargs
+5000000000;` builds and stores 705032704. Also reaches printf varargs
       as the wrong width (M1b).
 
 - [ ] Mixed-width arithmetic narrows (M2): binary expressions take the LHS
@@ -59,17 +67,17 @@ items. Freeze and typeck are blocked behind them.
 New findings from the full end-to-end source audit (2026-06-11).
 
 - [?] typegraph.rs `collect_type_nodes` misses `hir.consts`, `hir.globals`,
-      and `Expr::SizeOf` (U1). Array wrapper typedefs absent from C output
-      when the sole reference to `[T; N]` is in a const/global type.
-      **EXPERIMENTAL FIX** (2026-06-11): walks `hir.consts` and `hir.globals`
-      in `collect_type_nodes` and handles `Expr::SizeOf`. All tests pass but
-      no dedicated regression test yet.
+  and `Expr::SizeOf` (U1). Array wrapper typedefs absent from C output
+  when the sole reference to `[T; N]` is in a const/global type.
+  **EXPERIMENTAL FIX** (2026-06-11): walks `hir.consts` and `hir.globals`
+  in `collect_type_nodes` and handles `Expr::SizeOf`. All tests pass but
+  no dedicated regression test yet.
 
 - [ ] Const-eval `apply_int` uses wrapping arithmetic unchecked against the
       declared type's range (U2). `const X: int8 = 200` evaluates to 200
       (not -56). Type inference surgery will add value-in-range checks.
 
-- [X] Float const-eval accepts non-finite (inf, nan) from overflow literals
+- [x] Float const-eval accepts non-finite (inf, nan) from overflow literals
       (U3). **FIXED** (2026-06-11): non-finite check added in const-eval
       (`crates/hir/src/core/lower/const_eval.rs`). Returns error value.
 
@@ -94,7 +102,7 @@ review (2026-06-11).
       cache lowered MirBody in the HIR or emit on demand from a single
       lowering pass that feeds both dump and codegen.
 
-- [X] `place_type` recurses O(depth) on every call for deeply nested
+- [x] `place_type` recurses O(depth) on every call for deeply nested
       projections (A2): codegen calls it multiple times per place (index
       access mode, pointer-likeness, specifier). A struct.array.field
       chain walks the entire chain each time. **FIXED** (2026-06-11):
@@ -139,7 +147,7 @@ review (2026-06-11).
       threshold + incremental CST update when rowan supports it.
 
 - [ ] Typegraph `collect_type_nodes` walks every body expression for every
-      compilation (A10): O(V + E + bodies * exprs) even when type
+      compilation (A10): O(V + E + bodies \* exprs) even when type
       declarations are unchanged. A dirty-tracked, cached typegraph would
       skip redundant walks for multi-file compilation.
 
@@ -156,6 +164,46 @@ review (2026-06-11).
 ---
 
 ## Completed
+
+### 2026-06-11 (later): coercion-point unification + companion rejects
+
+CLEAK fix-order step 3. `LoweringCtx::coerce` (`crates/hir/src/core/lower/coerce.rs`)
+is now the single coercion point - array-literal re-typing (recursive),
+integer-literal typing, and `&[T; N]` decay - applied at all six sites with a
+locally-known expected type: `let` init, call argument, explicit `return`,
+function tail, struct-literal field, array-literal element. The four
+scattered `maybe_decay` calls and the per-site array re-typing blocks are
+deleted.
+
+Closed with it:
+
+- **L1 + L2**: string decay at struct-literal fields and array-literal
+  elements (the lang.eye compile blocker). lang.eye compiled and ran.
+- **M1 + M1b (T030)**: every integer literal is range-checked against the
+  type it ends up with (coerced or the `int32` default) by one post-lowering
+  sweep; `let int32 x = 5000000000;` is now an error instead of 705032704.
+- **M4, new find (T031)**: positional struct literals (`Point { 1, 2 }`)
+  silently dropped their values and zero-initialized the struct - a verified
+  miscompile. Rejected; struct literals are named-only.
+- **L3 (T026)**: call arity checked - exact for defined fns, minimum for
+  variadic externs. Indirect calls stay unchecked (no variadic flag on fn
+  types yet; ledger row above).
+- **L5 (R011)**: a struct literal must name a declared struct or union.
+- **L6 (R012)**: every Path name in a declared type must be a declared type -
+  item signatures validated post-collect (forward refs resolve), body
+  annotations and casts eagerly. `sizeof` stays lean-on-C (SIZEOF.md).
+- **L7 (T027) + deref sibling (T028)**: indexing and dereferencing `ptr`
+  rejected (no element/pointee type).
+- **P1 decided + fixed (T029)**: arithmetic/bitwise on `ptr` rejected;
+  comparisons stay; `T*` keeps C semantics.
+
+Also: lang.eye's extern `exit(int code)` corrected to `int32` (C's `int` was
+leaking through verbatim - exactly the class R012 now rejects); the salsa
+`compile_file` query stops at the first errored phase like the pre-salsa
+driver (MIR assumes a diagnostic-free HIR); snapshot harness terminators
+moved to the stable `c source written` marker. 305 tests green, clippy clean
+(one accepted `Arc<CompileResult>` Send/Sync note in eye-database), corpus
+43/43 with 2 documented XFAIL, strict-C gate 41/41.
 
 ### 2026-06-11: C-leak audit + strict-C gate + mechanical fixes
 
@@ -212,6 +260,7 @@ hand-added `guard()` accessor; the ungram now carries it.
 ### 2026-06-10: Non-int32 2D arrays fix
 
 Two root causes, both resolved:
+
 1. **Nested coercion**: array-literal type coercion only re-typed the
    outer literal; nested inner literals kept their int32 default. Fix:
    `coerce_array_literal_type` now recurses every level, length-guarded,
@@ -246,25 +295,33 @@ span on the function body block.
 ### 2026-06-11: Harden-before-freeze pass + performance analysis
 
 **Code audit fixes:**
-- U3 (non-finite float const-eval) — **FIXED** in `const_eval.rs`
-- A4 (`string_id` unwrap_or(0) → expect) — **FIXED** in `mir_emit.rs`
-- A8 (`process::exit(1)` → return Err) — **FIXED** in `mir_emit.rs`
-- L3 (call arity check) — **FIXED** EXPERIMENTAL in `mir_emit.rs`
-- L5 (unknown struct name in literal) — **FIXED** EXPERIMENTAL in `collect.rs`
-- L7 (indexing `ptr` type) — **FIXED** EXPERIMENTAL in `mir_emit.rs`
-- U1 (walk consts/globals/SizeOf in typegraph) — **EXPERIMENTAL** in `typegraph.rs`
-- A3 (mir_type_of int32 fallback) — attempted, reverted (false positives)
-- L6 (undeclared field type) — attempted inline, reverted (forward-ref false positives)
+
+- U3 (non-finite float const-eval) - **FIXED** in `const_eval.rs`
+- A4 (`string_id` unwrap_or(0) -> expect) - **FIXED** in `mir_emit.rs`
+- A8 (`process::exit(1)` -> return Err) - **FIXED** in `mir_emit.rs`
+- L3 (call arity check) - first sketch; superseded the same day by the full
+  T026 check (variadic-aware) in `lower/expr.rs` (see the coercion-point
+  entry above)
+- L5 (unknown struct name in literal) - first sketch (reused R008);
+  superseded by the dedicated R011 in `lower/expr.rs`
+- L7 (indexing `ptr` type) - first sketch in `lower/expr.rs`; kept, joined by
+  the deref reject (T028)
+- U1 (walk consts/globals/SizeOf in typegraph) - **EXPERIMENTAL** in `typegraph.rs`
+- A3 (mir_type_of int32 fallback) - attempted, reverted (false positives)
+- L6 (undeclared field type) - attempted inline, reverted (forward-ref false
+  positives); solved by the post-collect `validate_type_names` pass (R012),
+  which runs after all items are collected so forward refs resolve
 
 All 15 error sites (U1-U5, A1-A10) tagged with code comments in their source files.
 All 76 tests pass (65 e2e + 7 proptest + 4 snapshot).
 
 **Performance analysis:** `docs/performance.md`. Key findings:
+
 - Full pipeline: ~57 µs for 58-line program (HIR 41%, parse 35%, codegen 17%)
 - Rowan green tree accounts for ~60% of parse time (by-design cost)
 - A1 (MIR double-lowering) is the highest-impact repeatable waste
 - A2 (place_type memoization) implemented EXPERIMENTAL
-- No O(N²) hot paths found — all passes are O(N) with arena allocation
+- No O(N²) hot paths found - all passes are O(N) with arena allocation
 
 ### 2026-06-04/05: Early return + `main` de-magicked
 
@@ -272,12 +329,12 @@ All 76 tests pass (65 e2e + 7 proptest + 4 snapshot).
 `Expr::Return` -> MIR `Return`), and emit. Three return-arity diagnostics
 guard the clang-error cases (value in a void fn, missing value in a typed
 fn, wrong type). Value-position return diverges correctly on both MIR
-paths — wrapped in `if`/`match` (`lower_into`) and as a direct rvalue
+paths - wrapped in `if`/`match` (`lower_into`) and as a direct rvalue
 (`let x = return 5;`, `lower_rvalue`). Restored
 `eyesrc/programs/floodfill.eye`.
 
 **`main` de-magicked:** `main` is now an ordinary function. The C entry
-requirement lives only in a backend shim — the user's `main` emits as
+requirement lives only in a backend shim - the user's `main` emits as
 `__eye_main`, and codegen generates `int main(void)` that adapts it. An
 integer return forwards as the process exit code; every other return type
 runs `main` for its effect and exits 0. The only rejection is a parameter

@@ -18,12 +18,11 @@
 //! `unreachable!` here, not lowered - see `docs/planning/DEFER.md`.
 
 use ast::{AssignOp, BinOp, UnaryOp};
+use hir::core::TypedArena;
 use hir::core::{
     BlockId, Body, ConstId, ConstValue, Expr, ExprId, HIR, Literal, LocalId as HirLocalId,
-    MatchArm, Pat, PatId, Resolution, Stmt, Text, TypeKind,
+    MatchArm, Pat, PatId, Resolution, Stmt, Text,
 };
-use la_arena::Arena;
-use rustc_hash::{FxBuildHasher, FxHashMap};
 use smallvec::SmallVec;
 use thin_vec::ThinVec;
 
@@ -33,8 +32,14 @@ use crate::core::*;
 /// leading [`Body`] locals that are parameters (HIR allocates them first, before
 /// any block local); they are pre-created as MIR locals so references resolve
 /// and so the emitter can skip declaring them (the signature already does).
-pub fn lower_function(hir: &HIR, body: &Body, param_count: usize, ret: Option<Type>) -> MirBody {
-    let mut cx = Lower::new(hir, body, ret);
+pub fn lower_function(
+    hir: &HIR,
+    types: &hir::core::TypeInterner,
+    body: &Body,
+    param_count: usize,
+    ret: Option<Type>,
+) -> MirBody {
+    let mut cx = Lower::new(hir, types, body, ret);
     cx.lower_params(param_count);
     let block = cx.lower_top_block();
     MirBody {
@@ -48,15 +53,21 @@ struct Lower<'a> {
     /// The lowered module, read for const values (a const reference inlines its
     /// folded scalar; `docs/design/HORIZON0.md` Component 1).
     hir: &'a HIR,
+    /// The interner this body's `TypeRef` handles resolve through. For the
+    /// whole-file path this is `hir.types`; for the per-fn query path it is
+    /// the body's own interner (scope clone + body-local types).
+    types: &'a hir::core::TypeInterner,
     body: &'a Body,
     /// The function's declared return type, used by [`Lower::lower_tail`] to
     /// decide whether the body tail is a returned value or a discarded effect.
     /// `None` for a void function (and for `main`, where the caller passes
     /// `None` so the tail is discarded and the emitter supplies `return 0`).
     ret: Option<Type>,
-    locals: Arena<MirLocal>,
+    locals: TypedArena<MirLocal, LocalId>,
     params: ThinVec<LocalId>,
-    local_map: FxHashMap<HirLocalId, LocalId>,
+    /// Maps HIR local index -> MIR local. Indexed by `hid.raw_idx().into_u32() as usize`.
+    /// `None` means the HIR local hasn't been lowered yet (lazy fallback).
+    local_map: Vec<Option<LocalId>>,
 }
 
 /// How a match arm pattern dispatches, lifted off the borrowed [`Body`] before
@@ -75,25 +86,31 @@ enum ArmKind {
 }
 
 impl<'a> Lower<'a> {
-    fn new(hir: &'a HIR, body: &'a Body, ret: Option<Type>) -> Self {
+    fn new(
+        hir: &'a HIR,
+        types: &'a hir::core::TypeInterner,
+        body: &'a Body,
+        ret: Option<Type>,
+    ) -> Self {
         Self {
             hir,
+            types,
             body,
             ret,
-            locals: Arena::new(),
+            locals: TypedArena::new(),
             params: ThinVec::new(),
-            local_map: FxHashMap::with_capacity_and_hasher(body.locals.len(), FxBuildHasher),
+            local_map: vec![None; body.locals.len()],
         }
     }
 
     fn lower_params(&mut self, param_count: usize) {
         let body = self.body;
         for (hid, l) in body.locals.iter().take(param_count) {
-            let ty = l.ty.unwrap_or_else(|| self.hir.types.borrow_mut().error_type());
+            let ty = l.ty.unwrap_or_else(|| self.types.error_type());
             let name = Some(l.name.clone());
             let mutable = l.mutable;
             let mid = self.locals.alloc(MirLocal { ty, name, mutable });
-            self.local_map.insert(hid, mid);
+            self.local_map[hid.raw_idx().into_u32() as usize] = Some(mid);
             self.params.push(mid);
         }
     }
@@ -201,7 +218,7 @@ impl<'a> Lower<'a> {
                     .as_ref()
                     .or(local.ty.as_ref())
                     .cloned()
-                    .unwrap_or_else(|| self.hir.types.borrow_mut().error_type());
+                    .unwrap_or_else(|| self.types.error_type());
                 let name = Some(local.name.clone());
                 // Lower the initializer before the binding is in scope: a `let`
                 // cannot reference itself, and any temps the init needs must be
@@ -222,7 +239,7 @@ impl<'a> Lower<'a> {
                     name,
                     mutable: *mutable,
                 });
-                self.local_map.insert(hid, mid);
+                self.local_map[hid.raw_idx().into_u32() as usize] = Some(mid);
                 buf.push(MirStmt::Let {
                     local: mid,
                     init: init_rv,
@@ -251,10 +268,12 @@ impl<'a> Lower<'a> {
         let base = self.place_for_value(init, buf);
         for (field, hid) in fields {
             let local = &self.body.locals[hid];
-            let ty = local.ty.unwrap_or_else(|| self.hir.types.borrow_mut().error_type());
+            let ty = local
+                .ty
+                .unwrap_or_else(|| self.types.error_type());
             let name = Some(local.name.clone());
             let mid = self.locals.alloc(MirLocal { ty, name, mutable });
-            self.local_map.insert(hid, mid);
+            self.local_map[hid.raw_idx().into_u32() as usize] = Some(mid);
             let proj = Place::Field(Box::new(base.clone()), field);
             buf.push(MirStmt::Let {
                 local: mid,
@@ -493,14 +512,16 @@ impl<'a> Lower<'a> {
     /// and recording the mapping so later references resolve.
     fn bind_local_to(&mut self, hid: HirLocalId, scrut: &Operand, buf: &mut ThinVec<MirStmt>) {
         let local = &self.body.locals[hid];
-        let ty = local.ty.unwrap_or_else(|| self.hir.types.borrow_mut().error_type());
+        let ty = local
+            .ty
+            .unwrap_or_else(|| self.types.error_type());
         let name = Some(local.name.clone());
         let mid = self.locals.alloc(MirLocal {
             ty,
             name,
             mutable: false,
         });
-        self.local_map.insert(hid, mid);
+        self.local_map[hid.raw_idx().into_u32() as usize] = Some(mid);
         buf.push(MirStmt::Let {
             local: mid,
             init: Some(RValue::Use(scrut.clone())),
@@ -1090,7 +1111,8 @@ impl<'a> Lower<'a> {
     }
 
     fn map_local(&mut self, hid: HirLocalId) -> LocalId {
-        if let Some(&mid) = self.local_map.get(&hid) {
+        let idx = hid.raw_idx().into_u32() as usize;
+        if let Some(mid) = self.local_map[idx] {
             return mid;
         }
         // A reference to a local not yet lowered (a parameter outside the
@@ -1098,11 +1120,13 @@ impl<'a> Lower<'a> {
         // it from the HIR local so the place resolves.
         let local = &self.body.locals[hid];
         let mid = self.locals.alloc(MirLocal {
-            ty: local.ty.unwrap_or_else(|| self.hir.types.borrow_mut().error_type()),
+            ty: local
+                .ty
+                .unwrap_or_else(|| self.types.error_type()),
             name: Some(local.name.clone()),
             mutable: local.mutable,
         });
-        self.local_map.insert(hid, mid);
+        self.local_map[idx] = Some(mid);
         mid
     }
 
@@ -1120,9 +1144,9 @@ impl<'a> Lower<'a> {
     fn mir_type_of(&self, e: ExprId) -> Type {
         self.body
             .expr_types
-            .get(e)
+            .get(e.into())
             .cloned()
-            .unwrap_or_else(|| self.hir.types.borrow_mut().intern(TypeKind::Path("int32".into())))
+            .unwrap_or_else(|| self.types.int32_ty())
     }
 
     /// Inline a const reference as an [`RValue`]. A non-negative scalar is a
@@ -1172,9 +1196,7 @@ fn const_value_rvalue(value: Option<&ConstValue>) -> RValue {
         Some(ConstValue::Int(n)) if *n < 0 => {
             RValue::Unary(UnaryOp::Neg, Operand::Const(Literal::Int(n.unsigned_abs())))
         }
-        Some(v) => {
-            RValue::Use(const_operand(v).expect("non-negative const is a trivial operand"))
-        }
+        Some(v) => RValue::Use(const_operand(v).expect("non-negative const is a trivial operand")),
         None => RValue::Use(Operand::Const(Literal::Int(0))),
     }
 }

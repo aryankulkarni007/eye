@@ -4,10 +4,10 @@ use lexer::{Lexer, SourceText};
 
 fn lower(src: &str) -> HIR {
     let source = SourceText::new(src.to_string());
-    let tokens = Lexer::new(&source).tokenize().tokens;
-    let parse = parser::parse(&tokens, &source);
+    let lexed = Lexer::new(&source).tokenize();
+    let parse = parser::parse(&lexed.tokens, &source);
     let file = SourceFile::cast(parse.green).expect("root is SourceFile");
-    lower_source_file(file)
+    lower_source_file(file, &lexed.interner)
 }
 
 /// The concrete diagnostic kinds, for structural assertions. Tests match on
@@ -286,8 +286,8 @@ main() {
         .expect("main contains a call");
 
     assert_eq!(
-        body.expr_types.get(call_id),
-        Some(&hir.types.borrow_mut().intern(TypeKind::Path("int32".into())))
+        body.expr_types.get(call_id.into()),
+        Some(&hir.types.int32_ty())
     );
 }
 
@@ -320,8 +320,8 @@ main() {
         .expect("main contains a call");
 
     assert_eq!(
-        body.expr_types.get(call_id),
-        Some(&hir.types.borrow_mut().intern(TypeKind::Path("usize".into())))
+        body.expr_types.get(call_id.into()),
+        Some(&hir.types.usize_ty())
     );
 }
 
@@ -405,15 +405,21 @@ fn match_lowers_arms_and_pins_scrut_enum() {
     let (body, match_id, arms, scrut) = first_match(&hir);
     assert_eq!(arms.len(), 3);
     // scrutinee type pinned to Shape.
-    let types = hir.types.borrow();
-    let scrut_ty = body.expr_types.get(scrut).map(|ty| types.lookup(*ty));
+    let types = &hir.types;
+    let scrut_ty = body
+        .expr_types
+        .get(scrut.into())
+        .map(|ty| types.lookup(*ty));
     match scrut_ty {
         Some(TypeKind::Path(n)) => assert_eq!(n.as_str(), "Shape"),
         other => panic!("scrut type missing/wrong: {other:?}"),
     }
     // match expression itself carries the arm-body type so M5 codegen can
     // declare `int32 _matchN;` for the hoist temp.
-    let match_ty = body.expr_types.get(match_id).map(|ty| types.lookup(*ty));
+    let match_ty = body
+        .expr_types
+        .get(match_id.into())
+        .map(|ty| types.lookup(*ty));
     match match_ty {
         Some(TypeKind::Path(n)) => assert_eq!(n.as_str(), "int32"),
         other => panic!("match expr type missing/wrong: {other:?}"),
@@ -1019,11 +1025,12 @@ main() {
     let body = &hir.bodies[body_id];
 
     // the `xs` local carries an Array type with the parsed length.
-    let int32_ty = hir.types.borrow_mut().intern(TypeKind::Path("int32".into()));
-    let types = hir.types.borrow();
-    let array_local = body.locals.iter().find_map(|(_, l)| {
-        l.ty.and_then(|ty| ty.as_array(&types))
-    });
+    let int32_ty = hir.types.int32_ty();
+    let types = &hir.types;
+    let array_local = body
+        .locals
+        .iter()
+        .find_map(|(_, l)| l.ty.and_then(|ty| ty.as_array(&types)));
     let (elem, len) = array_local.expect("xs local has an Array type");
     assert_eq!(len, 3, "array length parsed from literal");
     assert_eq!(elem, int32_ty, "element type");
@@ -1185,14 +1192,12 @@ main() {
     assert_eq!(hir.diagnostics.len(), 0, "{:?}", hir.diagnostics);
     let main_id = *hir.items.functions.get("main").unwrap();
     let body = &hir.bodies[hir.functions[main_id].body.unwrap()];
-    let types = hir.types.borrow();
+    let types = &hir.types;
     let lens: Vec<u64> = body
         .stmts
         .iter()
         .filter_map(|(_, s)| match s {
-            Stmt::Let { ty: Some(ty), .. } => {
-                ty.as_array(&types).map(|(_, len)| len)
-            }
+            Stmt::Let { ty: Some(ty), .. } => ty.as_array(&types).map(|(_, len)| len),
             _ => None,
         })
         .collect();
@@ -1394,8 +1399,12 @@ fn match_wide_int_let_records_binding_type_without_false_positive() {
         hir.diagnostics
     );
     let (body, match_id, _, _) = first_match(&hir);
-    let types = hir.types.borrow();
-    match body.expr_types.get(match_id).map(|ty| types.lookup(*ty)) {
+    let types = &hir.types;
+    match body
+        .expr_types
+        .get(match_id.into())
+        .map(|ty| types.lookup(*ty))
+    {
         Some(TypeKind::Path(n)) => assert_eq!(n.as_str(), "int64"),
         other => panic!("explicit binding type not recorded on match: {other:?}"),
     }
@@ -1688,12 +1697,12 @@ fn array_len_is_usize_constant() {
     let body = &hir.bodies[hir.functions[main_id].body.unwrap()];
     // `len` folds to `(usize)5`: a usize-typed cast over the literal length, so
     // it prints with `%zu` without a varargs type mismatch.
-    let types = hir.types.borrow();
+    let types = &hir.types;
     let has_len_const = body.exprs.iter().any(|(id, e)| {
         matches!(e, Expr::Cast { operand, .. }
             if matches!(body.exprs[*operand], Expr::Literal(Literal::Int(5))))
             && matches!(
-                body.expr_types.get(id).map(|ty| types.lookup(*ty)),
+                body.expr_types.get(id.into()).map(|ty| types.lookup(*ty)),
                 Some(TypeKind::Path(n)) if n == "usize"
             )
     });
@@ -2314,6 +2323,256 @@ fn opaque_type_duplicate_name_is_rejected() {
             HirError::Resolve(ResolveError::DuplicateItem { name }) if name == "FILE"
         )),
         "expected a duplicate-item diagnostic, got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// CLEAK L3: the argument count of a direct call is checked - exact for a
+/// defined function, a minimum for a variadic extern.
+#[test]
+fn call_arity_is_checked() {
+    let hir = lower(
+        "\
+extern {
+    printf(string fmt, ...) -> int32;
+}
+add(int32 a, int32 b) -> int32 { a + b }
+main() {
+    add(1, 2, 3);
+    add(1);
+    add(1, 2);
+    printf(\"ok\");
+    printf(\"%d %d\", 1, 2);
+    printf();
+}
+",
+    );
+    let arity: Vec<_> = diags(&hir)
+        .iter()
+        .filter_map(|d| match d {
+            HirError::Type(TypeError::CallArityMismatch {
+                name,
+                expected,
+                found,
+                variadic,
+            }) => Some((name.as_str().to_owned(), *expected, *found, *variadic)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        arity,
+        [
+            ("add".to_owned(), 2, 3, false),
+            ("add".to_owned(), 2, 1, false),
+            ("printf".to_owned(), 1, 0, true),
+        ],
+        "expected exactly the three arity mismatches: {:?}",
+        diags(&hir)
+    );
+}
+
+/// CLEAK L5 (R011): a struct literal naming no declared struct or union is
+/// rejected instead of emitting `(Foo){..}` into C.
+#[test]
+fn unknown_struct_literal_rejected() {
+    let hir = lower("main() { Foo { x: 1 }; }");
+    assert!(
+        diags(&hir).iter().any(|d| matches!(
+            d,
+            HirError::Resolve(ResolveError::UnknownStructLiteral { name }) if name == "Foo"
+        )),
+        "expected an unknown-struct-literal diagnostic, got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// CLEAK L6 (R012): a type annotation naming an undeclared type is rejected
+/// at every declaration site - field, parameter, return, global, `let`, and
+/// cast - instead of emitting the name verbatim into C. A forward reference
+/// to an item declared later in the file stays legal.
+#[test]
+fn unknown_type_names_rejected() {
+    let hir = lower(
+        "\
+structure Arena {
+    off off,
+    Late ok_forward_ref,
+};
+f(wat x) -> huh { 0 }
+let gee g = 0;
+structure Late { int32 v, };
+main() {
+    let blah b = 0;
+    let int32 c = 0 as zap;
+}
+",
+    );
+    let unknown: Vec<_> = diags(&hir)
+        .iter()
+        .filter_map(|d| match d {
+            HirError::Resolve(ResolveError::UnknownTypeName { name }) => {
+                Some(name.as_str().to_owned())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        unknown,
+        // Globals are collected (pass 1b) before items (pass 1), so `gee`
+        // is recorded first.
+        ["gee", "off", "wat", "huh", "blah", "zap"],
+        "expected exactly the undeclared type names (and not `Late`): {:?}",
+        diags(&hir)
+    );
+}
+
+/// CLEAK L7 / P1: `ptr` (the untyped pointer) cannot be indexed,
+/// dereferenced, or used in arithmetic; comparisons stay allowed.
+#[test]
+fn ptr_index_deref_arithmetic_rejected() {
+    let hir = lower(
+        "\
+extern {
+    malloc(usize n) -> ptr;
+}
+main() {
+    let ptr p = malloc(8);
+    p[0];
+    *p;
+    p + 4;
+    if p == 0 as ptr { };
+}
+",
+    );
+    let ds = diags(&hir);
+    assert!(
+        ds.iter()
+            .any(|d| matches!(d, HirError::Type(TypeError::IndexOnPtr))),
+        "expected IndexOnPtr: {ds:?}"
+    );
+    assert!(
+        ds.iter()
+            .any(|d| matches!(d, HirError::Type(TypeError::DerefOfPtr))),
+        "expected DerefOfPtr: {ds:?}"
+    );
+    assert!(
+        ds.iter().any(
+            |d| matches!(d, HirError::Type(TypeError::ArithmeticOnPtr { op }) if *op == "+")
+        ),
+        "expected ArithmeticOnPtr: {ds:?}"
+    );
+    // The comparison must not be rejected.
+    assert!(
+        !ds.iter()
+            .any(|d| matches!(d, HirError::Type(TypeError::ArithmeticOnPtr { op }) if *op == "==")),
+        "comparison on ptr must stay legal: {ds:?}"
+    );
+}
+
+/// CLEAK M1: an integer literal must fit the integer type its context gives
+/// it. Out of range - at an annotated site, negated into an unsigned type, or
+/// over the bare `int32` default - is an error; a wide literal under a wide
+/// annotation is clean.
+#[test]
+fn int_literal_range_is_checked() {
+    let hir = lower(
+        "\
+main() {
+    let int32 a = 5000000000;
+    let uint8 b = -1;
+    let int8 c = 300;
+    println(\"{}\", 6000000000);
+}
+",
+    );
+    let out_of_range: Vec<_> = diags(&hir)
+        .iter()
+        .filter_map(|d| match d {
+            HirError::Type(TypeError::IntLiteralOutOfRange { value, ty, .. }) => {
+                Some((value.clone(), ty.as_str().to_owned()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        out_of_range,
+        [
+            ("5000000000".to_owned(), "int32".to_owned()),
+            ("-1".to_owned(), "uint8".to_owned()),
+            ("300".to_owned(), "int8".to_owned()),
+            ("6000000000".to_owned(), "int32".to_owned()),
+        ],
+        "expected exactly the four out-of-range literals: {:?}",
+        diags(&hir)
+    );
+
+    // In range under the declared type: clean, including both int32 bounds
+    // and a 64-bit literal under an int64/usize annotation.
+    let hir = lower(
+        "\
+main() {
+    let int64 a = 5000000000;
+    let usize b = 18446744073709551615;
+    let int32 c = -2147483648;
+    let int32 d = 2147483647;
+    let uint8 e = 255;
+}
+",
+    );
+    assert!(
+        diags(&hir).is_empty(),
+        "in-range literals must be clean: {:?}",
+        diags(&hir)
+    );
+}
+
+/// CLEAK M4: a positional struct literal (`Point { 1, 2 }`) is rejected -
+/// lowering carries fields by name, so the values would be silently dropped
+/// and the struct zero-initialized.
+#[test]
+fn positional_struct_literal_rejected() {
+    let hir = lower(
+        "\
+structure Point {
+    int32 x,
+    int32 y,
+};
+main() {
+    let Point p = Point { 1, 2 };
+}
+",
+    );
+    assert_eq!(
+        diags(&hir)
+            .iter()
+            .filter(|d| matches!(d, HirError::Type(TypeError::StructLitPositional)))
+            .count(),
+        2,
+        "expected one diagnostic per positional field: {:?}",
+        diags(&hir)
+    );
+}
+
+/// CLEAK L1 + L2: string decay through the unified coercion point at the two
+/// sites it was missing - struct-literal fields and array-literal elements.
+/// Both must lower clean (the decay cast satisfies the declared type).
+#[test]
+fn string_decay_at_struct_fields_and_array_elements() {
+    let hir = lower(
+        "\
+structure Syllable {
+    string sound,
+};
+main() {
+    let Syllable s = Syllable { sound: \"cvc\" };
+    let [string; 2] xs = [\"ab\", \"cd\"];
+    println(\"{} {} {}\", s.sound, xs[0], xs[1]);
+}
+",
+    );
+    assert!(
+        diags(&hir).is_empty(),
+        "decay at struct fields and array elements must be clean: {:?}",
         diags(&hir)
     );
 }

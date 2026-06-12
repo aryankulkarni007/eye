@@ -147,7 +147,9 @@ pub enum GrammarError {
     ComparisonChain = 1,
     #[error("assignment is not allowed in an `if` condition; use `==` to compare")]
     AssignInIfCondition = 2,
-    #[error("struct patterns are not yet supported in match arms; bind the value and destructure with `let`")]
+    #[error(
+        "struct patterns are not yet supported in match arms; bind the value and destructure with `let`"
+    )]
     StructPatInMatchArm = 3,
     #[error("`...` is only allowed in an `extern` signature")]
     VariadicOutsideExtern = 4,

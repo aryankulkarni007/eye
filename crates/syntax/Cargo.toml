@@ -10,3 +10,4 @@ name = "syntax"
 token.workspace = true
 rowan.workspace = true
 text-size.workspace = true
+smol_str.workspace = true

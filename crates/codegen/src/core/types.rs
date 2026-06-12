@@ -90,10 +90,14 @@ pub(super) fn spec_for_type(ty: TypeRef, types: &TypeInterner) -> &'static str {
             "ptr" => "%p",
             _ => "%d",
         },
-        TypeKind::Ref(inner) if matches!(
-            types.lookup(*inner),
-            TypeKind::Array { elem, .. } if matches!(types.lookup(*elem), TypeKind::Path(n) if n == "uint8")
-        ) => "%s",
+        TypeKind::Ref(inner)
+            if matches!(
+                types.lookup(*inner),
+                TypeKind::Array { elem, .. } if matches!(types.lookup(*elem), TypeKind::Path(n) if n == "uint8")
+            ) =>
+        {
+            "%s"
+        }
         TypeKind::Ref(_) | TypeKind::Ptr(_) | TypeKind::Array { .. } | TypeKind::Fn { .. } => "%p",
         TypeKind::Error => "%d",
     }

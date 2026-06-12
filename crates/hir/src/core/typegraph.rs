@@ -22,7 +22,7 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::core::{fx_set, Expr, HIR, Stmt, Text, TypeInterner, TypeKind, TypeRef, VisitTypeRef};
+use crate::core::{Expr, HIR, Stmt, Text, TypeInterner, TypeKind, TypeRef, VisitTypeRef, fx_set};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeNode {
@@ -85,7 +85,7 @@ impl VisitTypeRef for HardDepsVisitor<'_> {
 /// Append the nodes whose C definition must precede a definition that embeds
 /// `ty` by value. See the module docs for the edge rules.
 pub fn hard_deps(hir: &HIR, ty: TypeRef, out: &mut Vec<TypeNode>) {
-    let types = hir.types.borrow();
+    let types = &hir.types;
     let mut visitor = HardDepsVisitor {
         hir,
         out,
@@ -99,7 +99,7 @@ pub fn hard_deps(hir: &HIR, ty: TypeRef, out: &mut Vec<TypeNode>) {
 /// (soft edges). Used for function-pointer param/return types and recursive
 /// pointer fields.
 fn soft_deps(hir: &HIR, ty: TypeRef, out: &mut Vec<TypeNode>) {
-    let types = hir.types.borrow();
+    let types = &hir.types;
     let mut visitor = HardDepsVisitor {
         hir,
         out,
@@ -210,7 +210,7 @@ pub fn collect_type_nodes(hir: &HIR) -> Vec<TypeNode> {
     let mut nodes = Vec::new();
     let estimate = hir.structs.len() + hir.unions.len() + hir.fields.len() + hir.functions.len();
     let mut seen = fx_set(estimate);
-    let types = hir.types.borrow();
+    let types = &hir.types;
 
     for (_, s) in hir.structs.iter() {
         if seen.insert(TypeNode::Nominal(s.name.clone())) {
@@ -224,44 +224,44 @@ pub fn collect_type_nodes(hir: &HIR) -> Vec<TypeNode> {
     }
 
     for (_, field) in hir.fields.iter() {
-        collect_wrapper_nodes(field.ty, &types, &mut seen, &mut nodes);
+        collect_wrapper_nodes(field.ty, types, &mut seen, &mut nodes);
     }
     // EXPERIMENTAL(U1): walk const and global type annotations so array
     // wrapper typedefs appear for types used only in const/global decls.
     for (_, c) in hir.consts.iter() {
-        collect_wrapper_nodes(c.ty, &types, &mut seen, &mut nodes);
+        collect_wrapper_nodes(c.ty, types, &mut seen, &mut nodes);
     }
     for (_, g) in hir.globals.iter() {
-        collect_wrapper_nodes(g.ty, &types, &mut seen, &mut nodes);
+        collect_wrapper_nodes(g.ty, types, &mut seen, &mut nodes);
     }
     for (_, f) in hir.functions.iter() {
         for p in &f.params {
-            collect_wrapper_nodes(p.ty, &types, &mut seen, &mut nodes);
+            collect_wrapper_nodes(p.ty, types, &mut seen, &mut nodes);
         }
         if let Some(ret) = &f.ret {
-            collect_wrapper_nodes(*ret, &types, &mut seen, &mut nodes);
+            collect_wrapper_nodes(*ret, types, &mut seen, &mut nodes);
         }
     }
     for (_, body) in hir.bodies.iter() {
         for (_, local) in body.locals.iter() {
             if let Some(ty) = local.ty {
-                collect_wrapper_nodes(ty, &types, &mut seen, &mut nodes);
+                collect_wrapper_nodes(ty, types, &mut seen, &mut nodes);
             }
         }
         for (_, &ty) in body.expr_types.iter() {
-            collect_wrapper_nodes(ty, &types, &mut seen, &mut nodes);
+            collect_wrapper_nodes(ty, types, &mut seen, &mut nodes);
         }
         for (_, stmt) in body.stmts.iter() {
             if let Stmt::Let { ty: Some(ty), .. } = stmt {
-                collect_wrapper_nodes(*ty, &types, &mut seen, &mut nodes);
+                collect_wrapper_nodes(*ty, types, &mut seen, &mut nodes);
             }
         }
         for (_, expr) in body.exprs.iter() {
             if let Expr::Cast { ty, .. } | Expr::StructLit { ty, .. } = expr {
-                collect_wrapper_nodes(*ty, &types, &mut seen, &mut nodes);
+                collect_wrapper_nodes(*ty, types, &mut seen, &mut nodes);
             }
             if let Expr::SizeOf(ty) = expr {
-                collect_wrapper_nodes(*ty, &types, &mut seen, &mut nodes);
+                collect_wrapper_nodes(*ty, types, &mut seen, &mut nodes);
             }
         }
     }

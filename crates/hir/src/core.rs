@@ -24,6 +24,7 @@ mod errors;
 mod ids;
 mod items;
 mod lower;
+mod typed_arena;
 mod typegraph;
 mod types;
 
@@ -38,12 +39,11 @@ pub use lower::*;
 pub use typegraph::*;
 pub use types::*;
 
-use std::cell::RefCell;
-
 use diagnostics::Sink;
-use la_arena::Arena;
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use smol_str::SmolStr;
+
+pub use typed_arena::TypedArena;
 
 pub type Text = SmolStr;
 
@@ -141,17 +141,23 @@ pub fn fx_set<V>(capacity: usize) -> FxHashSet<V> {
 
 /// Top-level lowered module. Items live in flat arenas; bodies are keyed by
 /// [`FnId`] through [`Function::body`].
+///
+/// EXPERIMENTAL(typed-arena): Arena fields use [`TypedArena<T, XId>`] so every
+/// index carries its element type at the type level and the compiler refuses
+/// to mix up `StructId` with `FnId`.  Every `hir.structs[id]` and
+/// `arena.alloc(value)` site is unchanged because [`Index<StructId>`] and
+/// [`TypedArena::alloc`] work through the wrapper.
 #[derive(Debug, Default)]
 pub struct HIR {
-    pub structs: Arena<Struct>,
-    pub unions: Arena<Union>,
-    pub enums: Arena<Enum>,
-    pub consts: Arena<Const>,
-    pub globals: Arena<Global>,
-    pub opaques: Arena<OpaqueType>,
-    pub fields: Arena<Field>,
-    pub functions: Arena<Function>,
-    pub bodies: Arena<Body>,
+    pub structs: TypedArena<Struct, StructId>,
+    pub unions: TypedArena<Union, UnionId>,
+    pub enums: TypedArena<Enum, EnumId>,
+    pub consts: TypedArena<Const, ConstId>,
+    pub globals: TypedArena<Global, GlobalId>,
+    pub opaques: TypedArena<OpaqueType, OpaqueId>,
+    pub fields: TypedArena<Field, FieldId>,
+    pub functions: TypedArena<Function, FnId>,
+    pub bodies: TypedArena<Body, BodyId>,
     /// Module-level scope. Both namespaces flat for v0.1 since structs + fns
     /// don't collide (struct names start uppercase by convention, but the
     /// resolver treats them in one map until the language says otherwise).
@@ -162,14 +168,11 @@ pub struct HIR {
     /// Interned type representations. Every [`TypeRef`] handle in this HIR
     /// is valid in this interner.
     ///
-    /// `RefCell` is deliberate: lowering threads `&HIR` (or contexts holding
-    /// one) through every pass while interning new types on the fly, and
-    /// `&mut HIR` plumbing through 100+ call sites buys nothing - the
-    /// pipeline is single-threaded and each pass runs to completion before
-    /// the next starts. Borrow discipline: never hold a `borrow()` guard
-    /// across a call that may `borrow_mut()` (i.e. anything that can intern);
-    /// take the guard in the narrowest scope, `drop`/re-borrow around
-    /// interning calls. Revisit only if passes become re-entrant or parallel
-    /// (PARALLEL.md), where this becomes a concurrent-structure decision.
-    pub types: RefCell<TypeInterner>,
+    /// Plain (no `RefCell`): collection interns through `&mut HIR`, and body
+    /// lowering owns a working interner inside [`lower::LoweringCtx`] (taken
+    /// from here and restored by the whole-file wrapper, or cloned from the
+    /// frozen scope by the per-fn query path). After lowering completes the
+    /// interner is read-only, which is what the salsa query layer requires
+    /// (`Send + Sync` query results, no interior mutability).
+    pub types: TypeInterner,
 }

@@ -3,39 +3,43 @@
 //! editing a single fn body invalidates only that body.
 
 use ast::{AssignOp, BinOp, UnaryOp};
-use la_arena::{Arena, ArenaMap};
+use la_arena::{ArenaMap, Idx};
 use smol_str::SmolStr;
 use syntax::SyntaxNodePtr;
 use thin_vec::ThinVec;
 
 use super::*;
 
+/// Per-function body IR.
+///
+/// EXPERIMENTAL(typed-arena): Arena fields use [`TypedArena<T, XId>`], paired
+/// with the corresponding `*Id` newtypes from [`ids`](super::ids).
 #[derive(Debug, Default)]
 pub struct Body {
-    pub exprs: Arena<Expr>,
-    pub stmts: Arena<Stmt>,
-    pub pats: Arena<Pat>,
-    pub locals: Arena<Local>,
+    pub exprs: TypedArena<Expr, ExprId>,
+    pub stmts: TypedArena<Stmt, StmtId>,
+    pub pats: TypedArena<Pat, PatId>,
+    pub locals: TypedArena<Local, LocalId>,
     /// Top-level statements of the fn body, in source order.
     pub block: ThinVec<StmtId>,
     /// Optional tail expression of the body block (none for v0.1).
     pub tail: Option<ExprId>,
     pub source_map: BodySourceMap,
-    pub blocks: Arena<Block>,
-    pub block_source_map: ArenaMap<BlockId, SyntaxNodePtr>,
-    pub expr_types: ArenaMap<ExprId, TypeRef>,
+    pub blocks: TypedArena<Block, BlockId>,
+    pub block_source_map: ArenaMap<Idx<Block>, SyntaxNodePtr>,
+    pub expr_types: ArenaMap<Idx<Expr>, TypeRef>,
     /// Block-scope `const` declarations. Same value/no-storage semantics as a
     /// top-level [`Const`](super::Const), but scoped to the declaring block,
     /// so they live in the body, not the module-level arena (which sits behind
     /// `&HIR` and cannot grow during body lowering).
-    pub local_consts: Arena<LocalConst>,
+    pub local_consts: TypedArena<LocalConst, LocalConstId>,
 }
 
 #[derive(Debug, Default)]
 pub struct BodySourceMap {
-    pub expr: ArenaMap<ExprId, SyntaxNodePtr>,
-    pub stmt: ArenaMap<StmtId, SyntaxNodePtr>,
-    pub pat: ArenaMap<PatId, SyntaxNodePtr>,
+    pub expr: ArenaMap<Idx<Expr>, SyntaxNodePtr>,
+    pub stmt: ArenaMap<Idx<Stmt>, SyntaxNodePtr>,
+    pub pat: ArenaMap<Idx<Pat>, SyntaxNodePtr>,
 }
 
 #[derive(Debug)]
@@ -241,7 +245,11 @@ pub trait VisitExpr {
             Expr::StructLit { fields, .. } => self.visit_struct_lit(fields),
             Expr::Field { base, name } => self.visit_field(*base, name),
             Expr::Assign { op, lhs, rhs } => self.visit_assign(*op, *lhs, *rhs),
-            Expr::If { cond, then_branch, else_branch } => self.visit_if(*cond, *then_branch, *else_branch),
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => self.visit_if(*cond, *then_branch, *else_branch),
             Expr::Loop { body } => self.visit_loop(*body),
             Expr::Break => self.visit_break(),
             Expr::Continue => self.visit_continue(),
