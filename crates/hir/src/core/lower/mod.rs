@@ -137,8 +137,7 @@ pub fn collect_file_scope(file: &ast::SourceFile, interner: &dyn StringTable) ->
     // pass 1: collect every top-level item. Forward refs resolve because
     // bodies have not been walked yet. Duplicates emit a diagnostic; the
     // later definition still overwrites the earlier binding in [`ItemScope`].
-    let fn_asts =
-        collect::collect_items(&mut hir, file, &const_values, interner, &mut typed_decls);
+    let fn_asts = collect::collect_items(&mut hir, file, &const_values, interner, &mut typed_decls);
 
     // pass 1.6: every Path name in a collected signature must be a declared
     // type (R012) - otherwise the name is emitted verbatim into C and clang

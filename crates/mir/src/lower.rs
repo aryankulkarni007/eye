@@ -268,9 +268,7 @@ impl<'a> Lower<'a> {
         let base = self.place_for_value(init, buf);
         for (field, hid) in fields {
             let local = &self.body.locals[hid];
-            let ty = local
-                .ty
-                .unwrap_or_else(|| self.types.error_type());
+            let ty = local.ty.unwrap_or_else(|| self.types.error_type());
             let name = Some(local.name.clone());
             let mid = self.locals.alloc(MirLocal { ty, name, mutable });
             self.local_map[hid.raw_idx().into_u32() as usize] = Some(mid);
@@ -512,9 +510,7 @@ impl<'a> Lower<'a> {
     /// and recording the mapping so later references resolve.
     fn bind_local_to(&mut self, hid: HirLocalId, scrut: &Operand, buf: &mut ThinVec<MirStmt>) {
         let local = &self.body.locals[hid];
-        let ty = local
-            .ty
-            .unwrap_or_else(|| self.types.error_type());
+        let ty = local.ty.unwrap_or_else(|| self.types.error_type());
         let name = Some(local.name.clone());
         let mid = self.locals.alloc(MirLocal {
             ty,
@@ -1120,9 +1116,7 @@ impl<'a> Lower<'a> {
         // it from the HIR local so the place resolves.
         let local = &self.body.locals[hid];
         let mid = self.locals.alloc(MirLocal {
-            ty: local
-                .ty
-                .unwrap_or_else(|| self.types.error_type()),
+            ty: local.ty.unwrap_or_else(|| self.types.error_type()),
             name: Some(local.name.clone()),
             mutable: local.mutable,
         });

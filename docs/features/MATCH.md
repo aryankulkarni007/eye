@@ -312,10 +312,19 @@ guard statement, so both the guard and the body see it.
 
 **Exhaustiveness safety:** a guarded arm does not discharge coverage of its
 discriminant (its guard may be false). So a match with guards is exhaustive only
-with an unconditional catch-all (`_` or an unguarded binding) - a guarded
-full-coverage match with no `_` is rejected as non-exhaustive. This is what keeps
-a value-position match's hoist temp from being read uninitialized when no arm
-fires.
+when its *unguarded* arms cover the domain (or an unconditional catch-all) - a
+guarded full-coverage match with no `_` is rejected as non-exhaustive. This is
+what keeps a value-position match's hoist temp from being read uninitialized
+when no arm fires.
+
+When the unguarded arms prove exhaustiveness without a `_` (e.g. a guarded
+duplicate first, then every variant unguarded), the switch has no `default` and
+the chain above would have no unconditional block - C cannot see the
+exhaustiveness, and a rogue scrutinee (a bad FFI cast) would read the hoist temp
+uninitialized. So the **last unguarded arm is emitted gated on the flag alone**
+(`if (!_gN)`, no scrutinee test): its test is tautological once every earlier
+unguarded arm has failed. This is the guarded chain's analogue of the unguarded
+chain's last-arm-as-`else` (CLEAK M3); fixed 2026-06-12.
 
 ### Guard known limitations
 - Guards on struct destructure patterns are pending S3 (struct patterns in match

@@ -20,6 +20,7 @@ impl<'a> LoweringCtx<'a> {
             ast::Pat::LiteralPat(lp) => match lp.literal() {
                 Some(lit) => {
                     let lit = super::types::lower_literal(&lit);
+                    self.check_char_literal(&lit, ptr);
                     self.alloc_pat(Pat::Literal(lit), ptr)
                 }
                 None => self.alloc_pat(Pat::Missing, ptr),

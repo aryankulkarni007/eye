@@ -55,29 +55,159 @@ struct MirGen<'a> {
     place_types: FxHashMap<Place, Type>,
 }
 
-/// Collect the unique string-literal contents across every function body, in a
-/// deterministic (arena) order, so each gets one shared file-scope static.
-fn collect_strings(hir: &HIR) -> (Vec<Text>, FxHashMap<Text, usize>) {
-    let mut seen: FxHashMap<&Text, usize> =
-        FxHashMap::with_capacity_and_hasher(hir.bodies.len() * 2, FxBuildHasher);
-    let mut out: Vec<Text> = Vec::new();
-    for (_, body) in hir.bodies.iter() {
-        for (_, expr) in body.exprs.iter() {
-            if let Expr::Literal(Literal::String(s)) = expr
-                && !seen.contains_key(s)
-            {
-                let idx = out.len();
-                seen.insert(s, idx);
-                out.push(s.clone());
+/// Collect the unique string-literal contents the emitted C will actually
+/// reference, in deterministic order (function arena order, then discovery
+/// order within a body), so each gets one shared file-scope static.
+///
+/// The walk mirrors the emitter exactly (P2): every operand position emits a
+/// wrapper pointer into the static (`gen_literal`), EXCEPT inside a `Println`
+/// whose format is a string constant - there the format and every value are
+/// inlined as C string literals (`gen_println` / `gen_println_value`), so
+/// emitting the static would leave dead bytes in the binary
+/// (`-Wunused-const-variable` under the strict gate).
+fn collect_strings(
+    hir: &HIR,
+    mirs: &FxHashMap<FnId, MirBody>,
+) -> (Vec<Text>, FxHashMap<Text, usize>) {
+    struct Pool {
+        out: Vec<Text>,
+        index: FxHashMap<Text, usize>,
+    }
+    impl Pool {
+        fn add(&mut self, s: &Text) {
+            if !self.index.contains_key(s) {
+                self.index.insert(s.clone(), self.out.len());
+                self.out.push(s.clone());
+            }
+        }
+        fn operand(&mut self, o: &Operand) {
+            match o {
+                Operand::Const(Literal::String(s)) => self.add(s),
+                Operand::Const(_) => {}
+                Operand::Copy(p) => self.place(p),
+            }
+        }
+        fn place(&mut self, p: &Place) {
+            match p {
+                Place::Local(_) | Place::Global(_) => {}
+                Place::Field(base, _) | Place::Deref(base) => self.place(base),
+                Place::Index(base, idx) => {
+                    self.place(base);
+                    self.operand(idx);
+                }
+            }
+        }
+        fn rvalue(&mut self, r: &RValue) {
+            match r {
+                RValue::Use(o) | RValue::Unary(_, o) | RValue::Deref(o) | RValue::Cast(o, _) => {
+                    self.operand(o)
+                }
+                RValue::Binary(_, a, b) => {
+                    self.operand(a);
+                    self.operand(b);
+                }
+                RValue::Call { args, .. } => args.iter().for_each(|a| self.operand(a)),
+                RValue::CallIndirect { callee, args } => {
+                    self.operand(callee);
+                    args.iter().for_each(|a| self.operand(a));
+                }
+                RValue::Println { args } => {
+                    // A string-constant format inlines the format and every
+                    // value; a non-literal format forwards the operands
+                    // unchanged, so a string value argument references its
+                    // static.
+                    if !matches!(args.first(), Some(Operand::Const(Literal::String(_)))) {
+                        args.iter().for_each(|a| self.operand(a));
+                    }
+                }
+                RValue::Func(_) | RValue::Variant(_) | RValue::SizeOf(_) => {}
+                RValue::Ref(p) => self.place(p),
+                RValue::ArrayLit { elems, .. } => elems.iter().for_each(|e| self.operand(e)),
+                RValue::ArrayRepeat { value, .. } => self.operand(value),
+                RValue::StructLit { fields, .. } => {
+                    fields.iter().for_each(|(_, o)| self.operand(o))
+                }
+            }
+        }
+        fn block(&mut self, b: &MirBlock) {
+            for s in &b.stmts {
+                self.stmt(s);
+            }
+        }
+        fn stmt(&mut self, s: &MirStmt) {
+            match s {
+                MirStmt::Let { init, .. } => {
+                    if let Some(r) = init {
+                        self.rvalue(r);
+                    }
+                }
+                MirStmt::Assign { place, value } => {
+                    self.place(place);
+                    self.rvalue(value);
+                }
+                MirStmt::Eval(r) => self.rvalue(r),
+                MirStmt::If {
+                    cond,
+                    then_block,
+                    else_block,
+                } => {
+                    self.operand(cond);
+                    self.block(then_block);
+                    if let Some(e) = else_block {
+                        self.block(e);
+                    }
+                }
+                MirStmt::Loop { body } => self.block(body),
+                MirStmt::Switch {
+                    scrut,
+                    arms,
+                    default,
+                } => {
+                    self.operand(scrut);
+                    for arm in arms {
+                        // String patterns do not exist (S1 domains are
+                        // int/char/bool); walked anyway so a future domain
+                        // cannot silently miss its static.
+                        if let ArmTest::Const(Literal::String(s)) = &arm.test {
+                            self.add(s);
+                        }
+                        if let Some(g) = &arm.guard {
+                            for st in &g.stmts {
+                                self.stmt(st);
+                            }
+                            self.operand(&g.cond);
+                        }
+                        self.block(&arm.body);
+                    }
+                    if let Some(d) = default {
+                        self.block(d);
+                    }
+                }
+                MirStmt::Break | MirStmt::Continue => {}
+                MirStmt::Return(o) => {
+                    if let Some(o) = o {
+                        self.operand(o);
+                    }
+                }
             }
         }
     }
-    let string_index: FxHashMap<Text, usize> = out
-        .iter()
-        .enumerate()
-        .map(|(i, s)| (s.clone(), i))
-        .collect();
-    (out, string_index)
+    let mut pool = Pool {
+        out: Vec::new(),
+        index: FxHashMap::with_capacity_and_hasher(hir.bodies.len() * 2, FxBuildHasher),
+    };
+    // Function arena order keeps static ids deterministic across runs (the
+    // MIR map is a hash map). Globals cannot reference a string: their
+    // initializers are folded scalars (`ConstValue`).
+    for (id, f) in hir.functions.iter() {
+        if f.is_extern {
+            continue;
+        }
+        if let Some(mir) = mirs.get(&id) {
+            pool.block(&mir.body);
+        }
+    }
+    (pool.out, pool.index)
 }
 
 enum IndexAccess {
@@ -150,7 +280,7 @@ fn write_c_char_literal(c: char, out: &mut String) {
 
 impl<'a> MirGen<'a> {
     fn new(hir: &'a HIR, mirs: &'a FxHashMap<FnId, MirBody>) -> Self {
-        let (strings, string_index) = collect_strings(hir);
+        let (strings, string_index) = collect_strings(hir, mirs);
         let error_ty = hir.types.error_type();
         Self {
             hir,
@@ -236,7 +366,8 @@ impl<'a> MirGen<'a> {
         // emitted at file scope before the functions that reference them.
         self.gen_globals();
         // String-literal backing storage (HORIZON0 C3): one NUL-terminated byte
-        // array per unique literal, also file-scope before the functions.
+        // array per unique *referenced* literal (P2: a literal println inlines
+        // gets no static), also file-scope before the functions.
         self.gen_string_statics();
 
         let extern_fns: Vec<FnId> = self
@@ -558,11 +689,26 @@ impl<'a> MirGen<'a> {
         self.guard_flag += 1;
         self.push_indent();
         self.w(format_args!("bool {flag} = false;\n"));
-        for arm in arms {
+        // A switch with no `default` is a match HIR proved exhaustive via its
+        // UNGUARDED arms (guards do not discharge coverage). So if control
+        // reaches the last unguarded arm with the flag still unset, every
+        // earlier unguarded arm's test failed and that arm's test is
+        // tautological. Emit it gated on the flag alone - the guarded chain's
+        // analogue of the unguarded chain's `else` (M3): C cannot see the
+        // exhaustiveness, and a tested last arm leaves a value-match's hoist
+        // temp uninitialized when the scrutinee holds a rogue value (e.g. an
+        // enum from a bad FFI cast). Arms after it are guarded and dead (the
+        // tautological arm fires first); they are emitted unchanged.
+        let last_unguarded = match default {
+            None => arms.iter().rposition(|a| a.guard.is_none()),
+            Some(_) => None,
+        };
+        for (i, arm) in arms.iter().enumerate() {
             self.push_indent();
             // An `Always` arm (guarded catch-all) has no scrutinee test - it
             // matches anything, gated only by the flag and its own guard.
             match &arm.test {
+                _ if last_unguarded == Some(i) => self.w(format_args!("if (!{flag}) {{\n")),
                 ArmTest::Always => self.w(format_args!("if (!{flag}) {{\n")),
                 _ => {
                     self.w(format_args!("if (!{flag} && "));
@@ -967,9 +1113,10 @@ impl<'a> MirGen<'a> {
     }
 
     /// The C id of a string literal's backing static (its index in the pool).
-    // A4: unwrap_or(0) silently returns wrong static if a string is absent
-    // from string_index. collect_strings runs first and always populates all
-    // strings, so this never fires on correct data. Use expect() for defense.
+    // A4: unwrap_or(0) silently returned the wrong static if a string was
+    // absent from string_index. collect_strings mirrors every emitter path
+    // that reaches here, so this never fires on correct data; expect() for
+    // defense (a miss now means the collection walk and the emitter drifted).
     fn string_id(&self, s: &Text) -> usize {
         self.string_index
             .get(s)
@@ -1021,17 +1168,25 @@ impl<'a> MirGen<'a> {
         let mut rendered = String::with_capacity(s.len() + values.len() * 2);
         let mut chars = s.chars().peekable();
         while let Some(c) = chars.next() {
-            if c == '{' && chars.peek() == Some(&'}') {
-                // U5: placeholder count vs argument count unchecked.
-                // Exhausted value_iter silently emits %d, extra values
-                // are forwarded to printf. Fix independently of type
-                // inference.
+            if c == '{' && chars.peek() == Some(&'{') {
+                // `{{` escapes a literal `{` (and `}}` a literal `}` below);
+                // the HIR arity scan skips them with the same rule.
+                chars.next();
+                rendered.push('{');
+            } else if c == '{' && chars.peek() == Some(&'}') {
+                // Placeholder/argument counts are equal here: HIR rejects a
+                // mismatch for any literal format string (U5,
+                // PrintlnArityMismatch) with the same `{}` scan. The `%d`
+                // fallback below is defensive only.
                 chars.next();
                 let spec = value_iter
                     .next()
                     .map(|op| self.operand_spec(mir, op))
                     .unwrap_or("%d");
                 rendered.push_str(spec);
+            } else if c == '}' && chars.peek() == Some(&'}') {
+                chars.next();
+                rendered.push('}');
             } else if c == '%' {
                 rendered.push_str("%%");
             } else {
@@ -1208,6 +1363,17 @@ impl<'a> MirGen<'a> {
     /// suffixing surfaces it. This is output-invariant (it only renames), so it
     /// is safe to do now and closes the totality hole before cutover.
     fn local_names(mir: &MirBody) -> Vec<Text> {
+        // The bare parameter names are the only names a generated local name
+        // can collide with: raw ids make generated names unique among
+        // themselves, but a parameter literally named like one (`x_3`, `_t2`)
+        // lands in the same C scope - a redefinition error, or a silent
+        // shadow miscompile from a nested block. Generated names never end in
+        // `_`, so appending `_` until free stays injective.
+        let param_names: rustc_hash::FxHashSet<&str> = mir
+            .params
+            .iter()
+            .filter_map(|&p| mir.locals[p].name.as_deref())
+            .collect();
         let mut names: Vec<Text> = Vec::with_capacity(mir.locals.len());
         for (id, local) in mir.locals.iter() {
             let raw = u32::from(id.raw_idx());
@@ -1223,10 +1389,14 @@ impl<'a> MirGen<'a> {
                     .expect("parameter has a source name")
                     .clone()
             } else {
-                match &local.name {
-                    Some(name) => Text::from(format!("{}_{}", name, raw)),
-                    None => Text::from(format!("_t{}", raw)),
+                let mut name = match &local.name {
+                    Some(name) => format!("{}_{}", name, raw),
+                    None => format!("_t{}", raw),
+                };
+                while param_names.contains(name.as_str()) {
+                    name.push('_');
                 }
+                Text::from(name)
             };
         }
         names

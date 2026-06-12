@@ -11,15 +11,15 @@
 
 ---
 
-- [ ] remove all type errors. this should be a type checker error class
-- [ ] refactor error handling to be more robust
-      i am dissatisfied with what we have now - errors should be partition by class. Codegen shouldn't emit type errors for example
+- remove all type errors. this should be a type checker error class
+- refactor error handling to be more robust
+  i am dissatisfied with what we have now - errors should be partition by class. Codegen shouldn't emit type errors for example
 
-- [ ] so really i am kinda approaching things wrong. we should be hoisting in the hir not in codegen. that is what happening. the hir is pure and the codegen is making the decisions. this is incorrect. codegen should simply be a translation black box
+- so really i am kinda approaching things wrong. we should be hoisting in the hir not in codegen. that is what happening. the hir is pure and the codegen is making the decisions. this is incorrect. codegen should simply be a translation black box
 
-- [ ] if we commit to this refactor, I would want the HIR to be pure and for there to be one true HIR for eye. that is it. we may have mutliple MIRs -> one for c codegen, one for cranelift backend. with translation machinery in between layers. That architecture makes the most sense.
+- if we commit to this refactor, I would want the HIR to be pure and for there to be one true HIR for eye. that is it. we may have mutliple MIRs -> one for c codegen, one for cranelift backend. with translation machinery in between layers. That architecture makes the most sense.
 
-- [ ] consider error handling overhaul
+- consider error handling overhaul
 
 GEMINI DUMP ->
 

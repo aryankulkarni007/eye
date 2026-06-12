@@ -7,7 +7,6 @@ extern {
 
 structure Vec3 { int32 x, int32 y, int32 z, };
 
--- FIXME: make sure that structure initialization is exhaustive
 add(Vec3 x, Vec3 y) -> Vec3 {
     Vec3
     {

@@ -28,6 +28,14 @@ pub enum ResolveError {
         variant: Text,
         enum_name: Text,
     },
+    DuplicateParam {
+        name: Text,
+        function: Text,
+    },
+    NameIsReserved {
+        name: Text,
+        what: &'static str,
+    },
     UnknownEnumInPattern {
         enum_name: Text,
     },
@@ -86,6 +94,13 @@ pub enum ResolveError {
     /// exempt - `sizeof(ctype)` leans on the C backend as the layout
     /// authority (docs/features/SIZEOF.md).
     UnknownTypeName {
+        name: Text,
+    },
+    /// A `let`/`mut`/`const` binding whose name is already bound in the same
+    /// lexical scope (ruled 2026-06-12). Shadowing in a *nested* scope stays
+    /// legal; same-scope rebinding is rejected conservatively (it can be
+    /// relaxed to a shadowing rule later; the reverse would break programs).
+    DuplicateLocal {
         name: Text,
     },
 }
@@ -223,6 +238,35 @@ pub enum TypeError {
     /// name only, so a positional value would be silently dropped (the struct
     /// would be zero-initialized).
     StructLitPositional,
+    /// `println` placeholder/argument count mismatch (U5): the `{}` count in a
+    /// literal format string must equal the value-argument count. Unchecked,
+    /// an exhausted placeholder emitted `%d` with no matching argument and
+    /// extra arguments were forwarded to printf - varargs UB both ways.
+    PrintlnArityMismatch {
+        placeholders: usize,
+        args: usize,
+    },
+    /// `println` with no arguments at all: there is no format string, and the
+    /// bare `printf()` it emitted is not legal C.
+    PrintlnMissingFormat,
+    /// A char literal outside ASCII: `char` is one byte, but the literal's
+    /// UTF-8 encoding is more than one, and the multibyte C char constant it
+    /// emitted has an implementation-defined value.
+    CharLiteralNotAscii {
+        ch: char,
+    },
+    /// Arithmetic or bitwise operation on an enum value (ruled 2026-06-12:
+    /// enums are opaque, not ordinal). Comparisons stay allowed; `as` casts
+    /// to an integer type stay as the explicit escape.
+    ArithmeticOnEnum {
+        op: &'static str,
+        enum_name: Text,
+    },
+    /// `&` of a non-place expression (`&(a + b)`) (ruled 2026-06-12). MIR
+    /// would spill the value to a temp and silently take the temp's address,
+    /// with no visible lifetime. `&` requires a place: a variable, global,
+    /// field, index, or dereference.
+    RefOfNonPlace,
 }
 
 /// `P`: match-analysis errors.
@@ -366,6 +410,10 @@ impl fmt::Display for ResolveError {
                 f,
                 "variant `{variant}` already declared in enum `{enum_name}`"
             ),
+            ResolveError::DuplicateParam { name, function } => write!(
+                f,
+                "parameter `{name}` declared more than once in `{function}`"
+            ),
             ResolveError::UnknownEnumInPattern { enum_name } => {
                 write!(f, "unknown enum `{enum_name}` in match pattern")
             }
@@ -397,12 +445,22 @@ impl fmt::Display for ResolveError {
                     "`{name}` cannot be used as a {what} name: it is a C keyword, and the C backend emits the name verbatim"
                 )
             }
+            ResolveError::NameIsReserved { name, what } => {
+                write!(
+                    f,
+                    "`{name}` cannot be used as a {what} name: it is reserved for the compiler's C output"
+                )
+            }
             ResolveError::UnknownStructLiteral { name } => {
                 write!(f, "`{name}` is not a declared struct or union")
             }
             ResolveError::UnknownTypeName { name } => {
                 write!(f, "unknown type name `{name}`")
             }
+            ResolveError::DuplicateLocal { name } => write!(
+                f,
+                "`{name}` is already declared in this scope; shadowing needs a nested block scope"
+            ),
         }
     }
 }
@@ -546,6 +604,34 @@ impl fmt::Display for TypeError {
                 f,
                 "struct literal fields must be named (`Point {{ x: 1, y: 2 }}`); positional initialization is not supported"
             ),
+            TypeError::PrintlnArityMismatch { placeholders, args } => {
+                let ph = if *placeholders == 1 {
+                    "placeholder"
+                } else {
+                    "placeholders"
+                };
+                let arg = if *args == 1 { "argument" } else { "arguments" };
+                write!(
+                    f,
+                    "`println` format string has {placeholders} `{{}}` {ph} but {args} value {arg}"
+                )
+            }
+            TypeError::PrintlnMissingFormat => write!(
+                f,
+                "`println` requires a format string as its first argument"
+            ),
+            TypeError::CharLiteralNotAscii { ch } => write!(
+                f,
+                "char literal `'{ch}'` does not fit in one byte: `char` is a single byte; use a string literal for non-ASCII text"
+            ),
+            TypeError::ArithmeticOnEnum { op, enum_name } => write!(
+                f,
+                "cannot apply `{op}` to enum `{enum_name}`: enum values are opaque; cast with `as` to do integer arithmetic"
+            ),
+            TypeError::RefOfNonPlace => write!(
+                f,
+                "cannot take the address of this expression: `&` requires a place (a variable, field, index, or dereference)"
+            ),
         }
     }
 }
@@ -674,6 +760,9 @@ impl Diagnostic for HirError {
                 ResolveError::NameIsCKeyword { .. } => Code::new(Class::Resolve, 10),
                 ResolveError::UnknownStructLiteral { .. } => Code::new(Class::Resolve, 11),
                 ResolveError::UnknownTypeName { .. } => Code::new(Class::Resolve, 12),
+                ResolveError::DuplicateParam { .. } => Code::new(Class::Resolve, 13),
+                ResolveError::NameIsReserved { .. } => Code::new(Class::Resolve, 14),
+                ResolveError::DuplicateLocal { .. } => Code::new(Class::Resolve, 15),
             },
             HirError::Type(e) => match e {
                 TypeError::ArrayInitLenMismatch { .. } => Code::new(Class::Type, 1),
@@ -707,6 +796,11 @@ impl Diagnostic for HirError {
                 TypeError::ArithmeticOnPtr { .. } => Code::new(Class::Type, 29),
                 TypeError::IntLiteralOutOfRange { .. } => Code::new(Class::Type, 30),
                 TypeError::StructLitPositional => Code::new(Class::Type, 31),
+                TypeError::PrintlnArityMismatch { .. } => Code::new(Class::Type, 32),
+                TypeError::PrintlnMissingFormat => Code::new(Class::Type, 33),
+                TypeError::CharLiteralNotAscii { .. } => Code::new(Class::Type, 34),
+                TypeError::ArithmeticOnEnum { .. } => Code::new(Class::Type, 35),
+                TypeError::RefOfNonPlace => Code::new(Class::Type, 36),
             },
             HirError::Pattern(e) => match e {
                 PatternError::UnreachableAfterWildcard => Code::new(Class::Pattern, 1),

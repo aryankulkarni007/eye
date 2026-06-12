@@ -142,7 +142,7 @@ impl Interner {
 
     /// Number of distinct strings interned.
     /// Retrieve the canonical [`SmolStr`] for `s` if it was already interned.
-    /// Returns `None` if `s` is not in the table. The clone is O(1) — short
+    /// Returns `None` if `s` is not in the table. The clone is O(1) - short
     /// strings (≤22 bytes) are inline; long strings bump an `Arc` refcount.
     pub fn get(&self, s: &str) -> Option<SmolStr> {
         self.map.get(s).map(|&sym| self.vec[sym.0 as usize].clone())
@@ -263,6 +263,24 @@ impl SourceText {
         assert!(offset <= self.source.len(), "offset out of bounds");
         let line = self.lstart.partition_point(|&start| start <= offset) - 1;
         let col = offset - self.lstart[line];
+        LineCol {
+            line: (line + 1) as u32,
+            col: (col + 1) as u32,
+        }
+    }
+
+    /// Converts a byte offset to a one-based line and a one-based column
+    /// counted in UTF-16 code units - the LSP default position encoding.
+    /// [`Self::line_col`] reports byte columns; an LSP payload built from
+    /// those mis-places every position after a multibyte character on the
+    /// same line. `offset` must lie on a `char` boundary (token and node
+    /// ranges always do).
+    pub fn line_col_utf16(&self, offset: TextSize) -> LineCol {
+        let offset = usize::from(offset);
+        assert!(offset <= self.source.len(), "offset out of bounds");
+        let line = self.lstart.partition_point(|&start| start <= offset) - 1;
+        let prefix = &self.as_str()[self.lstart[line]..offset];
+        let col: usize = prefix.chars().map(char::len_utf16).sum();
         LineCol {
             line: (line + 1) as u32,
             col: (col + 1) as u32,
@@ -586,6 +604,22 @@ mod tests {
                 TokenKind::Eof
             ]
         );
+    }
+
+    #[test]
+    fn line_col_utf16_counts_code_units() {
+        // `é` is 2 bytes / 1 UTF-16 unit; `𝄞` is 4 bytes / 2 UTF-16 units.
+        let src = "-- é𝄞x\nyz";
+        let st = SourceText::new(src.to_string());
+        // offset of `x`: 3 ("-- ") + 2 (é) + 4 (𝄞) = 9 bytes; UTF-16 col is
+        // 3 + 1 + 2 = 6 zero-based, 7 one-based (byte col would be 10).
+        let lc = st.line_col_utf16(TextSize::from(9));
+        assert_eq!((lc.line, lc.col), (1, 7));
+        assert_eq!(st.line_col(TextSize::from(9)).col, 10);
+        // multibyte on an earlier line does not affect a later line
+        let y_offset = src.find('y').unwrap() as u32;
+        let lc = st.line_col_utf16(TextSize::from(y_offset));
+        assert_eq!((lc.line, lc.col), (2, 1));
     }
 
     #[test]

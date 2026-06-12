@@ -1030,7 +1030,7 @@ main() {
     let array_local = body
         .locals
         .iter()
-        .find_map(|(_, l)| l.ty.and_then(|ty| ty.as_array(&types)));
+        .find_map(|(_, l)| l.ty.and_then(|ty| ty.as_array(types)));
     let (elem, len) = array_local.expect("xs local has an Array type");
     assert_eq!(len, 3, "array length parsed from literal");
     assert_eq!(elem, int32_ty, "element type");
@@ -1174,6 +1174,118 @@ main() {}
     );
 }
 
+/// Non-ASCII char literals are rejected (T034) in both expression and
+/// match-pattern position: `char` is one byte, and the multibyte C char
+/// constant is implementation-defined. ASCII and escapes stay legal.
+#[test]
+fn non_ascii_char_literals_are_rejected() {
+    let hir = lower(
+        "\
+main() {
+    let char a = 'é';
+    let char ok = 'x';
+    let char esc = '\\n';
+    match ok {
+        '→' -> {},
+        _ -> {},
+    }
+}
+",
+    );
+    let rejected: Vec<_> = diags(&hir)
+        .iter()
+        .filter_map(|d| match d {
+            HirError::Type(TypeError::CharLiteralNotAscii { ch }) => Some(*ch),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        rejected,
+        ['é', '→'],
+        "expected exactly the non-ASCII char literals rejected: {:?}",
+        diags(&hir)
+    );
+}
+
+/// Compiler-reserved names are rejected (R014): `__eye`-prefixed names
+/// collide with the backend's own symbols (string statics, array wrappers,
+/// the `main` shim), and a non-extern `printf` collides with the libc symbol
+/// the `println` intrinsic calls. An `extern` declaration of `printf` stays
+/// legal - it names the same libc symbol.
+#[test]
+fn reserved_names_are_rejected() {
+    let hir = lower(
+        "\
+printf(int32 x) -> int32 { x }
+__eye_main() -> int32 { 7 }
+main() {}
+",
+    );
+    let reserved: Vec<_> = diags(&hir)
+        .iter()
+        .filter_map(|d| match d {
+            HirError::Resolve(ResolveError::NameIsReserved { name, .. }) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        reserved,
+        ["printf", "__eye_main"],
+        "expected exactly the reserved names rejected: {:?}",
+        diags(&hir)
+    );
+    let hir = lower(
+        "\
+extern {
+    printf(string fmt, ...) -> int32;
+}
+main() { printf(\"x\"); }
+",
+    );
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|d| matches!(d, HirError::Resolve(ResolveError::NameIsReserved { .. }))),
+        "extern printf declares the libc symbol and must stay legal: {:?}",
+        diags(&hir)
+    );
+}
+
+/// Duplicate parameter names in a function definition are rejected (R013):
+/// the C signature declares them verbatim, where a duplicate is a
+/// redefinition error. Extern prototypes are types-only and exempt.
+#[test]
+fn duplicate_param_names_are_rejected() {
+    let hir = lower(
+        "\
+f(int32 x, int32 x) -> int32 { x }
+main() {}
+",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|d| matches!(d, HirError::Resolve(ResolveError::DuplicateParam { .. }))),
+        "expected a duplicate-parameter diagnostic: {:?}",
+        diags(&hir)
+    );
+    let hir = lower(
+        "\
+extern {
+    g(int32 x, int32 x) -> int32;
+}
+main() {}
+",
+    );
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|d| matches!(d, HirError::Resolve(ResolveError::DuplicateParam { .. }))),
+        "extern prototypes are types-only; duplicate names are not checked: {:?}",
+        diags(&hir)
+    );
+}
+
 /// A top-level `const` integer resolves as an array length (A6,
 /// `docs/design/HORIZON0.md`): `const usize N = 4; [int32; N]` lowers to a length-4
 /// array, and a const-expr (`N * 2`) folds too.
@@ -1197,7 +1309,7 @@ main() {
         .stmts
         .iter()
         .filter_map(|(_, s)| match s {
-            Stmt::Let { ty: Some(ty), .. } => ty.as_array(&types).map(|(_, len)| len),
+            Stmt::Let { ty: Some(ty), .. } => ty.as_array(types).map(|(_, len)| len),
             _ => None,
         })
         .collect();
@@ -1951,6 +2063,205 @@ fn print_compound_is_rejected() {
     );
 }
 
+/// `println` placeholder/argument counts must match (U5): an exhausted
+/// placeholder emitted `%d` with no argument, surplus arguments were
+/// forwarded to printf - varargs UB both ways. `println()` with no
+/// arguments has no format string at all (`printf()` is not legal C).
+#[test]
+fn println_placeholder_arity_is_checked() {
+    let too_few = lower("main() {\n    println(\"{} {}\", 1);\n}\n");
+    assert!(
+        diags(&too_few).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::PrintlnArityMismatch {
+                placeholders: 2,
+                args: 1
+            })
+        )),
+        "2 placeholders with 1 argument must be rejected; got: {:?}",
+        too_few.diagnostics
+    );
+    let too_many = lower("main() {\n    println(\"{}\", 1, 2);\n}\n");
+    assert!(
+        diags(&too_many).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::PrintlnArityMismatch {
+                placeholders: 1,
+                args: 2
+            })
+        )),
+        "1 placeholder with 2 arguments must be rejected; got: {:?}",
+        too_many.diagnostics
+    );
+    let no_args = lower("main() {\n    println();\n}\n");
+    assert!(
+        diags(&no_args)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::PrintlnMissingFormat))),
+        "println with no arguments must be rejected; got: {:?}",
+        no_args.diagnostics
+    );
+    // Matched counts are clean, and a lone `{` is not a placeholder.
+    for src in [
+        "main() {\n    println(\"{} {}\", 1, 2);\n}\n",
+        "main() {\n    println(\"plain\");\n}\n",
+        "main() {\n    println(\"{ {}\", 1);\n}\n",
+    ] {
+        let hir = lower(src);
+        assert!(
+            !diags(&hir).iter().any(|e| matches!(
+                e,
+                HirError::Type(
+                    TypeError::PrintlnArityMismatch { .. } | TypeError::PrintlnMissingFormat
+                )
+            )),
+            "matched counts must be clean for {src:?}; got: {:?}",
+            hir.diagnostics
+        );
+    }
+}
+
+/// `{{` and `}}` escape a literal brace in a `println` format string (ruled
+/// 2026-06-12, Rust-style); only `{}` is a placeholder. The arity scan must
+/// skip escapes with the same rule codegen renders them by.
+#[test]
+fn println_brace_escapes_are_not_placeholders() {
+    // `{{}}` is the literal text `{}` - zero placeholders.
+    let escaped = lower("main() {\n    println(\"{{}}\");\n}\n");
+    assert!(
+        !diags(&escaped).iter().any(|e| matches!(
+            e,
+            HirError::Type(
+                TypeError::PrintlnArityMismatch { .. } | TypeError::PrintlnMissingFormat
+            )
+        )),
+        "`{{{{}}}}` must count zero placeholders; got: {:?}",
+        escaped.diagnostics
+    );
+    // `{{{}}}` is `{{` + `{}` + `}}` - exactly one placeholder.
+    let mixed = lower("main() {\n    println(\"{{{}}}\", 1);\n}\n");
+    assert!(
+        !diags(&mixed)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::PrintlnArityMismatch { .. }))),
+        "`{{{{{{}}}}}}` must count one placeholder; got: {:?}",
+        mixed.diagnostics
+    );
+    // An argument against an all-escaped string is a mismatch.
+    let surplus = lower("main() {\n    println(\"{{}}\", 1);\n}\n");
+    assert!(
+        diags(&surplus).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::PrintlnArityMismatch {
+                placeholders: 0,
+                args: 1
+            })
+        )),
+        "an argument with zero placeholders must be rejected; got: {:?}",
+        surplus.diagnostics
+    );
+}
+
+/// Same-scope redeclaration is rejected (R015, ruled 2026-06-12); shadowing
+/// needs a nested block scope. Covers `let` against `let`, `const` against
+/// `let`, and a destructure rename colliding with an earlier binding.
+#[test]
+fn same_scope_redeclaration_is_rejected() {
+    let lets = lower("main() {\n    let int32 x = 1;\n    mut int32 x = 2;\n}\n");
+    assert!(
+        diags(&lets).iter().any(
+            |e| matches!(e, HirError::Resolve(ResolveError::DuplicateLocal { name }) if name == "x")
+        ),
+        "same-scope let/mut redeclaration must be rejected; got: {:?}",
+        lets.diagnostics
+    );
+    let const_let = lower("main() {\n    const int32 K = 1;\n    let int32 K = 2;\n}\n");
+    assert!(
+        diags(&const_let).iter().any(
+            |e| matches!(e, HirError::Resolve(ResolveError::DuplicateLocal { name }) if name == "K")
+        ),
+        "a let rebinding a same-scope const must be rejected; got: {:?}",
+        const_let.diagnostics
+    );
+    // A nested block scope shadows legally.
+    let nested = lower(
+        "main() {\n    let int32 x = 1;\n    if true {\n        let int32 x = 2;\n    }\n}\n",
+    );
+    assert!(
+        !diags(&nested)
+            .iter()
+            .any(|e| matches!(e, HirError::Resolve(ResolveError::DuplicateLocal { .. }))),
+        "nested-scope shadowing must stay legal; got: {:?}",
+        nested.diagnostics
+    );
+}
+
+/// Enums are opaque, not ordinal (T035, ruled 2026-06-12): arithmetic and
+/// bitwise operators on an enum value are rejected; comparisons stay allowed
+/// and `as` to an integer stays as the explicit escape.
+#[test]
+fn enum_arithmetic_is_rejected() {
+    let src = "enum E = A | B;\n\
+               main() {\n    let E a = A;\n    let E b = B;\n";
+    let plus = lower(&format!("{src}    let E c = a + b;\n}}\n"));
+    assert!(
+        diags(&plus)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ArithmeticOnEnum { op, enum_name }) if *op == "+" && enum_name == "E")),
+        "`+` on enum values must be rejected; got: {:?}",
+        plus.diagnostics
+    );
+    let neg = lower(&format!("{src}    let E c = -a;\n}}\n"));
+    assert!(
+        diags(&neg).iter().any(
+            |e| matches!(e, HirError::Type(TypeError::ArithmeticOnEnum { op, .. }) if *op == "-")
+        ),
+        "unary `-` on an enum value must be rejected; got: {:?}",
+        neg.diagnostics
+    );
+    let cmp = lower(&format!("{src}    let bool eq = a == b;\n}}\n"));
+    assert!(
+        !diags(&cmp)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ArithmeticOnEnum { .. }))),
+        "`==` on enum values must stay legal; got: {:?}",
+        cmp.diagnostics
+    );
+    let cast = lower(&format!("{src}    let int32 n = (a as int32) + 1;\n}}\n"));
+    assert!(
+        !diags(&cast)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ArithmeticOnEnum { .. }))),
+        "`as int32` then arithmetic must stay legal; got: {:?}",
+        cast.diagnostics
+    );
+}
+
+/// `&` requires a place (T036, ruled 2026-06-12): `&(a + b)` would spill the
+/// value to a MIR temp and silently take the temp's address. Places (a
+/// variable, field, index, deref) stay legal.
+#[test]
+fn ref_of_non_place_is_rejected() {
+    let non_place = lower(
+        "main() {\n    let int32 a = 1;\n    let int32 b = 2;\n    let &int32 p = &(a + b);\n}\n",
+    );
+    assert!(
+        diags(&non_place)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::RefOfNonPlace))),
+        "`&(a + b)` must be rejected; got: {:?}",
+        non_place.diagnostics
+    );
+    let place = lower("main() {\n    let int32 a = 1;\n    let &int32 p = &a;\n}\n");
+    assert!(
+        !diags(&place)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::RefOfNonPlace))),
+        "`&a` must stay legal; got: {:?}",
+        place.diagnostics
+    );
+}
+
 /// A statically negative literal index is out of bounds for any length, so it is
 /// rejected like a too-large literal index (A4).
 #[test]
@@ -2456,9 +2767,8 @@ main() {
         "expected DerefOfPtr: {ds:?}"
     );
     assert!(
-        ds.iter().any(
-            |d| matches!(d, HirError::Type(TypeError::ArithmeticOnPtr { op }) if *op == "+")
-        ),
+        ds.iter()
+            .any(|d| matches!(d, HirError::Type(TypeError::ArithmeticOnPtr { op }) if *op == "+")),
         "expected ArithmeticOnPtr: {ds:?}"
     );
     // The comparison must not be rejected.

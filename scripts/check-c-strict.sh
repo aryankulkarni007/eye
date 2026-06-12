@@ -9,9 +9,8 @@
 #   -Wno-unused-parameter       Eye has no unused-binding lint yet; user code
 #                               with unused params is legal Eye.
 #   -Wno-unused-variable        same, for locals.
-#   -Wno-unused-const-variable  string statics are emitted per unique literal
-#                               even when println inlines the literal into the
-#                               format string (todo: emit only referenced ones).
+# (-Wno-unused-const-variable was dropped 2026-06-12: string statics are now
+#  emitted only for referenced literals - P2 - so the gate enforces it.)
 #
 # Usage:  ./scripts/check-c-strict.sh [-v]
 
@@ -29,7 +28,7 @@ verbose=false
 if [ "${1:-}" = "-v" ]; then verbose=true; fi
 
 FLAGS=(-fsyntax-only -std=c11 -pedantic-errors -Wall -Wextra -Werror
-       -Wno-unused-parameter -Wno-unused-variable -Wno-unused-const-variable)
+       -Wno-unused-parameter -Wno-unused-variable)
 
 errors=0
 total=0

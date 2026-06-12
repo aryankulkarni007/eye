@@ -46,7 +46,8 @@ extern {
 const ptr NULL = (0 as ptr);
 
 -- FIXME: we need type checking
--- we can declare off of type off and it is not caught
+-- (`off off` - an undeclared field type - is now caught, R012; field/arg
+-- VALUE types are still unchecked, see ledger.md typeck scope)
 structure Arena {
     uint8* buffer,
     usize cap,
@@ -65,8 +66,8 @@ structure Language {
 };
 
 -- ironic that the eye flips the structure struct thing
--- FIXME: this produces illegal C we cannot have struct
--- as the name of a field could be fixed to struct_0
+-- (a field cannot be named `struct`: C-keyword names are rejected, R010 -
+-- reject was chosen over mangling so the emitted C keeps the source name)
 structure Syllable {
     string str,
 };
@@ -79,9 +80,7 @@ init(Arena* arena, usize size) -> ptr {
 
     arena.cap = size;
     arena.buffer = malloc(arena.cap);
-    if arena.buffer == NULL {
-        return NULL;
-    };
+    if arena.buffer == NULL { return NULL; };
 
     arena.off = 0;
     -- WARN: should casts be protected
@@ -196,8 +195,9 @@ generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
             ii += 1; -- onset_head fill loop
         }
 
-        -- FIXME: compiler should error if we try to redeclare a previously declared variable
-        mut int32* tmp = coda_head;
+        -- same-scope redeclaration is an error (R015, ruled 2026-06-12); `tmp`
+        -- is mut, so re-point the existing binding instead
+        tmp = coda_head;
         mut usize ij = 0;
         loop {
             if ii >= coda_count { break; }

@@ -687,19 +687,45 @@ fn mir_path_runs_struct_pointer_and_deref() {
     );
 }
 
-/// Track 2 Segment 4: same-block shadowing compiles and runs. Eye allows
-/// `let x = 1; let x = 2;` in one block (the second binding wins). The emitter
-/// suffixes every non-parameter local with its `LocalId` (`x_0`, `x_1`), so the
-/// two declarations never collide in one C scope. (Naming locals by their bare
-/// source name - as the deleted HIR-walk emitter did - would emit two
-/// `const int32_t x;` and fail to compile, an I2/totality violation.) Prints the
-/// second binding. Output assertion (R1).
+/// Same-scope redeclaration is rejected (R015, ruled 2026-06-12):
+/// `let x = 1; let x = 2;` in one block is an error, not shadowing.
+/// Shadowing in a nested block scope stays legal (see
+/// `nested_block_shadowing_is_legal`). This reverses the Track 2 Segment 4
+/// pin (`mir_path_allows_same_block_shadowing`): the conservative reject can
+/// be relaxed to a shadowing rule later; the reverse would break programs.
 #[test]
-fn mir_path_allows_same_block_shadowing() {
-    let (out, _) = common::run_program(
+fn same_scope_redeclaration_is_rejected() {
+    let out = common::compile_expect_failure(
         "main() {\n\
          \x20   let int32 x = 1;\n\
          \x20   let int32 x = 2;\n\
+         \x20   println(\"{}\", x);\n\
+         }\n",
+    );
+    let rendered = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        rendered.contains("already declared in this scope"),
+        "expected a duplicate-local diagnostic, got:\n{rendered}"
+    );
+}
+
+/// Shadowing in a *nested* block scope stays legal under R015: the inner
+/// binding wins inside the block, the outer binding is visible again after.
+/// The emitter suffixes every non-parameter local with its `LocalId`
+/// (`x_0`, `x_1`), so the two declarations never collide in one C scope.
+#[test]
+fn nested_block_shadowing_is_legal() {
+    let (out, _) = common::run_program(
+        "main() {\n\
+         \x20   let int32 x = 1;\n\
+         \x20   if true {\n\
+         \x20       let int32 x = 2;\n\
+         \x20       println(\"{}\", x);\n\
+         \x20   }\n\
          \x20   println(\"{}\", x);\n\
          }\n",
     );
@@ -709,7 +735,30 @@ fn mir_path_allows_same_block_shadowing() {
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n1\n");
+}
+
+/// `{{`/`}}` print a literal brace in a `println` format string (ruled
+/// 2026-06-12, Rust-style); `{}` stays a placeholder and a lone brace still
+/// prints literally. Output oracle (R1).
+#[test]
+fn println_brace_escapes_print_literal_braces() {
+    let (out, _) = common::run_program(
+        "main() {\n\
+         \x20   println(\"{{}} {} {{{}}}\", 1, 2);\n\
+         \x20   println(\"lone { brace\");\n\
+         }\n",
+    );
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "{} 1 {2}\nlone { brace\n"
+    );
 }
 
 /// Track 2 cutover (I2): a call to an undeclared name is rejected with a clean
@@ -835,6 +884,73 @@ fn complex_match_guard_falls_through() {
     // A,x=5: guard true -> 1. A,x=0: guard false -> falls past B to `_` -> 9.
     // B: -> 2.
     assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n9\n2\n");
+}
+
+/// A parameter literally named like a generated local (`x_1` vs local `x`
+/// with MIR id 1, `_t2` vs a temp) must not collide: parameters keep their
+/// bare source name, so colliding generated names are repaired with a
+/// trailing `_` (generated names never end in `_`, keeping the scheme
+/// injective).
+#[test]
+fn param_named_like_mangled_local_does_not_collide() {
+    let (out, _) = common::run_program(
+        "f(int32 x_1) -> int32 {\n\
+         \x20   let int32 x = 5;\n\
+         \x20   x + x_1\n\
+         }\n\
+         g(int32 _t2) -> int32 {\n\
+         \x20   let int32 a = _t2 + 1;\n\
+         \x20   a * 2\n\
+         }\n\
+         main() {\n\
+         \x20   println(\"{}\", f(100));\n\
+         \x20   println(\"{}\", g(10));\n\
+         }\n",
+    );
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "105\n22\n");
+}
+
+/// A guarded switch whose UNGUARDED arms prove exhaustiveness (no `_`, no
+/// default) must still initialize the value-match temp on every path: the
+/// last unguarded arm is emitted gated on the flag alone (no scrutinee test),
+/// the guarded chain's analogue of the unguarded chain's `else`. Behavior is
+/// unchanged; the generated C is checked for the flag-only arm so a rogue
+/// scrutinee (bad FFI cast) cannot read the temp uninitialized.
+#[test]
+fn guarded_exhaustive_switch_has_unconditional_tail() {
+    let (out, dir) = common::run_program(
+        "enum E = A | B ;\n\
+         pick(E e, bool c) -> int32 {\n\
+         \x20   match e {\n\
+         \x20       A if c -> 1,\n\
+         \x20       A -> 2,\n\
+         \x20       B -> 3,\n\
+         \x20   }\n\
+         }\n\
+         main() {\n\
+         \x20   println(\"{}\", pick(A, true));\n\
+         \x20   println(\"{}\", pick(A, false));\n\
+         \x20   println(\"{}\", pick(B, false));\n\
+         }\n",
+    );
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n2\n3\n");
+    let c = std::fs::read_to_string(dir.join("prog.c")).expect("read generated C");
+    assert!(
+        c.contains("if (!_g0) {"),
+        "exhaustive guarded switch must end in a flag-only arm; got:\n{c}"
+    );
 }
 
 /// A guarded wildcard catch-all (`_ if cond`) falls through when the guard is

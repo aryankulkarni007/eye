@@ -8,8 +8,9 @@
 # parsing the old language until you happen to notice ERROR nodes days later.
 #
 # This makes that drift loud and immediate, using the `eye` compiler as the
-# source of truth. `eye --check` is a parse-stage oracle (lexer + parser only,
-# no HIR/codegen), which is exactly what tree-sitter can see. The invariant:
+# source of truth. `eye --parse-only` is a parse-stage oracle (lexer + parser
+# only, no HIR/codegen), which is exactly what tree-sitter can see. The
+# invariant:
 #
 #     compiler accepts a file  =>  tree-sitter must parse it with no ERROR node
 #
@@ -44,7 +45,7 @@ while IFS= read -r f; do
   name="$(basename "$f")"
 
   # Only files the canonical compiler accepts constrain the tree-sitter grammar.
-  "$EYE" --check "$f" >/dev/null 2>&1 || continue
+  "$EYE" --parse-only "$f" >/dev/null 2>&1 || continue
 
   # `tree-sitter parse` exits non-zero when it produces an ERROR node. Under
   # `set -o pipefail` that non-zero would propagate through the pipe and make

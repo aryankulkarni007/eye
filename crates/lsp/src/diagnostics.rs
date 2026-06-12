@@ -98,8 +98,10 @@ pub fn publish_diagnostics_notification(
 }
 
 fn text_range_to_lsp(source: &SourceText, range: TextRange) -> Range {
-    let start = source.line_col(range.start());
-    let end = source.line_col(range.end());
+    // LSP positions are UTF-16 code units (the default encoding; the server
+    // does not negotiate another), not bytes.
+    let start = source.line_col_utf16(range.start());
+    let end = source.line_col_utf16(range.end());
     Range {
         start: Position {
             line: start.line.saturating_sub(1),

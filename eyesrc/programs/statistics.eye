@@ -7,7 +7,6 @@ extern {
 
 -- ── basic aggregates ────────────────────────────────────────────────
 
--- FIXME: this line doesn't highlight properly
 sum(float64* data, usize len) -> float64 {
     mut float64 acc = 0.0;
     mut usize i = 0;
@@ -18,11 +17,6 @@ sum(float64* data, usize len) -> float64 {
     }
     acc
 }
-
--- TESTING proves that the float is not the issue
-test1(int32 a) {}
-test2(float64* b) {}
-test3(&float64 c) {}
 
 mean(float64* data, usize len) -> float64 {
     sum(data, len) / len as float64

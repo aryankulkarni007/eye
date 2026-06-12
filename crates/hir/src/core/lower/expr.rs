@@ -45,6 +45,7 @@ impl<'a> LoweringCtx<'a> {
         let hir_expr = match expr {
             ast::Expr::Literal(lit) => {
                 let literal = lower_literal(lit);
+                self.check_char_literal(&literal, ptr);
                 expr_type = Some(literal_type(&literal, &mut self.types));
                 Expr::Literal(literal)
             }
@@ -106,7 +107,8 @@ impl<'a> LoweringCtx<'a> {
                     // named C symbol (a place), not an inlined value.
                     Resolution::Global(gid) => Some(self.hir.globals[*gid].ty),
                     Resolution::Variant { enum_id, .. } => Some(
-                        self.types.intern(TypeKind::Path(self.hir.enums[*enum_id].name.clone())),
+                        self.types
+                            .intern(TypeKind::Path(self.hir.enums[*enum_id].name.clone())),
                     ),
                     // A bare function name in value position is a function-pointer
                     // value of its signature (`let op = f;`). As a direct callee
@@ -405,8 +407,6 @@ impl<'a> LoweringCtx<'a> {
                                         _ => None,
                                     };
                                     let id = self.alloc_expr(Expr::Path(resolution), f_ptr);
-                                    // FIXME: Add a regression test for unresolved
-                                    // shorthand fields so this never reaches MIR.
                                     if let Some(t) = inner_ty {
                                         self.body.expr_types.insert(id.into(), t);
                                     }
@@ -568,6 +568,23 @@ impl<'a> LoweringCtx<'a> {
                         self.emit(ptr, TypeError::ArithmeticOnPtr { op: bin_op_str(op) });
                         return self.missing_expr(ptr);
                     }
+                    // Enums are opaque, not ordinal (ruled 2026-06-12):
+                    // arithmetic/bitwise on an enum value is rejected.
+                    // Comparisons stay allowed; `as` to an integer type stays
+                    // as the explicit escape.
+                    let enum_name = self
+                        .expr_enum_name(lhs)
+                        .or_else(|| self.expr_enum_name(rhs));
+                    if let Some(enum_name) = enum_name {
+                        self.emit(
+                            ptr,
+                            TypeError::ArithmeticOnEnum {
+                                op: bin_op_str(op),
+                                enum_name,
+                            },
+                        );
+                        return self.missing_expr(ptr);
+                    }
                 }
 
                 // `%` is integer-only. On a float it would lower to `double % double`,
@@ -597,9 +614,7 @@ impl<'a> LoweringCtx<'a> {
                     | BinOp::Leq
                     | BinOp::Geq
                     | BinOp::And
-                    | BinOp::Or => Some(
-                        self.types.intern(TypeKind::Path(Text::from("bool"))),
-                    ),
+                    | BinOp::Or => Some(self.types.intern(TypeKind::Path(Text::from("bool")))),
                     // Arithmetic, modulo, and bitwise all take the left
                     // operand's type (a simplification until full inference).
                     BinOp::Add
@@ -623,10 +638,27 @@ impl<'a> LoweringCtx<'a> {
                 // `!` is logical-not: always `bool`. `-`/`~` preserve the
                 // operand's type.
                 use ast::UnaryOp;
+                // Opaque enums (ruled 2026-06-12): `-`/`~` on an enum value
+                // are arithmetic and rejected, like the binary operators.
+                if matches!(op, UnaryOp::Neg | UnaryOp::BitNot)
+                    && let Some(enum_name) = self.expr_enum_name(operand)
+                {
+                    let op_str = match op {
+                        UnaryOp::Neg => "-",
+                        UnaryOp::BitNot => "~",
+                        UnaryOp::Not => "!",
+                    };
+                    self.emit(
+                        ptr,
+                        TypeError::ArithmeticOnEnum {
+                            op: op_str,
+                            enum_name,
+                        },
+                    );
+                    return self.missing_expr(ptr);
+                }
                 expr_type = match op {
-                    UnaryOp::Not => Some(
-                        self.types.intern(TypeKind::Path(Text::from("bool"))),
-                    ),
+                    UnaryOp::Not => Some(self.types.intern(TypeKind::Path(Text::from("bool")))),
                     UnaryOp::Neg | UnaryOp::BitNot => {
                         self.body.expr_types.get(operand.into()).cloned()
                     }
@@ -684,9 +716,7 @@ impl<'a> LoweringCtx<'a> {
                 // `len(x)` intrinsic; steer there instead of emitting a field
                 // access against the wrapper's nonexistent `len` member. One
                 // ref/ptr is peeled so the steer fires through `&[T; N]` too.
-                if name == "len"
-                    && Self::peeled_array_len(base_ty, &self.types).is_some()
-                {
+                if name == "len" && Self::peeled_array_len(base_ty, &self.types).is_some() {
                     self.emit(ptr, TypeError::LenFieldOnArray);
                     return self.missing_expr(ptr);
                 }
@@ -794,6 +824,26 @@ impl<'a> LoweringCtx<'a> {
                     self.emit(ptr, ConstError::RefOfConst { name });
                     return self.missing_expr(ptr);
                 }
+                // `&` requires a place (ruled 2026-06-12): a non-place
+                // operand (`&(a + b)`) would spill to a MIR temp and silently
+                // take the temp's address, with no visible lifetime. Places:
+                // local, global, field, index, deref. An already-diagnosed
+                // operand (missing / unresolved) passes without a second
+                // error.
+                let is_place = matches!(
+                    &self.body.exprs[operand],
+                    Expr::Path(Resolution::Local(_))
+                        | Expr::Path(Resolution::Global(_))
+                        | Expr::Path(Resolution::Unresolved(_))
+                        | Expr::Field { .. }
+                        | Expr::Index { .. }
+                        | Expr::Deref { .. }
+                        | Expr::Missing
+                );
+                if !is_place {
+                    self.emit(ptr, TypeError::RefOfNonPlace);
+                    return self.missing_expr(ptr);
+                }
                 let inner_ty = self
                     .body
                     .expr_types
@@ -838,9 +888,7 @@ impl<'a> LoweringCtx<'a> {
                     let types = &self.types;
                     match types.lookup(op_ty) {
                         TypeKind::Ref(inner) | TypeKind::Ptr(inner) => *inner,
-                        _ => {
-                            self.types.error_type()
-                        }
+                        _ => self.types.error_type(),
                     }
                 };
                 expr_type = Some(deref_ty);
@@ -854,9 +902,7 @@ impl<'a> LoweringCtx<'a> {
                     globals: self.const_values,
                 };
                 let ty = match c.ty() {
-                    Some(t) => {
-                        lower_type_ref(&t, &mut self.diagnostics, &consts, &mut self.types)
-                    }
+                    Some(t) => lower_type_ref(&t, &mut self.diagnostics, &consts, &mut self.types),
                     None => self.types.error_type(),
                 };
                 // R012: the cast target's type names must be declared. A
@@ -954,7 +1000,68 @@ impl<'a> LoweringCtx<'a> {
     /// type information stays intact.
     /// `println` is a primitive-only intrinsic (not a trait or macro yet): it
     /// has no format for a compound value. Reject array/struct/union arguments.
+    /// Also checked here (U5): a format string must exist, and when it is a
+    /// literal its `{}` count must equal the value-argument count - otherwise
+    /// codegen emits an unmatched `%d` or forwards surplus printf varargs.
+    /// Reject a char literal outside ASCII (T034): `char` is one byte, and the
+    /// multibyte C char constant the backend would emit for it has an
+    /// implementation-defined value. Runs on every lowered literal - expression
+    /// and match-pattern position both.
+    pub(super) fn check_char_literal(&mut self, lit: &Literal, ptr: SyntaxNodePtr) {
+        if let Literal::Char(c) = lit
+            && !c.is_ascii()
+        {
+            self.emit(ptr, TypeError::CharLiteralNotAscii { ch: *c });
+        }
+    }
+
+    /// The enum name of an expression's recorded type, when that type is a
+    /// declared enum. Drives the opaque-enum arithmetic rejection (T035).
+    fn expr_enum_name(&self, id: ExprId) -> Option<Text> {
+        let ty = self.body.expr_types.get(id.into())?;
+        match self.types.lookup(*ty) {
+            TypeKind::Path(name) if self.hir.items.enums.contains_key(name) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
     fn check_println_args(&mut self, args: &[ExprId], ptr: SyntaxNodePtr) {
+        let Some((&fmt, values)) = args.split_first() else {
+            self.emit(ptr, TypeError::PrintlnMissingFormat);
+            return;
+        };
+        // Only a literal format string can be counted at compile time; the
+        // scan mirrors codegen's exactly: `{{` and `}}` are escapes for a
+        // literal brace, `{}` is a placeholder, a lone `{`/`}` prints
+        // literally.
+        if let Expr::Literal(Literal::String(s)) = &self.body.exprs[fmt] {
+            let mut placeholders = 0usize;
+            let mut chars = s.chars().peekable();
+            while let Some(c) = chars.next() {
+                match c {
+                    '{' if chars.peek() == Some(&'{') => {
+                        chars.next();
+                    }
+                    '{' if chars.peek() == Some(&'}') => {
+                        chars.next();
+                        placeholders += 1;
+                    }
+                    '}' if chars.peek() == Some(&'}') => {
+                        chars.next();
+                    }
+                    _ => {}
+                }
+            }
+            if placeholders != values.len() {
+                self.emit(
+                    ptr,
+                    TypeError::PrintlnArityMismatch {
+                        placeholders,
+                        args: values.len(),
+                    },
+                );
+            }
+        }
         for &arg in args.iter().skip(1) {
             let kind = {
                 let types = &self.types;

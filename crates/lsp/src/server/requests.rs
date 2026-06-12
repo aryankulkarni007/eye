@@ -36,11 +36,12 @@ pub fn handle_request(
                     let lexed = database::lex(db, input);
                     let parse = database::parse(db, input);
                     let hir = database::lowered_file(db, input);
-                    compute_semantic_tokens(&source, &lexed, &parse, &hir)
-                        .unwrap_or(lsp_types::SemanticTokens {
+                    compute_semantic_tokens(&source, &lexed, &parse, &hir).unwrap_or(
+                        lsp_types::SemanticTokens {
                             result_id: None,
                             data: vec![],
-                        })
+                        },
+                    )
                 })
                 .unwrap_or(lsp_types::SemanticTokens {
                     result_id: None,

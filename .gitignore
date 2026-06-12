@@ -7,10 +7,14 @@ fuzz/corpus/
 fuzz/coverage/
 fuzz/artifacts/
 
-# generated outputs
-eyesrc/*.c
-eyesrc/*.o
-eyesrc/main
+# generated outputs: eye build artifacts (.c, .o, compiled binaries) are
+# never stageable - whitelist source and scripts, ignore everything else
+eyesrc/**
+!eyesrc/**/
+!eyesrc/**/*.eye
+!eyesrc/**/*.sh
+*.c
+*.o
 
 # local tooling
 .cursor/

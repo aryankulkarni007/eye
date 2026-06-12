@@ -47,14 +47,19 @@ pub struct Cli {
     #[arg(long)]
     pub dump_c: bool,
 
+    /// Stop after HIR lowering: exit 0 if the source is free of lexer,
+    /// parser, and lowering diagnostics, non-zero otherwise. Skips codegen
+    /// and clang, and writes no `.c` or binary.
+    #[arg(long)]
+    pub check: bool,
+
     /// Stop after lexing and parsing: exit 0 if the source is syntactically
-    /// valid, non-zero otherwise. Skips HIR lowering, codegen and clang, and
-    /// writes no `.c` or binary. This is the parse-stage oracle the grammar
+    /// valid, non-zero otherwise. This is the parse-stage oracle the grammar
     /// parity gate (scripts/check-grammars.sh) checks the tree-sitter grammar
     /// against, so it deliberately matches what tree-sitter sees: lexer +
     /// parser only, no semantic analysis.
     #[arg(long)]
-    pub check: bool,
+    pub parse_only: bool,
 
     /// Pipe the generated C through `clang-format` before writing it. Off by
     /// default: the format pass forks a process and pipes the whole source on

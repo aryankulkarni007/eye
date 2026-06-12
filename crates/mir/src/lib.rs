@@ -1,7 +1,6 @@
 pub mod core;
 pub mod lower;
 
-
 use hir::core::{FnId, HIR};
 use rustc_hash::FxHashMap;
 
@@ -19,13 +18,8 @@ pub fn lower_all(hir: &HIR) -> FxHashMap<FnId, MirBody> {
         .iter()
         .filter_map(|(id, f)| {
             let body_id = f.body?;
-            let mir = lower::lower_function(
-                hir,
-                &hir.types,
-                &hir.bodies[body_id],
-                f.params.len(),
-                f.ret,
-            );
+            let mir =
+                lower::lower_function(hir, &hir.types, &hir.bodies[body_id], f.params.len(), f.ret);
             Some((id, mir))
         })
         .collect()

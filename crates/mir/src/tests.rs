@@ -111,9 +111,9 @@ fn if_else_produces_if_stmt() {
 main() {
     let int32 x = 0;
     if x > 0 {
-        println(\"pos\", 1);
+        println(\"pos {}\", 1);
     } else {
-        println(\"non\", 2);
+        println(\"non {}\", 2);
     }
 }
 ",

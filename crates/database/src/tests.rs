@@ -28,7 +28,10 @@ fn queries_are_memoized_within_a_revision() {
     // Same revision: the second call must return the cached value (same Arc).
     assert!(database_eq(&lex(&db, input), &lex(&db, input)));
     assert!(database_eq(&parse(&db, input), &parse(&db, input)));
-    assert!(database_eq(&lowered_file(&db, input), &lowered_file(&db, input)));
+    assert!(database_eq(
+        &lowered_file(&db, input),
+        &lowered_file(&db, input)
+    ));
     assert!(database_eq(&mir_map(&db, input), &mir_map(&db, input)));
     assert!(database_eq(&c_code(&db, input), &c_code(&db, input)));
 }
@@ -42,12 +45,14 @@ fn set_text_invalidates_and_recomputes() {
     let mut db = Database::default();
     let input = file(&db, PROGRAM);
     let before = c_code(&db, input);
-    assert!(before.contains("int32_t add"), "C contains add: {}", *before);
+    assert!(
+        before.contains("int32_t add"),
+        "C contains add: {}",
+        *before
+    );
     assert!(!before.contains("int32_t sub"));
 
-    input
-        .set_text(&mut db)
-        .to(PROGRAM.replace("add", "sub"));
+    input.set_text(&mut db).to(PROGRAM.replace("add", "sub"));
     let after = c_code(&db, input);
     assert!(after.contains("int32_t sub"), "C contains sub: {}", *after);
     assert!(!after.contains("int32_t add"));

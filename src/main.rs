@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("parser errors"));
     }
 
-    if cli.check {
+    if cli.parse_only {
         return Ok(());
     }
 
@@ -95,6 +95,12 @@ fn main() -> anyhow::Result<()> {
             Some(input_path),
         );
         return Err(anyhow::anyhow!("HIR lowering errors"));
+    }
+
+    // `--check` stops after lowering: every diagnostic phase has run (lexer
+    // and parser errors exit above), nothing is generated or compiled.
+    if cli.check {
+        return Ok(());
     }
 
     // --- MIR (memoized: the dumps and `c_code` consume the same map) ---

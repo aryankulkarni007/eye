@@ -1,12 +1,13 @@
 # C-leak audit: implicit type decisions in the pipeline
 
-Status: audit performed 2026-06-11 against the uncommitted tree; fix-order
-step 3 (coercion-point unification + companions) BUILT later the same day
-(305 tests green). Every row marked VERIFIED was reproduced with a minimal
-program that day; rows marked INSPECTION were found by reading the code and
-have no reproducer yet. This document is the ground-truth ledger for the
-harden-before-freeze pass: the kernel freeze and the typeck split are blocked
-on the rows below being fixed or explicitly accepted.
+Status: **frozen audit record (as of 2026-06-12).** The audit was performed
+2026-06-11 against the uncommitted tree; fix-order step 3 (coercion-point
+unification + companions) was BUILT later the same day (305 tests green).
+Every row marked VERIFIED was reproduced with a minimal program that day;
+rows marked INSPECTION were found by reading the code and have no reproducer
+yet. The status columns below record the state at the end of 2026-06-11 and
+do not update further: every still-open row is tracked in
+`docs/planning/ledger.md`, the single tracking document.
 
 Scope: every site where the pipeline chooses a C type, emits a name, or
 converts a value without a type judgment. Sources read end-to-end:
@@ -126,7 +127,11 @@ the wrong layer. Each is a concrete requirement for the pass design:
    building it. lang.eye's original blocker is gone (it compiled and ran);
    it has since grown a `const [char*; 24]` and is XFAIL again on the
    scalar-only const floor (DEFER), not on any C-leak.
-4. NEXT: typeck split (Horizon 1), scoped by the T section above; lang.eye
-   plus this ledger's reproducers become the regression corpus.
-5. THEN: match S4/S5 on the typed pipeline; freeze last; lang.eye compiling
-   and running clean is the freeze acceptance test.
+4. SUPERSEDED 2026-06-12: the order was reversed - the kernel freezes
+   *before* the typeck split, within reason. Non-typeck rows must be fixed
+   or explicitly accepted at freeze; the T section above is accepted as the
+   frozen kernel's documented limitation set and becomes the typeck pass's
+   scope. Sequencing and open rows live in `docs/planning/ledger.md`.
+5. Match S4/S5 stays sequenced after typeck, on the typed pipeline.
+   lang.eye compiling and running clean remains the acceptance test for
+   the typed pipeline.

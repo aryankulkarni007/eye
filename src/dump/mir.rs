@@ -1,4 +1,3 @@
-
 use hir::core::{FnId, HIR};
 use mir::core::{MirBody, MirStmt, RValue};
 use rustc_hash::FxHashMap;

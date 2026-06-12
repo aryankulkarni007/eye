@@ -18,6 +18,12 @@ The format string is parsed by `char`, not by byte, so multibyte UTF-8 in the
 literal (`é`, `→`) is preserved; `{`, `}`, and `%` are ASCII and still detected.
 A literal `%` in the format string is escaped to `%%`.
 
+`{{` and `}}` escape a literal brace (ruled 2026-06-12, Rust-style): `{{}}`
+prints `{}`, `{{{}}}` is one placeholder wrapped in literal braces. A lone `{`
+or `}` still prints literally. The HIR arity check (`check_println_args`) and
+the codegen renderer (`gen_println`) use the same scan rule, so escapes are
+never counted as placeholders.
+
 ## Type-to-specifier mapping
 
 | Eye type | printf spec | Note |
@@ -52,8 +58,8 @@ for what still slips through.
 |---|-------|-------------|
 | P1 | **Enums print as `%d` (the integer tag).** An enum is a `TypeRef::Path` not in the struct/union maps, so `check_print_args` does not reject it; `spec_for_type` falls through to `%d`. | Ratified by precedent (v0.3 printed an enum as its tag). Open only if "primitive-only" should also exclude enums. |
 | P2 | **References and `&[T; N]` print as `%p` (the address).** `check_print_args` rejects the array *value* but not a *reference* to one; `spec_for_type` maps every `Ref`/`Ptr` to `%p`. So `println("{}", &arr)` prints a pointer. | Read as a non-compound primitive (the pointer word). This is the user veto still open: if "primitive-only" means refs/`&[T; N]` are rejected too, tighten `check_print_args`. |
-| P3 | **Too few arguments for the placeholders is UB.** A `{}` with no matching argument emits a `%d` spec with no value pushed (`print.rs`, `.unwrap_or("%d")`); `printf` then reads a missing vararg. Not caught in Eye. | No arity check. Needs `println` to diagnose a placeholder/argument count mismatch. |
-| P4 | **Too many arguments is only a C-compile warning.** An argument with no matching `{}` is forwarded raw so libc surfaces the arity warning at C-compile time; Eye itself does not flag it. | Other half of P3. Same fix (arity check) closes both. |
+| P3 | ~~**Too few arguments for the placeholders is UB.**~~ | FIXED 2026-06-12 (U5): `check_println_args` counts `{}` placeholders in a literal format string with the same scan codegen uses and rejects a mismatch (`PrintlnArityMismatch`, T032). `println()` with no arguments at all is also rejected (`PrintlnMissingFormat`, T033 - it emitted a bare `printf()`, not legal C). |
+| P4 | ~~**Too many arguments is only a C-compile warning.**~~ | FIXED 2026-06-12: the same T032 count check rejects surplus arguments. |
 | P5 | **A non-literal format string skips substitution entirely.** If the first argument is not a string literal (e.g. a variable holding a string), no `{}` is substituted and the remaining args are forwarded raw to `printf`. The format-spec checker and P3/P4 logic are bypassed. | Dynamic format strings reach `printf` unchecked. Classic format-string vector, though Eye has no untrusted input yet. Open. |
 | P6 | **Always appends a newline; no no-newline form.** The trailing `\n` is hardcoded. The intrinsic was renamed `print` -> `println` to be honest about this, but there is still no no-newline `print` counterpart. | Design limitation, not a bug. A no-newline variant needs a second entry point or a flag. |
 | P7 | **No formatting flags.** Only bare `{}`; no width, precision, or radix (`{:.2}`, `{:x}`). Floats are always `%f` (6 decimals), never `%g`. | `println` is an intrinsic with a fixed spec table, not a format mini-language. Needs a real formatting design (likely with a Display/Debug trait). |

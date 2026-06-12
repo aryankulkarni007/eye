@@ -124,6 +124,7 @@ pub(super) fn collect_globals(
         };
         let name: Text = text(g.name(), interner);
         check_c_keyword(hir, &name, "global", name_span(g.name(), g.syntax()));
+        check_reserved_file_scope(hir, &name, "global", name_span(g.name(), g.syntax()));
         let ty = match g.ty() {
             Some(t) => lower_recorded_type(hir, &t, const_values, typed_decls),
             None => hir.types.error_type(),
@@ -207,12 +208,40 @@ fn is_c_keyword(name: &str) -> bool {
 }
 
 /// Reject a declared name the backend will emit verbatim when it is a C
-/// keyword. `what` names the declaration kind for the message.
+/// keyword, or when it starts with `__eye` - the backend's own symbol
+/// namespace (string statics, array-wrapper typedefs, the `main` shim).
+/// `what` names the declaration kind for the message.
 fn check_c_keyword(hir: &mut HIR, name: &Text, what: &'static str, span: Span) {
     if is_c_keyword(name) {
         hir.diagnostics.emit(
             span,
             HirError::Resolve(ResolveError::NameIsCKeyword {
+                name: name.clone(),
+                what,
+            }),
+        );
+    } else if name.starts_with("__eye") {
+        hir.diagnostics.emit(
+            span,
+            HirError::Resolve(ResolveError::NameIsReserved {
+                name: name.clone(),
+                what,
+            }),
+        );
+    }
+}
+
+/// Reject `printf` for a name emitted at C file scope in the ordinary
+/// namespace (function, global, type typedef, enum variant): the `println`
+/// intrinsic lowers to libc `printf`, so a user definition collides with the
+/// emitted prototype and shadows the libc symbol with an incompatible
+/// signature. An `extern` declaration of `printf` stays legal - it names the
+/// same libc symbol (and suppresses the emitted prototype in its favor).
+fn check_reserved_file_scope(hir: &mut HIR, name: &Text, what: &'static str, span: Span) {
+    if name == "printf" {
+        hir.diagnostics.emit(
+            span,
+            HirError::Resolve(ResolveError::NameIsReserved {
                 name: name.clone(),
                 what,
             }),
@@ -251,6 +280,7 @@ pub(super) fn collect_items(
             ast::Item::StructDef(s) => {
                 let name: Text = text(s.name(), interner);
                 check_c_keyword(hir, &name, "struct", name_span(s.name(), s.syntax()));
+                check_reserved_file_scope(hir, &name, "struct", name_span(s.name(), s.syntax()));
                 let field_count = s.field_list().map(|fl| fl.fields().count()).unwrap_or(0);
                 let mut fields = SmallVec::new();
                 let mut field_index =
@@ -289,6 +319,7 @@ pub(super) fn collect_items(
             ast::Item::FnDef(f) => {
                 let name: Text = text(f.name(), interner);
                 check_c_keyword(hir, &name, "function", name_span(f.name(), f.syntax()));
+                check_reserved_file_scope(hir, &name, "function", name_span(f.name(), f.syntax()));
                 let mut params = SmallVec::new();
                 if let Some(pl) = f.param_list() {
                     for param_ast in pl.params() {
@@ -299,6 +330,18 @@ pub(super) fn collect_items(
                             "parameter",
                             name_span(param_ast.name(), param_ast.syntax()),
                         );
+                        // A definition emits the names into the C signature,
+                        // where a duplicate is a redefinition error (extern
+                        // prototypes are types-only and skip this).
+                        if params.iter().any(|p: &Param| p.name == pname) {
+                            hir.diagnostics.emit(
+                                name_span(param_ast.name(), param_ast.syntax()),
+                                HirError::Resolve(ResolveError::DuplicateParam {
+                                    name: pname.clone(),
+                                    function: name.clone(),
+                                }),
+                            );
+                        }
                         let pty = match param_ast.ty() {
                             Some(t) => lower_recorded_type(hir, &t, const_values, typed_decls),
                             None => hir.types.error_type(),
@@ -358,6 +401,7 @@ pub(super) fn collect_items(
             ast::Item::UnionDef(u) => {
                 let name: Text = text(u.name(), interner);
                 check_c_keyword(hir, &name, "union", name_span(u.name(), u.syntax()));
+                check_reserved_file_scope(hir, &name, "union", name_span(u.name(), u.syntax()));
                 let field_count = u.field_list().map(|fl| fl.fields().count()).unwrap_or(0);
                 let mut fields = SmallVec::new();
                 let mut field_index =
@@ -480,6 +524,7 @@ pub(super) fn collect_items(
             ast::Item::EnumDef(e) => {
                 let name: Text = text(e.name(), interner);
                 check_c_keyword(hir, &name, "enum", name_span(e.name(), e.syntax()));
+                check_reserved_file_scope(hir, &name, "enum", name_span(e.name(), e.syntax()));
                 let variant_count = e.variants().count();
                 let mut variants = SmallVec::new();
                 let mut variant_index =
@@ -487,6 +532,12 @@ pub(super) fn collect_items(
                 for v in e.variants() {
                     let vname = text(v.name(), interner);
                     check_c_keyword(hir, &vname, "enum variant", name_span(v.name(), v.syntax()));
+                    check_reserved_file_scope(
+                        hir,
+                        &vname,
+                        "enum variant",
+                        name_span(v.name(), v.syntax()),
+                    );
                     if !variant_index.contains_key(&vname) {
                         variant_index.insert(vname.clone(), variants.len() as u32);
                     }

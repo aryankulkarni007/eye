@@ -5,8 +5,8 @@
 //! invalidated.
 
 use database::{Database, SourceFileInput};
-use salsa::Setter as _;
 use rustc_hash::FxHashMap;
+use salsa::Setter as _;
 
 /// Maps URIs to their salsa input handles.
 ///
@@ -52,7 +52,12 @@ mod tests {
     fn open_change_close() {
         let mut db = Database::default();
         let mut store = DocumentStore::default();
-        store.open(&mut db, "file:///a.eye", "a.eye".into(), "let x = 1;".into());
+        store.open(
+            &mut db,
+            "file:///a.eye",
+            "a.eye".into(),
+            "let x = 1;".into(),
+        );
         assert!(store.get("file:///a.eye").is_some());
         store.change(&mut db, "file:///a.eye", "let y = 2;".into());
         assert!(store.get("file:///a.eye").is_some());

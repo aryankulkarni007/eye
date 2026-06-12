@@ -320,22 +320,21 @@ fn classify_pat(pat: &ast::Pat, spans: &mut Vec<ClassifiedSpan>, hir: Option<&HI
             // from
             //   `match shape { Circle => ... }`  (Circle is a variant → ENUM_MEMBER)
             if let Some(nr) = bp.name()
-                && let Some(token) = nr.name() {
-                    let is_variant = hir
-                        .and_then(|h| {
-                            h.items.variants.contains_key(token.text()).then_some(true)
-                        })
-                        .unwrap_or(false);
-                    push_token(
-                        Some(token),
-                        if is_variant {
-                            legend::ENUM_MEMBER
-                        } else {
-                            legend::VARIABLE
-                        },
-                        spans,
-                    );
-                }
+                && let Some(token) = nr.name()
+            {
+                let is_variant = hir
+                    .and_then(|h| h.items.variants.contains_key(token.text()).then_some(true))
+                    .unwrap_or(false);
+                push_token(
+                    Some(token),
+                    if is_variant {
+                        legend::ENUM_MEMBER
+                    } else {
+                        legend::VARIABLE
+                    },
+                    spans,
+                );
+            }
         }
         ast::Pat::WildcardPat(_) => {}
         ast::Pat::LiteralPat(_) => {}

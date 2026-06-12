@@ -9,8 +9,8 @@ use super::LoweringCtx;
 use super::const_eval::{ScopedConsts, fold_with_map};
 use super::types::lower_type_ref;
 use crate::core::{
-    Block, BlockId, ExprId, LocalConst, Pat, PatternError, Stmt, StmtId, StructPatBinding, Text,
-    TypeError, TypeInterner, TypeKind, TypeRef, VisitTypeRef, fx_set,
+    Block, BlockId, ExprId, LocalConst, Pat, PatternError, ResolveError, Stmt, StmtId,
+    StructPatBinding, Text, TypeError, TypeInterner, TypeKind, TypeRef, VisitTypeRef, fx_set,
 };
 
 impl<'a> LoweringCtx<'a> {
@@ -58,12 +58,7 @@ impl<'a> LoweringCtx<'a> {
                         local_consts: &self.body.local_consts,
                         globals: self.const_values,
                     };
-                    lower_type_ref(
-                        &t,
-                        &mut self.diagnostics,
-                        &consts,
-                        &mut self.types,
-                    )
+                    lower_type_ref(&t, &mut self.diagnostics, &consts, &mut self.types)
                 });
                 // Type inference is on hiatus, so a binding needs an explicit
                 // type. Without one it would reach codegen as an `Error` type
@@ -90,6 +85,12 @@ impl<'a> LoweringCtx<'a> {
                 self.check_explicit_let_init_type(ptr, ty.as_ref(), init);
                 self.record_match_result_override(ty.as_ref(), init);
 
+                // Same-scope redeclaration is an error (R015); shadowing
+                // needs a nested block scope. The binding is still defined
+                // afterwards (newest wins) so later uses resolve.
+                if self.scopes.declared_in_current(&name) {
+                    self.emit(ptr, ResolveError::DuplicateLocal { name: name.clone() });
+                }
                 let (pat_id, local_id) = self.alloc_bind_pat(name.clone(), ty, mutable, ptr);
                 self.scopes.define(name, local_id);
 
@@ -124,12 +125,9 @@ impl<'a> LoweringCtx<'a> {
                     // A missing type or initializer was already diagnosed by
                     // the parser; fall back to poison without re-reporting.
                     let ty = match c.ty() {
-                        Some(t) => lower_type_ref(
-                            &t,
-                            &mut self.diagnostics,
-                            &consts,
-                            &mut self.types,
-                        ),
+                        Some(t) => {
+                            lower_type_ref(&t, &mut self.diagnostics, &consts, &mut self.types)
+                        }
                         None => self.types.error_type(),
                     };
                     let value = c
@@ -139,6 +137,10 @@ impl<'a> LoweringCtx<'a> {
                 };
                 // R012: the declared type's names must be declared types.
                 self.check_type_names(ty, ptr);
+                // Same-scope redeclaration (R015) applies to local consts too.
+                if self.scopes.declared_in_current(&name) {
+                    self.emit(ptr, ResolveError::DuplicateLocal { name: name.clone() });
+                }
                 let id = self.body.local_consts.alloc(LocalConst {
                     name: name.clone(),
                     ty,
@@ -203,6 +205,18 @@ impl<'a> LoweringCtx<'a> {
                     );
                 }
 
+                // Same-scope redeclaration (R015): catches a destructure
+                // binding colliding with an earlier binding, including a
+                // rename collision inside one destructure (`{ x: a, y: a }`,
+                // which the duplicate-*field* check cannot see).
+                if self.scopes.declared_in_current(&binding_name) {
+                    self.emit(
+                        ptr,
+                        ResolveError::DuplicateLocal {
+                            name: binding_name.clone(),
+                        },
+                    );
+                }
                 let (_pat_id, local_id) =
                     self.alloc_bind_pat(binding_name.clone(), field_ty, mutable, ptr);
                 self.scopes.define(binding_name, local_id);
@@ -328,8 +342,7 @@ impl<'a> LoweringCtx<'a> {
         };
         {
             let types = &self.types;
-            if type_ref_contains_error(expected, types) || type_ref_contains_error(actual, types)
-            {
+            if type_ref_contains_error(expected, types) || type_ref_contains_error(actual, types) {
                 return;
             }
             if let (TypeKind::Array { len: exp_len, .. }, TypeKind::Array { len: act_len, .. }) =

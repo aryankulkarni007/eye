@@ -96,9 +96,7 @@ impl<T, Id: Into<Idx<T>> + Copy> IndexMut<Id> for TypedArena<T, Id> {
 
 impl<T, Id: From<Idx<T>>> TypedArena<T, Id> {
     /// Iterate over `(Id, &T)` pairs in insertion order.
-    pub fn iter(
-        &self,
-    ) -> impl ExactSizeIterator<Item = (Id, &T)> + DoubleEndedIterator + Clone {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (Id, &T)> + DoubleEndedIterator + Clone {
         self.inner.iter().map(|(idx, value)| (Id::from(idx), value))
     }
 

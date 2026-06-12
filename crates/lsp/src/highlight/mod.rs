@@ -2,7 +2,7 @@
 //!
 //! Unlike the pre-Database LSP (which ran its own lexer + parser), this module
 //! receives the already-compiled result from `database::lowered_file` and
-//! enriches CST-only classification with HIR name resolution — specifically to
+//! enriches CST-only classification with HIR name resolution - specifically to
 //! fix the A5 pattern-variable mis-classification (`BareIdentPat -> VARIABLE`
 //! when the name is not a known enum variant).
 
@@ -70,10 +70,17 @@ fn push_token(
     prev_line: &mut u32,
     prev_start: &mut u32,
 ) {
-    let lc = source.line_col(range.start());
+    // Semantic-token columns and lengths are UTF-16 code units (the LSP
+    // default encoding), not bytes. Byte-based values mis-place and
+    // over-extend every token at or after a multibyte character on its line,
+    // and a strict client garbles the rest of the file from there.
+    let lc = source.line_col_utf16(range.start());
     let line = lc.line.saturating_sub(1);
     let start_char = lc.col.saturating_sub(1);
-    let length = u32::from(range.len());
+    let length = source
+        .slice(range)
+        .map(|s| s.encode_utf16().count() as u32)
+        .unwrap_or_else(|| u32::from(range.len()));
 
     let delta_line = line.saturating_sub(*prev_line);
     let delta_start = if delta_line == 0 {
@@ -101,8 +108,8 @@ mod tests {
 
     #[test]
     fn let_keyword_is_highlighted() {
-        let mut db = Database::default();
-        let input = database::SourceFileInput::new(&mut db, "test.eye".into(), "let x = 1;".into());
+        let db = Database::default();
+        let input = database::SourceFileInput::new(&db, "test.eye".into(), "let x = 1;".into());
         let source = SourceText::new(input.text(&db).to_owned());
         let lexed = database::lex(&db, input);
         let parse = database::parse(&db, input);
@@ -121,8 +128,8 @@ add(int32 a, int32 b) -> int32 {
     b;
 }
 ";
-        let mut db = Database::default();
-        let input = database::SourceFileInput::new(&mut db, "test.eye".into(), src.into());
+        let db = Database::default();
+        let input = database::SourceFileInput::new(&db, "test.eye".into(), src.into());
         let source = SourceText::new(input.text(&db).to_owned());
         let lexed = database::lex(&db, input);
         let parse = database::parse(&db, input);
@@ -131,11 +138,76 @@ add(int32 a, int32 b) -> int32 {
         assert!(!tokens.data.is_empty());
     }
 
+    /// Semantic-token positions and lengths are UTF-16 code units, not bytes
+    /// (the statistics.eye highlight failure: box-drawing and non-breaking
+    /// hyphen characters in comments made every token length byte-inflated).
+    #[test]
+    fn semantic_tokens_use_utf16_units() {
+        // The comment is 10 UTF-16 units (`-- ` + 6 box chars + `x`) but
+        // 3 + 6 * 3 + 1 = 22 bytes. `let` follows on the same line.
+        let src = "-- ──────x\nlet y = 1;";
+        let db = Database::default();
+        let input = database::SourceFileInput::new(&db, "test.eye".into(), src.into());
+        let source = SourceText::new(input.text(&db).to_owned());
+        let lexed = database::lex(&db, input);
+        let parse = database::parse(&db, input);
+        let hir = database::lowered_file(&db, input);
+        let tokens = compute_semantic_tokens(&source, &lexed, &parse, &hir).unwrap();
+        let comment = &tokens.data[0];
+        assert_eq!(
+            comment.length, 10,
+            "comment length must be UTF-16 units, not bytes"
+        );
+        // `let` opens line 2: delta_line 1, column 0.
+        let let_tok = &tokens.data[1];
+        assert_eq!((let_tok.delta_line, let_tok.delta_start), (1, 0));
+    }
+
+    /// A5 regression: a bare-ident match pattern is a VARIABLE when the name
+    /// is not a declared enum variant (a binding over a primitive scrutinee),
+    /// and ENUM_MEMBER when it is.
+    #[test]
+    fn bare_ident_pat_uses_hir_variant_resolution() {
+        let src = "\
+enum E = Circle | Square;
+f(E e, int32 x) -> int32 {
+    match e { Circle -> 1, _ -> 2, };
+    match x { y -> y, }
+}
+";
+        let db = Database::default();
+        let input = database::SourceFileInput::new(&db, "test.eye".into(), src.into());
+        let lexed = database::lex(&db, input);
+        let parse = database::parse(&db, input);
+        let hir = database::lowered_file(&db, input);
+        let classified = cst::classify_spans(&parse.syntax(), Some(&hir));
+
+        // `lookup_ident` keys on the token's exact range: (offset of the
+        // pattern occurrence, ident length).
+        let type_at = |needle: &str, len: u32| {
+            let offset = src.find(needle).expect("needle in source") as u32;
+            cst::lookup_ident(TextRange::at(offset.into(), len.into()), &classified)
+        };
+        // The pattern `Circle ->` (not the declaration) resolves as a variant.
+        assert_eq!(
+            type_at("Circle ->", 6),
+            Some(legend::ENUM_MEMBER),
+            "variant pattern must classify as ENUM_MEMBER"
+        );
+        // The binding `y ->` over an int scrutinee is a variable, not a variant.
+        assert_eq!(
+            type_at("y ->", 1),
+            Some(legend::VARIABLE),
+            "bare-ident binding must classify as VARIABLE (A5)"
+        );
+        let _ = lexed;
+    }
+
     #[test]
     fn union_extern_as_keywords() {
         let src = "union U { int32 a, }; extern { f() -> int32; } as x = 0;";
-        let mut db = Database::default();
-        let input = database::SourceFileInput::new(&mut db, "test.eye".into(), src.into());
+        let db = Database::default();
+        let input = database::SourceFileInput::new(&db, "test.eye".into(), src.into());
         let source = SourceText::new(input.text(&db).to_owned());
         let lexed = database::lex(&db, input);
         let parse = database::parse(&db, input);
