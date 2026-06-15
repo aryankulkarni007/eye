@@ -68,7 +68,7 @@ pub struct LoweringCtx<'a> {
     /// the folded value of every top-level `const`, so a body-position array
     /// length (`let [int32; SIZE] xs`) can resolve a const count.
     pub(super) const_values: &'a FxHashMap<Text, ConstValue>,
-    /// EXPERIMENTAL: the lexer's string table, used to reuse canonical
+    /// the lexer's string table, used to reuse canonical
     /// [`SmolStr`] allocations instead of creating fresh ones from each token's
     /// source text. borrowed through the [`StringTable`] trait so HIR lowering
     /// does not couple directly to the lexer (QUERY.md).

@@ -1,4 +1,4 @@
-//! EXPERIMENTAL: LSP message loop and dispatch backed by a salsa [`Database`].
+//! LSP message loop and dispatch backed by a salsa [`Database`].
 //!
 //! the database owns all incremental compilation state. every request or
 //! notification handler gets either `&Database` (queries) or `&mut Database`

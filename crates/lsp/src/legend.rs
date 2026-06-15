@@ -1,4 +1,4 @@
-//! EXPERIMENTAL: semantic token legend and server capabilities.
+//! semantic token legend and server capabilities.
 //!
 //! token type indices must match the order in [`legend`] exactly.
 

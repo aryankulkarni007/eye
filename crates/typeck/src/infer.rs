@@ -683,7 +683,6 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         // a missing pointer means a programming error -- every expression id
         // the walker visits was allocated via `alloc_expr` which always inserts
         // a source-map entry. ICE, don't silently drop.
-        // EXPERIMENTAL - vamous
         let ptr = ptr.unwrap_or_else(|| {
             panic!("emit_at: no source-map entry for ExprId({id:?}) and no fallback")
         });
@@ -696,7 +695,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
     fn emit_ptr(&mut self, ptr: Option<SyntaxNodePtr>, err: impl Into<HirError>) {
         // a missing pointer means a programming error -- callers always compute
         // one from a live syntax node or a source-map lookup. ICE, don't
-        // silently drop. EXPERIMENTAL - vamous
+        // silently drop.
         let ptr = ptr.unwrap_or_else(|| panic!("emit_ptr: missing syntax pointer"));
         self.results.diagnostics.emit(ptr, err.into());
     }
@@ -858,6 +857,25 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                         .and_then(|sname| self.field_decl_type(sname, &f.name));
                     if let Some(ft) = field_ty {
                         self.site_coerce(ft, value);
+                        // field value type judgment (S3): `P { x: "hi" }` with
+                        // `int32 x` reached clang before (only missing/unknown
+                        // fields were caught). length-mismatched array fields
+                        // surface here too (no field-specific length check).
+                        if let Some(found) = self.ty_of(value)
+                            && !site_assignable(ft, found, self.types)
+                        {
+                            let expected = self.types.display(ft).to_string();
+                            let got = self.types.display(found).to_string();
+                            self.emit_at(
+                                value,
+                                None,
+                                hir::core::TypeError::StructFieldTypeMismatch {
+                                    field: f.name.clone(),
+                                    expected,
+                                    found: got,
+                                },
+                            );
+                        }
                     }
                 }
                 Some(lit_ty)
@@ -1040,8 +1058,29 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 // have no parameter and are left uncoerced.
                 let scope = self.scope;
                 for (i, &a) in args.iter().enumerate() {
-                    if let Some(param) = scope.functions[fn_id].params.get(i) {
-                        self.site_coerce(param.ty, a);
+                    let Some(param) = scope.functions[fn_id].params.get(i) else {
+                        continue;
+                    };
+                    let param_ty = param.ty;
+                    self.site_coerce(param_ty, a);
+                    // argument type judgment (S3): the coerced argument must be
+                    // assignable to the parameter. swapped or wrong-type args
+                    // (`generate_lang` FIXME) were previously accepted - only
+                    // arity was checked.
+                    if let Some(found) = self.ty_of(a)
+                        && !site_assignable(param_ty, found, self.types)
+                    {
+                        let expected = self.types.display(param_ty).to_string();
+                        let found = self.types.display(found).to_string();
+                        self.emit_at(
+                            a,
+                            None,
+                            hir::core::TypeError::ArgTypeMismatch {
+                                index: i + 1,
+                                expected,
+                                found,
+                            },
+                        );
                     }
                 }
                 self.scope.functions[fn_id].ret
@@ -1637,6 +1676,30 @@ fn array_ref_decays_to(declared: TypeRef, found: TypeRef, types: &TypeInterner) 
         TypeKind::Ref(t) | TypeKind::Ptr(t) => *t == elem,
         _ => false,
     }
+}
+
+/// whether a value of type `found` is acceptable at a site expecting
+/// `expected` - a call argument or a struct/union-literal field - after the
+/// coercion-site adjustments (`site_coerce`) have run. accepts an
+/// equal/integer-family-compatible type, the `&[T; N] -> &T` / `string` decay
+/// (`record_decay` files the cast MIR applies), and any pointer-shaped value
+/// widening into the untyped `ptr` (`void*` absorbs any pointer - the FFI
+/// escape). `Error` on either side is silent via `types_compatible`. the
+/// integer-family leniency defers the strict-width rule (M2b) until a corpus
+/// program needs it, matching every other coercion site.
+fn site_assignable(expected: TypeRef, found: TypeRef, types: &TypeInterner) -> bool {
+    types_compatible(found, expected, types)
+        || array_ref_decays_to(expected, found, types)
+        || (matches!(types.lookup(expected), TypeKind::RawPtr) && is_pointer_shaped(found, types))
+}
+
+/// whether `ty` is a pointer-shaped value (a typed reference/pointer, or the
+/// untyped `ptr`): the values that widen into `ptr` without an explicit cast.
+fn is_pointer_shaped(ty: TypeRef, types: &TypeInterner) -> bool {
+    matches!(
+        types.lookup(ty),
+        TypeKind::Ref(_) | TypeKind::Ptr(_) | TypeKind::RawPtr
+    )
 }
 
 fn is_integer_path(ty: TypeRef, types: &TypeInterner) -> bool {

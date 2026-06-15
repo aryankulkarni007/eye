@@ -10,7 +10,7 @@ use salsa::Setter as _;
 
 /// maps uris to their salsa input handles.
 ///
-/// EXPERIMENTAL: single-file only. a multi-file database would hold
+/// single-file only (current limitation). a multi-file database would hold
 /// `FxHashMap<FileId, SourceFileInput>` plus a URI-to-fileid index.
 #[derive(Debug, Default)]
 pub struct DocumentStore {

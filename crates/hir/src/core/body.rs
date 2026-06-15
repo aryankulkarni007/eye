@@ -12,7 +12,7 @@ use super::*;
 
 /// per-function body IR.
 ///
-/// EXPERIMENTAL(typed-arena): arena fields use [`TypedArena<T, XId>`], paired
+/// arena fields use [`TypedArena<T, XId>`], paired
 /// with the corresponding `*Id` newtypes from [`ids`](super::ids).
 #[derive(Debug, Default)]
 pub struct Body {

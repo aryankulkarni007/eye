@@ -1,4 +1,4 @@
-//! EXPERIMENTAL: semantic token computation against cached salsa query results.
+//! semantic token computation against cached salsa query results.
 //!
 //! unlike the pre-database LSP (which ran its own lexer + parser), this module
 //! receives the already-compiled result from `database::lowered_file` and

@@ -17,6 +17,10 @@ members = [
     "crates/database",
 ]
 
+[profile.dev]
+debug = 1
+codegen-units = 256
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

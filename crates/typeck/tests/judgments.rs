@@ -1269,3 +1269,107 @@ f(usize size) -> usize {
         "every binary types usize (literal adopted the concrete width): {widths:?}"
     );
 }
+
+/// S3 argument type judgment: a call argument whose type does not match the
+/// parameter is rejected. arity was checked before; types were not (swapped
+/// args slipped through to clang).
+#[test]
+fn call_argument_type_mismatch_is_rejected() {
+    let hir = lower(
+        "\
+take(int32 n) -> int32 { n }
+
+main() {
+    take(\"hello\");
+}
+",
+    );
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::ArgTypeMismatch { index, expected, .. })
+                if *index == 1 && expected == "int32"
+        )),
+        "expected ArgTypeMismatch (string into int32 param), got: {:?}",
+        diags(&hir)
+    );
+
+    // both args wrong: a bool into the int32 param and an int literal into the
+    // bool param (no implicit int->bool, so the literal is rejected too).
+    let swapped = lower(
+        "\
+combine(int32 n, bool b) -> int32 { n }
+
+main() {
+    combine(true, 7);
+}
+",
+    );
+    let bad: Vec<usize> = diags(&swapped)
+        .iter()
+        .filter_map(|e| match e {
+            HirError::Type(TypeError::ArgTypeMismatch { index, .. }) => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        bad,
+        [1, 2],
+        "both wrong-typed arguments are flagged: {:?}",
+        diags(&swapped)
+    );
+}
+
+/// correct argument types, integer-width adoption, and the pointer escapes
+/// (`&[T; N] -> &T` decay, a typed reference widening into `ptr`) must stay
+/// clean - the check must not over-reject the kernel's FFI conventions.
+#[test]
+fn call_argument_correct_and_escapes_are_clean() {
+    let ok = lower(
+        "\
+extern free(ptr p)
+
+scale(usize n) -> usize { n * 2 }
+
+main() {
+    let usize n = 4;
+    let int32 x = 9;
+    scale(n);
+    scale(7);
+    free(&x);
+}
+",
+    );
+    assert!(
+        !diags(&ok)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ArgTypeMismatch { .. }))),
+        "correct args + ptr-widening escape must not be rejected: {:?}",
+        diags(&ok)
+    );
+}
+
+/// S3 struct-field value judgment: a field initialized with the wrong type is
+/// rejected (`P { x: "hi" }` with `int32 x` reached clang before; only
+/// missing/unknown fields were caught).
+#[test]
+fn struct_field_value_type_mismatch_is_rejected() {
+    let hir = lower(
+        "\
+struct Point { int32 x, int32 y }
+
+main() {
+    let Point p = Point { x: \"hi\", y: 2 };
+}
+",
+    );
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::StructFieldTypeMismatch { field, expected, .. })
+                if field.as_str() == "x" && expected == "int32"
+        )),
+        "expected StructFieldTypeMismatch on `x`, got: {:?}",
+        diags(&hir)
+    );
+}

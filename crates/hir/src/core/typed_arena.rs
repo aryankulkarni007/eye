@@ -1,4 +1,4 @@
-//! EXPERIMENTAL: type-safe arena wrapper.
+//! type-safe arena wrapper.
 //!
 //! [`TypedArena<T, Id>`] wraps an [`Arena<T>`] and returns `Id` (a newtype
 //! around [`Idx<T>`]) from [`alloc`](typedarena::alloc) instead of a raw
@@ -23,7 +23,7 @@ use std::ops::{Index, IndexMut};
 
 use la_arena::{Arena, Idx};
 
-/// EXPERIMENTAL(typed-arena): an arena that returns a newtype `Id` from
+/// an arena that returns a newtype `Id` from
 /// [`alloc`](typedarena::alloc) instead of a raw [`Idx<T>`].
 ///
 /// `Id` must implement [`From<Idx<T>>`] (for [`alloc`](typedarena::alloc))
@@ -117,7 +117,7 @@ impl<T, Id: From<Idx<T>>> TypedArena<T, Id> {
     }
 }
 
-/// EXPERIMENTAL(typed-arena): macro to define a type-safe arena index newtype.
+/// macro to define a type-safe arena index newtype.
 ///
 /// `$name` becomes a struct newtype around [`Idx<$inner>`] that implements
 /// [`From<Idx<$inner>>`] and [`Into<Idx<$inner>>`].

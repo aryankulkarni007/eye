@@ -142,7 +142,7 @@ pub fn fx_set<V>(capacity: usize) -> FxHashSet<V> {
 /// top-level lowered module. items live in flat arenas; bodies are keyed by
 /// [`FnId`] through [`Function::body`].
 ///
-/// EXPERIMENTAL(typed-arena): arena fields use [`TypedArena<T, XId>`] so every
+/// arena fields use [`TypedArena<T, XId>`] so every
 /// index carries its element type at the type level and the compiler refuses
 /// to mix up `StructId` with `FnId`. every `hir.structs[id]` and
 /// `arena.alloc(value)` site is unchanged because [`Index<StructId>`] and

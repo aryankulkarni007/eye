@@ -1,4 +1,4 @@
-//! EXPERIMENTAL: LSP request handlers backed by the salsa [`Database`].
+//! LSP request handlers backed by the salsa [`Database`].
 //!
 //! every handler receives an immutable `&Database` for query access and an
 //! immutable `&DocumentStore` for URI-to-input mapping. the queries are

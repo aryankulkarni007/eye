@@ -28,7 +28,7 @@ use thin_vec::ThinVec;
 /// parallel type system. every MIR local and temp carries one.
 pub type Type = TypeRef;
 
-// EXPERIMENTAL(typed-arena): newtype wrapping idx<mirlocal>.
+// newtype wrapping idx<mirlocal>.
 hir::arena_id!(LocalId, MirLocal);
 
 #[derive(Debug)]
@@ -47,7 +47,7 @@ pub struct MirLocal {
 /// declare. parameters live here too (so places that reference them resolve to a
 /// name) but are declared by the function signature, not by a `Let`.
 ///
-/// EXPERIMENTAL(typed-arena): `locals` uses [`TypedArena`] so every index
+/// `locals` uses [`TypedArena`] so every index
 /// carries [`LocalId`] at the type level.
 #[derive(Debug)]
 pub struct MirBody {

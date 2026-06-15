@@ -1,4 +1,4 @@
-//! EXPERIMENTAL: CST-guided classification for identifiers and type names,
+//! CST-guided classification for identifiers and type names,
 //! now accepting an optional `&HIR` for name-resolution-aware pattern
 //! classification (A5 fix).
 

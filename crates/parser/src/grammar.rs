@@ -322,7 +322,6 @@ fn field_list(p: &mut Parser, ctx: TextRange) {
             // cannot consume subsequent items as error nodes. after sync
             // the loop bails when no `,` follows -- either `}` (normal exit)
             // or an item keyword (the field list is unclosed).
-            // EXPERIMENTAL - vamous
             p.sync(
                 &[T![,], T!['}'], T![structure], T![union], T![enum], T![extern]],
                 crate::SyntaxError::ExpectedField,
@@ -512,7 +511,6 @@ fn param_list(p: &mut Parser, ctx: TextRange, variadic_ok: bool) {
     while !p.at(T![')']) && !p.at_eof() {
         // when '(' is missing, item-level keywords are never valid params.
         // bail immediately so subsequent items aren't consumed as params.
-        // EXPERIMENTAL - vamous
         if !had_open
             && matches!(p.nth0(), T![structure] | T![union] | T![enum] | T![extern])
         {
@@ -603,7 +601,7 @@ fn block(p: &mut Parser, ctx: TextRange) {
                 // at EOF without `}` -- the block is unclosed. don't emit
                 // "expected ;" because adding `}` would make this expression a
                 // valid tail expression. `ExpectedBlockClose` is the root
-                // cause. EXPERIMENTAL - vamous
+                // cause.
                 m_stmt.complete(p, SyntaxKind::ExprStmt);
             } else {
                 p.error_at(expr_start, crate::SyntaxError::ExpectedSemiAfterExpr);
@@ -614,7 +612,7 @@ fn block(p: &mut Parser, ctx: TextRange) {
             // consume subsequent items as error nodes. after sync the
             // block bails when no `;` follows -- either `}` (normal exit)
             // or an item keyword (the block is unclosed; expectedblockclose
-            // fires below). EXPERIMENTAL - vamous
+            // fires below).
             p.sync(
                 &[T![;], T!['}'], T![structure], T![union], T![enum], T![extern]],
                 crate::SyntaxError::ExpectedStatement,
@@ -1296,7 +1294,7 @@ fn arg_list(p: &mut Parser) {
     let m = p.open();
     let open_paren = p.cursor_range();
     // span the full call expression when `(` is missing, not just the next
-    // token. EXPERIMENTAL - vamous
+    // token.
     p.expect_after(T!['('], open_paren, crate::SyntaxError::ExpectedOpenParen);
     // an arg list is its own struct-lit context: a suppressed flag from an
     // enclosing if/loop condition does not apply inside the arguments.

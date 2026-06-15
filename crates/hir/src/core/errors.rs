@@ -160,6 +160,26 @@ pub enum TypeError {
         name: Text,
         fields: Vec<Text>,
     },
+    /// a call argument whose type does not match the parameter's declared
+    /// type (e.g. a `string` passed where an `int32` is declared, or two
+    /// swapped arguments). arity is checked separately (`CallArityMismatch`);
+    /// this is the per-argument type judgment. integer widths stay lenient
+    /// (the strict-width rule is deferred, M2b); the `&[T; N] -> &T` decay and
+    /// any pointer widening into the untyped `ptr` are accepted.
+    ArgTypeMismatch {
+        /// 1-based argument position, for the message.
+        index: usize,
+        expected: String,
+        found: String,
+    },
+    /// a struct- or union-literal field initialized with a value of the wrong
+    /// type (`P { x: "hello" }` where `x` is `int32`). missing/unknown fields
+    /// are caught separately; this is the field *value* judgment.
+    StructFieldTypeMismatch {
+        field: Text,
+        expected: String,
+        found: String,
+    },
     OpOnArray {
         op: &'static str,
     },
@@ -550,6 +570,22 @@ impl fmt::Display for TypeError {
                 plural(fields.len()),
                 join_ticked(fields)
             ),
+            TypeError::ArgTypeMismatch {
+                index,
+                expected,
+                found,
+            } => write!(
+                f,
+                "argument {index} type mismatch: expected {expected}, got {found}"
+            ),
+            TypeError::StructFieldTypeMismatch {
+                field,
+                expected,
+                found,
+            } => write!(
+                f,
+                "field `{field}` type mismatch: expected {expected}, got {found}"
+            ),
             TypeError::OpOnArray { op } => write!(f, "cannot apply `{op}` to an array"),
             TypeError::ModuloOnFloat => {
                 write!(
@@ -852,6 +888,8 @@ impl Diagnostic for HirError {
                 TypeError::CharLiteralNotAscii { .. } => Code::new(Class::Type, 34),
                 TypeError::ArithmeticOnEnum { .. } => Code::new(Class::Type, 35),
                 TypeError::RefOfNonPlace => Code::new(Class::Type, 36),
+                TypeError::ArgTypeMismatch { .. } => Code::new(Class::Type, 37),
+                TypeError::StructFieldTypeMismatch { .. } => Code::new(Class::Type, 38),
             },
             HirError::Pattern(e) => match e {
                 PatternError::UnreachableAfterWildcard => Code::new(Class::Pattern, 1),

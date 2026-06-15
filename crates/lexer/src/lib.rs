@@ -227,7 +227,6 @@ impl SourceText {
     /// UTF-8 - the user sees a graceful diagnostic rather than a panic.
     /// both constructors validate UTF-8 so that [`SourceText::as_str`] is
     /// safe (the `unsafe` call is justified by construction).
-    /// EXPERIMENTAL
     pub fn from_mmap(mmap: Mmap) -> Result<Self, std::str::Utf8Error> {
         std::str::from_utf8(&mmap)?;
         let lstart = lstarts(&mmap);
@@ -397,7 +396,7 @@ impl<'a> Lexer<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// EXPERIMENTAL: `StringTable` impl + per-file context (QUERY.md)
+// `StringTable` impl + per-file context (QUERY.md)
 // ---------------------------------------------------------------------------
 
 use syntax::StringTable;
@@ -408,7 +407,7 @@ impl StringTable for Interner {
     }
 }
 
-/// EXPERIMENTAL: per-source-file context bundling the source text and the
+/// per-source-file context bundling the source text and the
 /// lexer's string table. this is the single-file precursor to a multi-file
 /// `SourceCache` (QUERY.md) that would map `FileId → SourceFile`.
 ///

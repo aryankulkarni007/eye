@@ -1,4 +1,4 @@
-//! EXPERIMENTAL: LSP notification handlers backed by the salsa [`Database`].
+//! LSP notification handlers backed by the salsa [`Database`].
 //!
 //! on every `didOpen` / `didChange` the handler mutates the salsa input and
 //! re-queries. diagnostics phase-gate exactly like the CLI driver: lexer,

@@ -52,7 +52,7 @@ struct MirGen<'a> {
     /// ...). never reset within the translation unit so sibling guarded matches
     /// in the same c block never collide.
     guard_flag: usize,
-    /// EXPERIMENTAL(A2): memoized place_type results. keyed by the full place so
+    /// A2: memoized place_type results. keyed by the full place so
     /// that repeated calls (index_access, place_is_pointer_like, specifier
     /// resolution) avoid re-walking deep projection chains.
     place_types: FxHashMap<Place, Type>,
@@ -1273,7 +1273,7 @@ impl<'a> MirGen<'a> {
     /// malformed input the front end would already have diagnosed) falls back to
     /// [`TypeRef::Error`], which the callers (the `.`/`->` and `.data[]`
     /// decisions, the printf specifier) handle without panicking.
-    // EXPERIMENTAL(A2): memoized. the cache is checked on entry and populated
+    // A2: memoized. the cache is checked on entry and populated
     // on each return. repeated calls (index_access, place_is_pointer_like,
     // specifier resolution) for the same place are o(1) after the first walk.
     fn place_type(&mut self, mir: &MirBody, place: &Place) -> Type {

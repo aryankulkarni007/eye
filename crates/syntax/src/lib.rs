@@ -302,14 +302,14 @@ macro_rules! T {
 }
 
 // ---------------------------------------------------------------------------
-// EXPERIMENTAL: shared string table trait for the query-driven pipeline
+// shared string table trait for the query-driven pipeline
 // (QUERY.md). defined here so both `lexer` (the concrete `Interner`) and `hir`
 // (which consumes it) share a single dependency rather than coupling directly.
 // ---------------------------------------------------------------------------
 
 pub use smol_str::SmolStr;
 
-/// EXPERIMENTAL: a read-only string table that maps `&str` to a canonical
+/// a read-only string table that maps `&str` to a canonical
 /// [`SmolStr`] when the string has been pre-interned (e.g. by the lexer).
 /// the returned clone is o(1) - short strings (<=22 bytes) are inline; long
 /// strings bump an `Arc` refcount.
@@ -320,7 +320,7 @@ pub use smol_str::SmolStr;
 /// caring which concrete type owns the table.
 ///
 /// # stability
-/// experimental (2026-06-11). the trait may gain lookup-by-id methods when
+/// provisional (2026-06-11): the trait may gain lookup-by-id methods when
 /// `Symbol` handles are threaded downstream.
 pub trait StringTable {
     fn get(&self, s: &str) -> Option<SmolStr>;

@@ -133,7 +133,7 @@ mimalloc is the global allocator. The flamegraph shows ~4% total time in mimallo
 | Fix | Status | Details |
 |-----|--------|---------|
 | **Token vec capacity hint** | DONE (already present) | `Vec::with_capacity(src.len() / 4 + 1)` in `crates/lexer/src/lib.rs:299` |
-| **Memoize `place_type()` (A2)** | DONE (EXPERIMENTAL) | `FxHashMap<Place, Type>` cache on `MirGen`, cleared per-function. `PartialEq+Eq+Hash` added to `Place`/`Operand`/`Literal`. Saves O(depth) re-walks across `index_access`, `place_is_pointer_like`, `specifier` for same place. |
+| **Memoize `place_type()` (A2)** | DONE | `FxHashMap<Place, Type>` cache on `MirGen`, cleared per-function. `PartialEq+Eq+Hash` added to `Place`/`Operand`/`Literal`. Saves O(depth) re-walks across `index_access`, `place_is_pointer_like`, `specifier` for same place. |
 
 ### High impact, low effort (not yet implemented)
 - **Cache MIR bodies (A1)**: Store lowered `MirBody` in `HIR` to avoid double lowering on `--dump-mir` + codegen. Requires either a circular dep (`hir → mir`) or plumbing a shared cache through the pipeline. ~5 lines of logic, but cross-crate dependency issue.
