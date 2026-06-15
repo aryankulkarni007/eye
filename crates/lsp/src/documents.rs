@@ -1,6 +1,6 @@
-//! Open-document state backed by salsa [`SourceFileInput`] handles.
+//! open-document state backed by salsa [`SourceFileInput`] handles.
 //!
-//! Each open file gets a salsa input handle; mutating the handle's text
+//! each open file gets a salsa input handle; mutating the handle's text
 //! bumps the database revision so cached queries are automatically
 //! invalidated.
 
@@ -8,23 +8,23 @@ use database::{Database, SourceFileInput};
 use rustc_hash::FxHashMap;
 use salsa::Setter as _;
 
-/// Maps URIs to their salsa input handles.
+/// maps uris to their salsa input handles.
 ///
-/// EXPERIMENTAL: single-file only. A multi-file database would hold
-/// `FxHashMap<FileId, SourceFileInput>` plus a URI-to-FileId index.
+/// EXPERIMENTAL: single-file only. a multi-file database would hold
+/// `FxHashMap<FileId, SourceFileInput>` plus a URI-to-fileid index.
 #[derive(Debug, Default)]
 pub struct DocumentStore {
     files: FxHashMap<String, SourceFileInput>,
 }
 
 impl DocumentStore {
-    /// Register a newly opened document, creating a salsa input handle.
+    /// register a newly opened document, creating a salsa input handle.
     pub fn open(&mut self, db: &mut Database, uri: &str, path: String, text: String) {
         let input = SourceFileInput::new(db, path, text);
         self.files.insert(uri.to_string(), input);
     }
 
-    /// Update a document's text. Bumps the database revision, which
+    /// update a document's text. bumps the database revision, which
     /// automatically invalidates any cached query results.
     pub fn change(&mut self, db: &mut Database, uri: &str, text: String) {
         if let Some(input) = self.files.get_mut(uri) {
@@ -32,12 +32,12 @@ impl DocumentStore {
         }
     }
 
-    /// Remove a closed document.
+    /// remove a closed document.
     pub fn close(&mut self, uri: &str) {
         self.files.remove(uri);
     }
 
-    /// The salsa input handle for an open document, if any.
+    /// the salsa input handle for an open document, if any.
     pub fn get(&self, uri: &str) -> Option<&SourceFileInput> {
         self.files.get(uri)
     }

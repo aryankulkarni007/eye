@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap;
 use super::LoweringCtx;
 use crate::core::{
     Block, BlockId, Body, ConstValue, Expr, ExprId, HIR, HirError, Local, LocalId, Pat, PatId,
-    Resolution, Stmt, StmtId, Text, TypeKind, TypeRef,
+    Resolution, Stmt, StmtId, Text, TypeRef,
 };
 
 impl<'a> LoweringCtx<'a> {
@@ -27,12 +27,11 @@ impl<'a> LoweringCtx<'a> {
             diagnostics: Sink::new(),
             fn_ret: None,
             const_values,
-            fn_block_ptr: None,
             interner,
         }
     }
 
-    /// Emit a diagnostic anchored at `ptr`. The pointer is stored as-is; the
+    /// emit a diagnostic anchored at `ptr`. the pointer is stored as-is; the
     /// renderer resolves it against the parse tree and trims trivia off the
     /// span centrally, so every diagnostic - from any emit path - is tight
     /// without each site repeating the trim.
@@ -40,9 +39,9 @@ impl<'a> LoweringCtx<'a> {
         self.diagnostics.emit(ptr, err.into());
     }
 
-    /// The source pointer of an already-lowered expression, for an emit site
+    /// the source pointer of an already-lowered expression, for an emit site
     /// that wants to anchor on a child sub-expression (e.g. a `let`
-    /// initializer) rather than the enclosing node. Falls back to `default`
+    /// initializer) rather than the enclosing node. falls back to `default`
     /// when the expression has no recorded pointer.
     pub(super) fn expr_ptr(&self, id: ExprId, default: SyntaxNodePtr) -> SyntaxNodePtr {
         self.body
@@ -76,19 +75,6 @@ impl<'a> LoweringCtx<'a> {
             .unwrap_or_else(|| self.missing_expr(ptr))
     }
 
-    #[allow(dead_code)]
-    pub(super) fn alloc_expr_with_type(
-        &mut self,
-        expr: Expr,
-        ptr: SyntaxNodePtr,
-        ty: TypeRef,
-    ) -> ExprId {
-        let id = self.body.exprs.alloc(expr);
-        self.body.source_map.expr.insert(id.into(), ptr);
-        self.body.expr_types.insert(id.into(), ty);
-        id
-    }
-
     pub(super) fn alloc_expr(&mut self, expr: Expr, ptr: SyntaxNodePtr) -> ExprId {
         let id = self.body.exprs.alloc(expr);
         self.body.source_map.expr.insert(id.into(), ptr);
@@ -107,12 +93,12 @@ impl<'a> LoweringCtx<'a> {
         id
     }
 
-    /// Create a circular `Pat::Bind(local) <-> Local { pat }`
-    /// reference atomically. Allocates `Pat::Missing` first (so the local has a
-    /// valid PatId), then patches it to `Bind(local_id)`. Previously each caller
+    /// create a circular `Pat::Bind(local) <-> Local { pat }`
+    /// reference atomically. allocates `Pat::Missing` first (so the local has a
+    /// valid patid), then patches it to `Bind(local_id)`. previously each caller
     /// hand-rolled the two-step sequence, creating a window where `pats[pat_id]`
-    /// reads as `Missing`. This helper keeps the window internal.
-    /// To revert: inline the body and return to the fragile two-step pattern.
+    /// reads as `Missing`. this helper keeps the window internal.
+    /// to revert: inline the body and return to the fragile two-step pattern.
     pub(super) fn alloc_bind_pat(
         &mut self,
         name: Text,
@@ -143,7 +129,7 @@ impl<'a> LoweringCtx<'a> {
 
     /// R012 for body-position type annotations (`let` types, cast targets,
     /// local `const` types): every `Path` name in the type must be a declared
-    /// type. Bodies lower after item collection, so unlike item signatures
+    /// type. bodies lower after item collection, so unlike item signatures
     /// (validated post-collect by `collect::validate_type_names`) this can
     /// check eagerly.
     pub(super) fn check_type_names(&mut self, ty: TypeRef, ptr: SyntaxNodePtr) {
@@ -158,8 +144,8 @@ impl<'a> LoweringCtx<'a> {
         }
     }
 
-    /// Resolve a `NameRef`. Lexical scopes first, then module-level values,
-    /// then types, then enum variants (flat across every enum). Unknown
+    /// resolve a `NameRef`. lexical scopes first, then module-level values,
+    /// then types, then enum variants (flat across every enum). unknown
     /// names produce [`Resolution::Unresolved`] so later diagnostics still
     /// have the original text.
     pub(super) fn resolve(&self, name: &Text) -> Resolution {
@@ -189,46 +175,4 @@ impl<'a> LoweringCtx<'a> {
         Resolution::Unresolved(name.clone())
     }
 
-    pub(super) fn block_tail_type(&self, block_id: BlockId) -> Option<TypeRef> {
-        let block = &self.body.blocks[block_id];
-        block
-            .tail
-            .and_then(|expr_id| self.body.expr_types.get(expr_id.into()).cloned())
-    }
-
-    /// Look up the type of a struct or union field given the receiver type and
-    /// field name.
-    pub(super) fn lookup_field_type(&self, struct_ty: TypeRef, field_name: &Text) -> TypeRef {
-        let kind = {
-            let types = &self.types;
-            types.lookup(struct_ty).clone()
-        };
-        match kind {
-            TypeKind::Path(name) => {
-                // Structs and unions share the field arena, so a member of
-                // either resolves the same way - check both namespaces.
-                let field_id = self
-                    .hir
-                    .items
-                    .structs
-                    .get(&name)
-                    .and_then(|&id| self.hir.structs[id].field_index.get(field_name).copied())
-                    .or_else(|| {
-                        self.hir.items.unions.get(&name).and_then(|&id| {
-                            self.hir.unions[id].field_index.get(field_name).copied()
-                        })
-                    });
-                if let Some(field_id) = field_id {
-                    return self.hir.fields[field_id].ty;
-                }
-                self.types.error_type()
-            }
-            TypeKind::Ref(inner) | TypeKind::Ptr(inner) => {
-                // NOTE: auto-deref: look through one level of indirection
-                self.lookup_field_type(inner, field_name)
-            }
-            // arrays and function pointers have no named fields
-            _ => self.types.error_type(),
-        }
-    }
 }

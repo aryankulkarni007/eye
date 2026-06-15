@@ -416,6 +416,7 @@ dependencies = [
  "eye-parser",
  "eye-syntax",
  "eye-token",
+ "eye-typeck",
  "insta",
  "memmap2",
  "mimalloc",
@@ -453,11 +454,13 @@ dependencies = [
  "eye-ast",
  "eye-codegen",
  "eye-diagnostics",
+ "eye-effect",
  "eye-hir",
  "eye-lexer",
  "eye-mir",
  "eye-parser",
  "eye-syntax",
+ "eye-typeck",
  "la-arena",
  "rowan",
  "rustc-hash 2.1.2",
@@ -472,6 +475,19 @@ version = "0.1.0"
 dependencies = [
  "eye-syntax",
  "text-size",
+]
+
+[[package]]
+name = "eye-effect"
+version = "0.1.0"
+dependencies = [
+ "eye-ast",
+ "eye-diagnostics",
+ "eye-hir",
+ "eye-lexer",
+ "eye-parser",
+ "eye-typeck",
+ "rustc-hash 2.1.2",
 ]
 
 [[package]]
@@ -538,6 +554,7 @@ dependencies = [
  "eye-hir",
  "eye-lexer",
  "eye-parser",
+ "eye-typeck",
  "la-arena",
  "rustc-hash 2.1.2",
  "smallvec",
@@ -579,6 +596,20 @@ dependencies = [
  "logos",
  "text-size",
  "thin-vec",
+]
+
+[[package]]
+name = "eye-typeck"
+version = "0.1.0"
+dependencies = [
+ "eye-ast",
+ "eye-diagnostics",
+ "eye-hir",
+ "eye-lexer",
+ "eye-parser",
+ "eye-syntax",
+ "la-arena",
+ "rustc-hash 2.1.2",
 ]
 
 [[package]]

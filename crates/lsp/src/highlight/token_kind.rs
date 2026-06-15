@@ -1,4 +1,4 @@
-//! Lexer-only token classification (keywords, literals, operators).
+//! lexer-only token classification (keywords, literals, operators).
 
 use syntax::SyntaxKind;
 

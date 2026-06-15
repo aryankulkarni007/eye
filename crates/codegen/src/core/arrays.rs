@@ -1,41 +1,41 @@
-//! Fixed-array value semantics: the struct-wrap representation.
+//! fixed-array value semantics: the struct-wrap representation.
 //!
-//! C cannot pass, return, or assign a bare array by value - an array always
-//! decays to a pointer at those boundaries. To give Eye arrays real value
+//! c cannot pass, return, or assign a bare array by value - an array always
+//! decays to a pointer at those boundaries. to give eye arrays real value
 //! semantics (copy on assign, pass/return by value, length carried in the
 //! type), every `[T; N]` is lowered to a wrapper `struct { T data[N]; }`.
-//! Copy, by-value passing, and multi-dimensional nesting then fall out of C
+//! copy, by-value passing, and multi-dimensional nesting then fall out of c
 //! struct semantics for free.
 //!
-//! This is a C-backend representation detail, not an Eye language concept. A
-//! future Cranelift backend would emit a stack slot and a memcpy instead, with
-//! no wrapper type. The language never mentions `.data`; indexing and `&a[0]`
+//! this is a c-backend representation detail, not an eye language concept. a
+//! future cranelift backend would emit a stack slot and a memcpy instead, with
+//! no wrapper type. the language never mentions `.data`; indexing and `&a[0]`
 //! are rewritten onto it here.
 //!
-//! Wrapper names are derived purely from the type via interned handles, so
+//! wrapper names are derived purely from the type via interned handles, so
 //! [`super::types::CType`] can render an array as its wrapper name with no
-//! shared state. This module is now just the wrapper naming (the injective
+//! shared state. this module is now just the wrapper naming (the injective
 //! mangle); deciding which wrappers to emit and in what order is the shared
 //! type-declaration topology ([`hir::core::topo_order`]), driven from the MIR
 //! emitter.
 
 use hir::core::{TypeInterner, TypeKind, TypeRef};
 
-/// Mangle a type into a fragment of a C identifier. Injective: two distinct
-/// Eye types never produce the same fragment, so they never collide on one
+/// mangle a type into a fragment of a c identifier. injective: two distinct
+/// eye types never produce the same fragment, so they never collide on one
 /// wrapper name (a collision would dedup two different element types to a
 /// single typedef and miscompile one of them).
 ///
-/// Injectivity rests on two rules:
-/// - A `Path` name is length-prefixed (`ref_int` -> `7ref_int`). The map
-///   `s -> len(s) ++ s` is injective because `n -> digits(n) + n` is strictly
-///   increasing, so the prefix pins the name's extent unambiguously.
-/// - The `ref_`/`ptr_`/`arr_`/`err` constructors all start with a letter, while
-///   a length-prefixed `Path` always starts with a digit. So a user type named
-///   `ref_int` (`7ref_int`) can never be confused with `&int` (`ref_3int`).
-///   `arr_` puts the length first (`arr_3_5int32`) so the fragment parses
-///   front-to-back: after `arr_`, the digit run is the length, then `_`, then
-///   the element mangle.
+/// injectivity rests on two rules:
+/// - a `Path` name is length-prefixed (`ref_int` -> `7ref_int`). the map
+/// `s -> len(s) ++ s` is injective because `n -> digits(n) + n` is strictly
+/// increasing, so the prefix pins the name's extent unambiguously.
+/// - the `ref_`/`ptr_`/`arr_`/`err` constructors all start with a letter, while
+/// a length-prefixed `Path` always starts with a digit. so a user type named
+/// `ref_int` (`7ref_int`) can never be confused with `&int` (`ref_3int`).
+/// `arr_` puts the length first (`arr_3_5int32`) so the fragment parses
+/// front-to-back: after `arr_`, the digit run is the length, then `_`, then
+/// the element mangle.
 fn array_mangle(ty: TypeRef, types: &TypeInterner) -> String {
     match types.lookup(ty) {
         TypeKind::Path(name) => {
@@ -44,43 +44,46 @@ fn array_mangle(ty: TypeRef, types: &TypeInterner) -> String {
         }
         TypeKind::Ref(inner) => format!("ref_{}", array_mangle(*inner, types)),
         TypeKind::Ptr(inner) => format!("ptr_{}", array_mangle(*inner, types)),
+        // injective against a user type literally named `rawptr`: a `Path`
+        // mangles length-prefixed (`6rawptr`), so the bare fragment is free.
+        TypeKind::RawPtr => "rawptr".to_string(),
         TypeKind::Array { elem, len } => {
             format!("arr_{}_{}", len, array_mangle(*elem, types))
         }
-        TypeKind::Fn { params, ret } => {
-            let mut s = format!("fn{}", params.len());
-            for &p in params {
-                s.push('_');
-                s.push_str(&array_mangle(p, types));
-            }
-            s.push_str("_to_");
-            match ret {
-                Some(r) => s.push_str(&array_mangle(*r, types)),
-                None => s.push_str("void"),
-            }
-            s
-        }
+        TypeKind::Fn {
+            params,
+            ret,
+            variadic,
+        } => array_mangle_fn(params, *ret, *variadic, types),
         TypeKind::Error => "err".to_string(),
     }
 }
 
-/// The C typedef name for the wrapper of `[elem; len]`. Equal to
+/// the c typedef name for the wrapper of `[elem; len]`. equal to
 /// `__eye_` ++ `array_mangle([elem; len])`, spelled inline to avoid a clone.
 pub(super) fn array_wrapper_name(elem: TypeRef, len: u64, types: &TypeInterner) -> String {
     format!("__eye_arr_{}_{}", len, array_mangle(elem, types))
 }
 
-/// The C typedef name for a function-pointer type `(params) -> ret`.
+/// the c typedef name for a function-pointer type `(params) -> ret`.
 pub(super) fn fn_typedef_name(
     params: &[TypeRef],
     ret: Option<TypeRef>,
+    variadic: bool,
     types: &TypeInterner,
 ) -> String {
-    format!("__eye_{}", array_mangle_fn(params, ret, types))
+    format!("__eye_{}", array_mangle_fn(params, ret, variadic, types))
 }
 
-fn array_mangle_fn(params: &[TypeRef], ret: Option<TypeRef>, types: &TypeInterner) -> String {
-    let mut s = format!("fn{}", params.len());
+fn array_mangle_fn(
+    params: &[TypeRef],
+    ret: Option<TypeRef>,
+    variadic: bool,
+    types: &TypeInterner,
+) -> String {
+    // `fn{n}v_` for variadic vs `fn{n}_`: the digit run is the fixed param
+    // count, the `v` marks the trailing `...`, so the two can never collide.
+    let mut s = format!("fn{}{}", params.len(), if variadic { "v" } else { "" });
     for &p in params {
         s.push('_');
         s.push_str(&array_mangle(p, types));
@@ -107,9 +110,9 @@ mod tests {
         types.intern(TypeKind::Path(Text::from(name)))
     }
 
-    /// The mangle must be injective: a reference/pointer/array construction must
+    /// the mangle must be injective: a reference/pointer/array construction must
     /// never produce the same fragment as a user type literally named after the
-    /// constructor prefix. Before length-prefixing, `&int` and `ref_int`, `*int`
+    /// constructor prefix. before length-prefixing, `&int` and `ref_int`, `*int`
     /// and `ptr_int`, `[int; 2]` and `arr_2_3int` all collided.
     #[test]
     fn mangle_is_injective_against_named_types() {
@@ -128,6 +131,7 @@ mod tests {
                 t.intern(TypeKind::Fn {
                     params: vec![],
                     ret: None,
+                    variadic: false,
                 }),
                 fn0_to_void,
             ),

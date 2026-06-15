@@ -1,7 +1,7 @@
 use diagnostics::Diagnostic;
 use hir::core::HIR;
 
-/// Print the HIR as a readable summary — counts, names, types — not full Debug.
+/// print the HIR as a readable summary -- counts, names, types -- not full debug.
 pub fn dump_hir(hir: &HIR) {
     println!("  structs: {} struct(s)", hir.structs.len());
     for (id, s) in hir.structs.iter() {
@@ -68,11 +68,10 @@ pub fn dump_hir(hir: &HIR) {
         }
         println!("      pats: {}", body.pats.len());
         println!("      exprs: {}", body.exprs.len());
+        // expression types are no longer stamped on the HIR body (S2C C5);
+        // they live in the typeck results. the HIR dump shows structure only.
         for (eid, expr) in body.exprs.iter() {
-            let ty = body.expr_types.get(eid.into());
-            let ty_str = ty.map(|t| format!(": {:?}", t)).unwrap_or_default();
-            let variant = variant_name(expr);
-            println!("        Expr({:?}): {}{ty_str}", eid, variant);
+            println!("        Expr({:?}): {}", eid, variant_name(expr));
         }
         println!("      stmts: {}", body.stmts.len());
         println!("      blocks: {}", body.blocks.len());
@@ -109,11 +108,12 @@ fn variant_name(e: &hir::core::Expr) -> &'static str {
         Cast { .. } => "Cast",
         Match { .. } => "Match",
         SizeOf(_) => "SizeOf",
+        Len(_) => "Len",
         Block(_) => "Block",
     }
 }
 
-/// Print the HIR as full Debug representation.
+/// print the HIR as full debug representation.
 pub fn dump_hir_raw(hir: &HIR) {
     println!("{:#?}", hir);
 }

@@ -1,4 +1,4 @@
-//! Type and format-specifier mapping: HIR `TypeRef` -> C type strings and
+//! type and format-specifier mapping: HIR `TypeRef` -> c type strings and
 //! printf specifiers.
 
 use hir::core::{TypeInterner, TypeKind, TypeRef};
@@ -34,18 +34,22 @@ impl fmt::Display for CType<'_> {
                 "bool" => f.write_str("bool"),
                 "char" => f.write_str("char"),
                 "string" => f.write_str("const char*"),
-                "ptr" => f.write_str("void*"),
                 other => f.write_str(other),
             },
+            TypeKind::RawPtr => f.write_str("void*"),
             TypeKind::Ref(inner) | TypeKind::Ptr(inner) => {
                 write!(f, "{}*", CType::new(*inner, self.types))
             }
             TypeKind::Array { elem, len } => {
                 f.write_str(&super::arrays::array_wrapper_name(*elem, *len, self.types))
             }
-            TypeKind::Fn { params, ret } => {
-                f.write_str(&super::arrays::fn_typedef_name(params, *ret, self.types))
-            }
+            TypeKind::Fn {
+                params,
+                ret,
+                variadic,
+            } => f.write_str(&super::arrays::fn_typedef_name(
+                params, *ret, *variadic, self.types,
+            )),
             TypeKind::Error => f.write_str("void* /* ERROR TY */"),
         }
     }
@@ -69,7 +73,7 @@ impl fmt::Display for CDeclarator<'_> {
     }
 }
 
-/// printf format specifier for a value of type `ty`. A pure type -> specifier
+/// printf format specifier for a value of type `ty`. a pure type -> specifier
 /// map, read by the MIR emitter's `print` lowering (one specifier per `{}`).
 pub(super) fn spec_for_type(ty: TypeRef, types: &TypeInterner) -> &'static str {
     match types.lookup(ty) {
@@ -84,12 +88,13 @@ pub(super) fn spec_for_type(ty: TypeRef, types: &TypeInterner) -> &'static str {
             "bool" => "%d",
             "char" => "%c",
             "string" => "%s",
-            // `ptr` is C `void*`; printing it as `%d` would be a varargs type
-            // mismatch (UB). The remaining `_` names are enums (C `int`) - a
-            // struct/union/array argument is rejected before lowering.
-            "ptr" => "%p",
+            // the remaining `_` names are enums (c `int`) - a struct/union/
+            // array argument is rejected before lowering.
             _ => "%d",
         },
+        // `ptr` is c `void*`; printing it as `%d` would be a varargs type
+        // mismatch (UB).
+        TypeKind::RawPtr => "%p",
         TypeKind::Ref(inner)
             if matches!(
                 types.lookup(*inner),

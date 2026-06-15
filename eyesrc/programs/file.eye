@@ -1,11 +1,14 @@
---*  Read a file and print its contents using libc I/O.
-     Exercises the C seam: an opaque FFI type (`type FILE;`), a variadic
-     extern (`printf`), and `FILE*`-typed signatures - the extern block is
-     the sole prototype (no auto-included header).  --*
+--*
+  * read a file and print its contents using libc i/o
+  * exercises the c seam: an opaque ffi type (type FILE;), a variadic
+  * extern (`printf`), and `file*`-typed signatures - the extern block is
+  * the sole prototype (no auto-included header).
+--*
 
 extern {
     type FILE;
     printf(string fmt, ...) -> int32;
+    perror(string fmt);
     fopen(string path, string mode) -> FILE*;
     fclose(FILE* f) -> int32;
     fgets(ptr buf, int32 n, FILE* f) -> ptr;
@@ -17,13 +20,13 @@ extern {
 main() {
     mut FILE* file = fopen("eyesrc/programs/file.eye", "r");
     if file == (0 as FILE*) {
-        println("fopen error");
+        perror("fopen error");
         exit(1);
     }
 
     mut ptr buf = calloc(256, 1);
     if buf == (0 as ptr) {
-        println("calloc error");
+        perror("calloc error");
         fclose(file);
         exit(1);
     }

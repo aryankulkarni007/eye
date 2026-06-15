@@ -1,6 +1,6 @@
-//! EXPERIMENTAL(typed-arena): Arena index newtypes.
+//! EXPERIMENTAL(typed-arena): arena index newtypes.
 //!
-//! Every HIR node is addressed by a typed newtype rather than a raw [`Idx`],
+//! every HIR node is addressed by a typed newtype rather than a raw [`Idx`],
 //! so `StructId` and `FnId` are distinct types that the compiler refuses to
 //! mix up.
 

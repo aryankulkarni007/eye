@@ -1,7 +1,7 @@
 use ast::AstNode;
 use syntax::SyntaxToken;
 
-/// A token's text, or a placeholder when the parse left the slot empty.
+/// a token's text, or a placeholder when the parse left the slot empty.
 fn tok_text(t: Option<SyntaxToken>) -> String {
     t.map(|t| t.text().to_string())
         .unwrap_or_else(|| "<missing>".to_string())
@@ -374,7 +374,7 @@ fn dump_block(block: ast::Block, indent: &str) {
     }
 }
 
-/// Walks the typed AST and prints a structured summary.
+/// walks the typed AST and prints a structured summary.
 pub fn dump_ast(file: &ast::SourceFile) {
     for item in file.items() {
         match item {

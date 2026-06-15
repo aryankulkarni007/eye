@@ -1,0 +1,957 @@
+//! machine-EFFECT inference (EFFECT.md) - the second lattice of the fused
+//! dual-inference walk. effects ride the `typeck::InferObserver` seam: as the
+//! bidirectional type walk visits each expression, the [`EffectJudge`]
+//! classifies its machine effect, so types and effects are inferred on one
+//! traversal (one walk per body, two lattices).
+//!
+//! status: S4 foundational slice. per-body atom collection + call-edge
+//! collection are built and tested here. NOT YET built: the whole-program SCC
+//! condensation fixpoint (a fn's effects = its own atoms ∪ its callees'),
+//! annotations + the exact-match contract, the `EffectError` (e) diagnostic
+//! class, and salsa/LSP wiring. see EFFECT.md "build pieces (segment S4)" and
+//! docs/planning/ledger.md for the path forward.
+
+use diagnostics::Sink;
+use hir::core::{
+    Body, EffectError, Expr, ExprId, FnId, HIR, HirError, Resolution, Text, TypeInterner, TypeKind,
+    TypeRef,
+};
+use rustc_hash::FxHashMap;
+use typeck::{InferObserver, ObserverCx, TypeckResults};
+
+/// the number of live atoms (io/ffi/state) - the witness-array width.
+const LIVE_ATOMS: usize = 3;
+
+/// dense index of a live atom for witness storage (`io`=0, `ffi`=1, `state`=2).
+/// reserved atoms have no producer, so no witness.
+fn atom_index(atom: Atom) -> Option<usize> {
+    match atom {
+        Atom::Io => Some(0),
+        Atom::Ffi => Some(1),
+        Atom::State => Some(2),
+        _ => None,
+    }
+}
+
+/// why a fn has a given atom *locally* - the primitive that produced it, for the
+/// witness trail in a contract-violation diagnostic (EFFECT.md witness edges).
+#[derive(Debug, Clone)]
+enum WitnessKind {
+    /// a `println` / `print` call (`io`).
+    Println,
+    /// a call to an `extern` fn, by name (`ffi`).
+    Extern(Text),
+    /// a raw-pointer dereference (`ffi`).
+    RawDeref,
+    /// read/write of a `mut` global, by name (`state`).
+    MutGlobal(Text),
+    /// a call through a fn-pointer value, whose target (and effect) is unknown.
+    Indirect,
+}
+
+impl WitnessKind {
+    /// the phrase naming this primitive, e.g. "a call to `println`".
+    fn label(&self) -> String {
+        match self {
+            WitnessKind::Println => "a call to `println`".to_string(),
+            WitnessKind::Extern(name) => format!("a call to extern `{name}`"),
+            WitnessKind::RawDeref => "a raw-pointer dereference".to_string(),
+            WitnessKind::MutGlobal(name) => format!("access to mutable global `{name}`"),
+            WitnessKind::Indirect => {
+                "a call through a fn-pointer (its effect is assumed live)".to_string()
+            }
+        }
+    }
+}
+
+/// the effect lattice: a bitset of machine-effect atoms. `pure` is the empty
+/// set (the lattice bottom); union is the join. row-ready (EFFECT.md): `atoms`
+/// is the live bitset and a future effect-variable tail slot stays dormant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EffectSet {
+    atoms: u8,
+}
+
+/// one machine-effect atom. live atoms have producers today; reserved atoms
+/// hold their bit and start firing when their primitive lands (EFFECT.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Atom {
+    /// `print` / `println` - the printf seam.
+    Io = 1 << 0,
+    /// calling an `extern` fn, or dereferencing a raw pointer (`T*` / `ptr`).
+    Ffi = 1 << 1,
+    /// reading or writing a `mut` global.
+    State = 1 << 2,
+    /// reserved (no producer yet): a real heap allocator.
+    Alloc = 1 << 3,
+    /// reserved: bounds traps (runtime-safety theme).
+    Panic = 1 << 4,
+    /// reserved: non-termination analysis (gates prime totality).
+    Diverge = 1 << 5,
+}
+
+impl EffectSet {
+    /// the empty set - `pure`, the lattice bottom.
+    pub const fn pure() -> Self {
+        Self { atoms: 0 }
+    }
+
+    /// true when no atom is set (the fn is `pure`).
+    pub fn is_pure(self) -> bool {
+        self.atoms == 0
+    }
+
+    /// true when `atom` is in the set.
+    pub fn contains(self, atom: Atom) -> bool {
+        self.atoms & atom as u8 != 0
+    }
+
+    /// add `atom` to the set.
+    pub fn insert(&mut self, atom: Atom) {
+        self.atoms |= atom as u8;
+    }
+
+    /// the join (union) of two sets - the fixpoint's upward step.
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            atoms: self.atoms | other.atoms,
+        }
+    }
+
+    /// the raw atom bitset (for fixpoint storage / `Eq` backdating).
+    pub fn bits(self) -> u8 {
+        self.atoms
+    }
+
+    /// the full *live* set (`io | ffi | state`) - the conservative answer for a
+    /// call through a fn-pointer value, whose target is unknown at compile time
+    /// (EFFECT.md). reserved atoms are excluded: they have no producer, so no
+    /// honest verdict could claim them.
+    pub const fn live() -> Self {
+        Self {
+            atoms: Atom::Io as u8 | Atom::Ffi as u8 | Atom::State as u8,
+        }
+    }
+}
+
+/// one body's inferred local effects plus its direct call edges. the atoms are
+/// what the body produces *itself*; the whole-program fixpoint (EFFECT.md, not
+/// yet built) unions in the callees' effects over the call graph's SCC
+/// condensation.
+#[derive(Debug, Clone, Default)]
+pub struct EffectResult {
+    pub set: EffectSet,
+    pub callees: Vec<FnId>,
+    /// true when the body calls through a fn-pointer *value* (a callee that is
+    /// not a statically-known fn). the whole-program fixpoint cannot name the
+    /// target, so it unions in the full live set ([`EffectSet::live`]) - sound,
+    /// tightenable when EFFECT rows land on fn types (EFFECT.md).
+    pub indirect: bool,
+    /// per live atom (`io`/`ffi`/`state`, indexed by [`atom_index`]), the
+    /// primitive in *this* body that first produced it - the leaf of a witness
+    /// trail. `None` = the atom is not produced locally (it arrives through a
+    /// callee, found by walking the call graph at diagnostic time).
+    local_witness: [Option<WitnessKind>; LIVE_ATOMS],
+}
+
+/// the per-body effect collector. implements the typeck observer seam so it is
+/// driven by the type walk: each visited expression is classified by
+/// resolution (the type-dependent `*p`-is-`ffi` case reads the operand type
+/// the walk just computed, EFFECT.md).
+#[derive(Debug, Default)]
+pub struct EffectJudge {
+    set: EffectSet,
+    callees: Vec<FnId>,
+    indirect: bool,
+    local_witness: [Option<WitnessKind>; LIVE_ATOMS],
+}
+
+impl EffectJudge {
+    /// add `atom` to the set and record `w` as its local witness if none yet
+    /// (the first, most-specific producer wins).
+    fn record(&mut self, atom: Atom, w: WitnessKind) {
+        self.set.insert(atom);
+        if let Some(i) = atom_index(atom)
+            && self.local_witness[i].is_none()
+        {
+            self.local_witness[i] = Some(w);
+        }
+    }
+}
+
+impl InferObserver for EffectJudge {
+    fn visit(&mut self, _id: ExprId, expr: &Expr, _ty: Option<TypeRef>, cx: &ObserverCx<'_>) {
+        match expr {
+            // a call: `io` for the `println` intrinsic, `ffi` for an `extern`
+            // fn, plus the call edge for the fixpoint. a direct fn callee is a
+            // `Path` child resolved at lowering.
+            Expr::Call { callee, .. } => match &cx.body.exprs[*callee] {
+                Expr::Path(Resolution::Unresolved(name))
+                    if name == "println" || name == "print" =>
+                {
+                    self.record(Atom::Io, WitnessKind::Println);
+                }
+                Expr::Path(Resolution::Fn(fid)) => {
+                    self.callees.push(*fid);
+                    if cx.scope.functions[*fid].is_extern {
+                        self.record(
+                            Atom::Ffi,
+                            WitnessKind::Extern(cx.scope.functions[*fid].name.clone()),
+                        );
+                    }
+                }
+                // a callee that is not a statically-known fn nor the println
+                // intrinsic is a call through a fn-pointer value (the callee
+                // resolves to a local/param/field of fn type). its target is
+                // unknown, so the fixpoint must assume the full live set.
+                // (unresolved non-intrinsic names are rejected upstream, so in
+                // an accepted program this is exactly the indirect-call case.)
+                _ => {
+                    self.indirect = true;
+                    // an indirect call can produce any live atom; record it as
+                    // each atom's witness only where nothing more specific is.
+                    for atom in [Atom::Io, Atom::Ffi, Atom::State] {
+                        if let Some(i) = atom_index(atom)
+                            && self.local_witness[i].is_none()
+                        {
+                            self.local_witness[i] = Some(WitnessKind::Indirect);
+                        }
+                    }
+                }
+            },
+            // dereferencing a raw pointer (`T*` / `ptr`) is `ffi` - its
+            // provenance is outside eye's model. a `&T` deref is a checked eye
+            // reference and is NOT an effect. the one type-dependent atom:
+            // classify by the operand's already-computed type.
+            Expr::Deref { operand } => {
+                if let Some(t) = cx.expr_types.get((*operand).into())
+                    && matches!(cx.types.lookup(*t), TypeKind::Ptr(_) | TypeKind::RawPtr)
+                {
+                    self.record(Atom::Ffi, WitnessKind::RawDeref);
+                }
+            }
+            // reading or writing a `mut` global is `state` (the assignment LHS
+            // is itself a visited `Path(Global)`, so this catches both).
+            Expr::Path(Resolution::Global(gid)) if cx.scope.globals[*gid].mutable => {
+                self.record(
+                    Atom::State,
+                    WitnessKind::MutGlobal(cx.scope.globals[*gid].name.clone()),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+impl EffectJudge {
+    /// consume the judge into its per-body result (atoms + call edges + the
+    /// indirect-call flag).
+    fn into_result(self) -> EffectResult {
+        EffectResult {
+            set: self.set,
+            callees: self.callees,
+            indirect: self.indirect,
+            local_witness: self.local_witness,
+        }
+    }
+}
+
+/// infer one body's local effects (the atoms it produces directly plus its
+/// callees) by running the type walk with the effect judge fused in. the
+/// whole-program verdict needs the fixpoint over all bodies' results
+/// ([`infer_effects`] / [`infer_file`]).
+pub fn infer_body_effects(
+    scope: &HIR,
+    body: &Body,
+    fn_ret: Option<TypeRef>,
+    types: &mut TypeInterner,
+) -> EffectResult {
+    let mut judge = EffectJudge::default();
+    typeck::check_body_with(scope, body, fn_ret, types, &mut judge);
+    judge.into_result()
+}
+
+/// the whole-program effect verdict: every function's *total* effect set, with
+/// callees' effects propagated in. produced by [`infer_effects`] / [`infer_file`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EffectMap {
+    effects: FxHashMap<FnId, EffectSet>,
+}
+
+impl EffectMap {
+    /// the total effect of `fid` (its own atoms unioned with everything it
+    /// transitively calls). a fn absent from the map (none was inferred) is
+    /// `pure`.
+    pub fn effect_of(&self, fid: FnId) -> EffectSet {
+        self.effects.get(&fid).copied().unwrap_or_default()
+    }
+
+    /// every `(fn, total effect)` pair, in unspecified order.
+    pub fn iter(&self) -> impl Iterator<Item = (FnId, EffectSet)> + '_ {
+        self.effects.iter().map(|(&k, &v)| (k, v))
+    }
+}
+
+/// walk every defined body **once**, fused, producing both the per-fn type side
+/// tables and the per-fn local effect results - the dual-inference whole-file
+/// driver (EFFECT.md "fused per-body walk"). mirrors `typeck::check_file`'s
+/// take/restore of the interner so every type handle resolves through
+/// `hir.types`. a bodyless fn (an extern signature) has no body to walk and
+/// synthesizes its verdict: calling it is `ffi`.
+fn collect_results(hir: &mut HIR) -> (FxHashMap<FnId, TypeckResults>, Vec<(FnId, EffectResult)>) {
+    let mut types = std::mem::take(&mut hir.types);
+    let mut typeck = FxHashMap::default();
+    let mut effects: Vec<(FnId, EffectResult)> = Vec::new();
+    for (fid, function) in hir.functions.iter() {
+        match function.body {
+            Some(body_id) => {
+                let mut judge = EffectJudge::default();
+                let results = typeck::check_body_with(
+                    hir,
+                    &hir.bodies[body_id],
+                    function.ret,
+                    &mut types,
+                    &mut judge,
+                );
+                typeck.insert(fid, results);
+                effects.push((fid, judge.into_result()));
+            }
+            None => {
+                let mut s = EffectSet::pure();
+                let mut local_witness: [Option<WitnessKind>; LIVE_ATOMS] = Default::default();
+                if function.is_extern {
+                    s.insert(Atom::Ffi);
+                    // the extern signature itself is the ffi primitive (a trail
+                    // recursing into it lands here).
+                    local_witness[1] = Some(WitnessKind::Extern(function.name.clone()));
+                }
+                effects.push((
+                    fid,
+                    EffectResult {
+                        set: s,
+                        callees: Vec::new(),
+                        indirect: false,
+                        local_witness,
+                    },
+                ));
+            }
+        }
+    }
+    hir.types = types;
+    (typeck, effects)
+}
+
+/// the whole-program effect map alone (the type results are discarded). runs the
+/// full per-body walk; prefer [`infer_file`] when the type results are also
+/// needed (the pipeline path), so the walk runs once.
+pub fn infer_effects(hir: &mut HIR) -> EffectMap {
+    let (_typeck, effects) = collect_results(hir);
+    run_fixpoint(&effects)
+}
+
+/// the fused dual-inference whole-file driver for the pipeline: one walk per
+/// body yields both the type side tables and the whole-program effect map, then
+/// the annotation contract is checked against the inferred map. the database's
+/// `lowered_file` calls this so types and effects share a single traversal and
+/// are memoized together (EFFECT.md "salsa wiring"). the returned `Sink` carries
+/// the effect-contract diagnostics (unknown effect names, declared/inferred
+/// mismatches).
+pub fn infer_file(hir: &mut HIR) -> (FxHashMap<FnId, TypeckResults>, EffectMap, Sink<HirError>) {
+    let (typeck, results) = collect_results(hir);
+    let map = run_fixpoint(&results);
+    let diagnostics = check_contracts(hir, &results, &map);
+    (typeck, map, diagnostics)
+}
+
+/// a declared effect name -> its atom. `pure` is the explicit empty set
+/// (`Ok(None)`); an unknown name is `Err` (only the live atoms are valid
+/// annotation names - reserved atoms have no producer, EFFECT.md).
+fn parse_effect_name(name: &str) -> Result<Option<Atom>, ()> {
+    match name {
+        "pure" => Ok(None),
+        "io" => Ok(Some(Atom::Io)),
+        "ffi" => Ok(Some(Atom::Ffi)),
+        "state" => Ok(Some(Atom::State)),
+        _ => Err(()),
+    }
+}
+
+/// render an effect set as its annotation spelling: `pure` for the empty set,
+/// else the live atoms joined with ` | ` in a fixed order.
+fn describe(set: EffectSet) -> String {
+    if set.is_pure() {
+        return "pure".to_string();
+    }
+    let mut parts = Vec::new();
+    if set.contains(Atom::Io) {
+        parts.push("io");
+    }
+    if set.contains(Atom::Ffi) {
+        parts.push("ffi");
+    }
+    if set.contains(Atom::State) {
+        parts.push("state");
+    }
+    parts.join(" | ")
+}
+
+/// check every annotated fn's declared effect set against the inferred set (the
+/// exact-match contract, EFFECT.md). unannotated fns are skipped - inference is
+/// total, annotations are optional. emits `EffectError::UnknownEffect` for a
+/// name outside the atom set and `EffectError::EffectMismatch` when the declared
+/// set is not equal to the inferred set.
+fn check_contracts(
+    hir: &HIR,
+    results: &[(FnId, EffectResult)],
+    effects: &EffectMap,
+) -> Sink<HirError> {
+    let index: FxHashMap<FnId, usize> = results
+        .iter()
+        .enumerate()
+        .map(|(i, (f, _))| (*f, i))
+        .collect();
+    let mut sink = Sink::default();
+    for (fid, function) in hir.functions.iter() {
+        if function.declared_effects.is_empty() {
+            continue; // unannotated: no contract
+        }
+        let mut declared = EffectSet::pure();
+        let mut had_unknown = false;
+        for (name, span) in &function.declared_effects {
+            match parse_effect_name(name) {
+                Ok(Some(atom)) => declared.insert(atom),
+                Ok(None) => {} // `pure` contributes nothing
+                Err(()) => {
+                    sink.emit(
+                        span.clone(),
+                        HirError::Effect(EffectError::UnknownEffect { name: name.clone() }),
+                    );
+                    had_unknown = true;
+                }
+            }
+        }
+        // a bad annotation already errored; a derived mismatch would be noise.
+        if had_unknown {
+            continue;
+        }
+        let inferred = effects.effect_of(fid);
+        if declared != inferred {
+            // anchor on the first annotation (declared_effects is non-empty here).
+            let anchor = function.declared_effects[0].1.clone();
+            // explain each *unexpected* atom (inferred but not declared) by
+            // walking the call graph to the primitive that produced it.
+            let witness = witness_for_surprises(fid, declared, inferred, hir, results, &index, effects);
+            sink.emit(
+                anchor,
+                HirError::Effect(EffectError::EffectMismatch {
+                    function: function.name.clone(),
+                    declared: describe(declared),
+                    inferred: describe(inferred),
+                    witness,
+                }),
+            );
+        }
+    }
+    sink
+}
+
+/// build the witness note for a mismatch: one trail per atom that inference
+/// found but the annotation omitted. `None` when no atom is surprising (the
+/// annotation over-declared - the set message alone is the explanation).
+fn witness_for_surprises(
+    fid: FnId,
+    declared: EffectSet,
+    inferred: EffectSet,
+    hir: &HIR,
+    results: &[(FnId, EffectResult)],
+    index: &FxHashMap<FnId, usize>,
+    effects: &EffectMap,
+) -> Option<String> {
+    let mut trails = Vec::new();
+    for atom in [Atom::Io, Atom::Ffi, Atom::State] {
+        if inferred.contains(atom) && !declared.contains(atom) {
+            let (chain, leaf) = witness_trail(fid, atom, hir, results, index, effects)?;
+            let mut one = EffectSet::pure();
+            one.insert(atom);
+            let atom_name = describe(one);
+            let trail = if chain.is_empty() {
+                format!("the `{atom_name}` effect comes from {leaf}")
+            } else {
+                let via = chain
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                format!("the `{atom_name}` effect comes from {leaf} (via {via})")
+            };
+            trails.push(trail);
+        }
+    }
+    if trails.is_empty() {
+        None
+    } else {
+        Some(trails.join("; "))
+    }
+}
+
+/// read-only context for a witness-trail walk.
+struct TrailCx<'a> {
+    hir: &'a HIR,
+    results: &'a [(FnId, EffectResult)],
+    index: &'a FxHashMap<FnId, usize>,
+    effects: &'a EffectMap,
+}
+
+/// walk the call graph from `fid` to the body that produces `atom` directly,
+/// returning the chain of callee names traversed (empty when `fid` itself
+/// produces it) and the leaf primitive's label. a single witness per atom
+/// (EFFECT.md): the first path found in call order.
+fn witness_trail(
+    fid: FnId,
+    atom: Atom,
+    hir: &HIR,
+    results: &[(FnId, EffectResult)],
+    index: &FxHashMap<FnId, usize>,
+    effects: &EffectMap,
+) -> Option<(Vec<Text>, String)> {
+    let ai = atom_index(atom)?;
+    let cx = TrailCx {
+        hir,
+        results,
+        index,
+        effects,
+    };
+    let mut visited = rustc_hash::FxHashSet::default();
+    dfs_trail(fid, ai, atom, &cx, &mut visited)
+}
+
+/// one step of [`witness_trail`]'s DFS (recursion factored out so the context is
+/// borrowed once rather than threaded as separate args).
+fn dfs_trail(
+    cur: FnId,
+    ai: usize,
+    atom: Atom,
+    cx: &TrailCx<'_>,
+    visited: &mut rustc_hash::FxHashSet<FnId>,
+) -> Option<(Vec<Text>, String)> {
+    if !visited.insert(cur) {
+        return None;
+    }
+    let r = &cx.results[*cx.index.get(&cur)?].1;
+    if let Some(w) = &r.local_witness[ai] {
+        return Some((Vec::new(), w.label()));
+    }
+    // recurse into a callee whose total effect carries the atom.
+    for &callee in &r.callees {
+        if cx.effects.effect_of(callee).contains(atom)
+            && cx.index.contains_key(&callee)
+            && let Some((mut chain, leaf)) = dfs_trail(callee, ai, atom, cx, visited)
+        {
+            chain.insert(0, cx.hir.functions[callee].name.clone());
+            return Some((chain, leaf));
+        }
+    }
+    None
+}
+
+/// propagate per-body effects up the call graph (EFFECT.md "fixpoint").
+/// recursion needs no iteration - tarjan's SCC condensation *is* the fixpoint:
+/// an SCC's effect is the union over its members (a recursive cycle's members
+/// share one verdict), and the condensation is a DAG processed callee-first.
+/// o(v + e) over byte-sized sets.
+fn run_fixpoint(results: &[(FnId, EffectResult)]) -> EffectMap {
+    let n = results.len();
+    let index: FxHashMap<FnId, usize> = results
+        .iter()
+        .enumerate()
+        .map(|(i, (f, _))| (*f, i))
+        .collect();
+    // adjacency caller -> callee (deduped, every callee is a known fn id).
+    let mut deps: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, (_, r)) in results.iter().enumerate() {
+        let mut seen = rustc_hash::FxHashSet::default();
+        for c in &r.callees {
+            if let Some(&j) = index.get(c)
+                && seen.insert(j)
+            {
+                deps[i].push(j);
+            }
+        }
+    }
+
+    let (scc_id, scc_count) = tarjan_scc(&deps);
+
+    // tarjan numbers sccs in reverse topological order: for a caller->callee
+    // edge across sccs, scc_id[caller] > scc_id[callee]. so seeding each SCC
+    // with its members' own atoms and then processing sccs in increasing id
+    // unions every callee SCC's *final* effect before its callers read it.
+    let mut scc_effect = vec![EffectSet::pure(); scc_count];
+    for (i, (_, r)) in results.iter().enumerate() {
+        let s = scc_id[i];
+        scc_effect[s] = scc_effect[s].union(r.set);
+        if r.indirect {
+            scc_effect[s] = scc_effect[s].union(EffectSet::live());
+        }
+    }
+    // cross-SCC callee effects, callee-first (guaranteed scc_id[callee] < s).
+    for s in 0..scc_count {
+        for i in (0..n).filter(|&i| scc_id[i] == s) {
+            for &j in &deps[i] {
+                let t = scc_id[j];
+                if t != s {
+                    let e = scc_effect[t];
+                    scc_effect[s] = scc_effect[s].union(e);
+                }
+            }
+        }
+    }
+
+    let effects = results
+        .iter()
+        .enumerate()
+        .map(|(i, (f, _))| (*f, scc_effect[scc_id[i]]))
+        .collect();
+    EffectMap { effects }
+}
+
+/// tarjan's SCC over the call-graph adjacency list (o(v + e)); returns each
+/// node's SCC id and the SCC count. mirrors `hir::core::typegraph`'s component
+/// machinery. SCC ids are assigned in reverse topological order of the
+/// condensation (a sink SCC gets a lower id than the callers reaching it).
+fn tarjan_scc(deps: &[Vec<usize>]) -> (Vec<usize>, usize) {
+    const UNVISITED: u32 = u32::MAX;
+    let n = deps.len();
+    let mut tarjan_idx = 0u32;
+    let mut indices = vec![UNVISITED; n];
+    let mut lowlink = vec![0u32; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut scc_id = vec![0usize; n];
+    let mut scc_count = 0;
+
+    #[allow(clippy::too_many_arguments)]
+    fn strongconnect(
+        v: usize,
+        deps: &[Vec<usize>],
+        tarjan_idx: &mut u32,
+        indices: &mut [u32],
+        lowlink: &mut [u32],
+        on_stack: &mut [bool],
+        stack: &mut Vec<usize>,
+        scc_id: &mut [usize],
+        scc_count: &mut usize,
+    ) {
+        indices[v] = *tarjan_idx;
+        lowlink[v] = *tarjan_idx;
+        *tarjan_idx += 1;
+        stack.push(v);
+        on_stack[v] = true;
+
+        for &w in &deps[v] {
+            if indices[w] == UNVISITED {
+                strongconnect(
+                    w, deps, tarjan_idx, indices, lowlink, on_stack, stack, scc_id, scc_count,
+                );
+                lowlink[v] = lowlink[v].min(lowlink[w]);
+            } else if on_stack[w] {
+                lowlink[v] = lowlink[v].min(indices[w]);
+            }
+        }
+
+        if lowlink[v] == indices[v] {
+            loop {
+                let w = stack.pop().unwrap();
+                on_stack[w] = false;
+                scc_id[w] = *scc_count;
+                if w == v {
+                    break;
+                }
+            }
+            *scc_count += 1;
+        }
+    }
+
+    for v in 0..n {
+        if indices[v] == UNVISITED {
+            strongconnect(
+                v,
+                deps,
+                &mut tarjan_idx,
+                &mut indices,
+                &mut lowlink,
+                &mut on_stack,
+                &mut stack,
+                &mut scc_id,
+                &mut scc_count,
+            );
+        }
+    }
+
+    (scc_id, scc_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ast::{AstNode, SourceFile};
+    use lexer::{Lexer, SourceText};
+
+    /// lower `src` and infer the local effects of fn `name`.
+    fn effects_of(src: &str, name: &str) -> EffectResult {
+        let source = SourceText::new(src.to_string());
+        let lexed = Lexer::new(&source).tokenize();
+        let parse = parser::parse(&lexed.tokens, &source);
+        let file = SourceFile::cast(parse.green).expect("root is SourceFile");
+        let mut hir = hir::core::lower_source_file(file, &lexed.interner);
+        let fn_id = *hir.items.functions.get(name).expect("fn exists");
+        let body_id = hir.functions[fn_id].body.expect("fn has a body");
+        let ret = hir.functions[fn_id].ret;
+        let mut types = std::mem::take(&mut hir.types);
+        let result = infer_body_effects(&hir, &hir.bodies[body_id], ret, &mut types);
+        hir.types = types;
+        result
+    }
+
+    #[test]
+    fn println_is_io() {
+        let r = effects_of("main() {\n    println(\"{}\", 1);\n}\n", "main");
+        assert!(r.set.contains(Atom::Io), "println must produce io: {r:?}");
+        assert!(!r.set.contains(Atom::Ffi));
+        assert!(!r.set.contains(Atom::State));
+    }
+
+    #[test]
+    fn extern_call_is_ffi_and_an_edge() {
+        let r = effects_of(
+            "extern {\n    malloc(usize n) -> ptr;\n}\nmain() {\n    let ptr p = malloc(8);\n}\n",
+            "main",
+        );
+        assert!(r.set.contains(Atom::Ffi), "extern call must produce ffi: {r:?}");
+        assert_eq!(r.callees.len(), 1, "the extern call is a call edge: {r:?}");
+    }
+
+    #[test]
+    fn plain_fn_is_pure() {
+        let r = effects_of("add(int32 a, int32 b) -> int32 {\n    a + b\n}\n", "add");
+        assert!(r.set.is_pure(), "a pure computation has no atoms: {r:?}");
+        assert!(r.callees.is_empty());
+    }
+
+    #[test]
+    fn mut_global_access_is_state() {
+        let r = effects_of(
+            "mut int32 counter = 0;\nbump() {\n    counter = counter + 1;\n}\n",
+            "bump",
+        );
+        assert!(
+            r.set.contains(Atom::State),
+            "writing a mut global must produce state: {r:?}"
+        );
+    }
+
+    #[test]
+    fn fn_call_edge_is_collected_without_atoms() {
+        let r = effects_of(
+            "helper() -> int32 {\n    1\n}\nmain() {\n    let int32 x = helper();\n}\n",
+            "main",
+        );
+        assert_eq!(r.callees.len(), 1, "the call to helper is an edge: {r:?}");
+        assert!(
+            r.set.is_pure(),
+            "main's own atoms are empty (helper is pure; the fixpoint that \
+             would union helper's effects is not built yet): {r:?}"
+        );
+    }
+
+    /// lower `src` and run the whole-program effect fixpoint.
+    fn whole_program(src: &str) -> (hir::core::HIR, EffectMap) {
+        let source = SourceText::new(src.to_string());
+        let lexed = Lexer::new(&source).tokenize();
+        let parse = parser::parse(&lexed.tokens, &source);
+        let file = SourceFile::cast(parse.green).expect("root is SourceFile");
+        let mut hir = hir::core::lower_source_file(file, &lexed.interner);
+        let map = infer_effects(&mut hir);
+        (hir, map)
+    }
+
+    /// the total (fixpoint) effect of fn `name`.
+    fn total(hir: &hir::core::HIR, map: &EffectMap, name: &str) -> EffectSet {
+        let fid = *hir.items.functions.get(name).expect("fn exists");
+        map.effect_of(fid)
+    }
+
+    #[test]
+    fn io_propagates_transitively() {
+        // main -> reporter -> println. the fixpoint must lift io two edges up.
+        let (hir, map) = whole_program(
+            "reporter(int32 n) {\n    println(\"{}\", n);\n}\n\
+             main() {\n    reporter(7);\n}\n",
+        );
+        assert!(
+            total(&hir, &map, "reporter").contains(Atom::Io),
+            "reporter calls println directly"
+        );
+        assert!(
+            total(&hir, &map, "main").contains(Atom::Io),
+            "main inherits io through reporter (transitive propagation)"
+        );
+    }
+
+    #[test]
+    fn recursion_unions_the_cycle() {
+        // ping <-> pong are mutually recursive; only pong does io. both share
+        // one SCC verdict, so the condensation gives ping io with no iteration.
+        let (hir, map) = whole_program(
+            "ping(int32 n) {\n    if n > 0 {\n        pong(n - 1);\n    }\n}\n\
+             pong(int32 n) {\n    println(\"{}\", n);\n    if n > 0 {\n        ping(n - 1);\n    }\n}\n",
+        );
+        assert!(total(&hir, &map, "pong").contains(Atom::Io));
+        assert!(
+            total(&hir, &map, "ping").contains(Atom::Io),
+            "the recursive cycle shares one effect verdict"
+        );
+    }
+
+    #[test]
+    fn extern_callee_is_ffi_and_propagates() {
+        // the extern fn's own entry is ffi; a caller inherits it.
+        let (hir, map) = whole_program(
+            "extern {\n    malloc(usize n) -> ptr;\n}\n\
+             alloc8() -> ptr {\n    return malloc(8);\n}\n",
+        );
+        assert!(
+            total(&hir, &map, "malloc").contains(Atom::Ffi),
+            "an extern signature is ffi"
+        );
+        assert!(
+            total(&hir, &map, "alloc8").contains(Atom::Ffi),
+            "calling an extern propagates ffi to the caller"
+        );
+    }
+
+    #[test]
+    fn fn_pointer_call_is_conservatively_full_live() {
+        // `operation`/`callback` are fn-pointer *parameters*: their targets are
+        // unknown, so the fixpoint assumes the full live set (io | ffi | state).
+        let (hir, map) = whole_program(
+            "execute(int32 x, (int32) -> int32 operation, (int32) callback) {\n    let int32 r = operation(x);\n    callback(r);\n}\n",
+        );
+        let e = total(&hir, &map, "execute");
+        assert!(e.contains(Atom::Io), "indirect call -> conservative io: {e:?}");
+        assert!(e.contains(Atom::Ffi), "indirect call -> conservative ffi: {e:?}");
+        assert!(
+            e.contains(Atom::State),
+            "indirect call -> conservative state: {e:?}"
+        );
+    }
+
+    /// lower `src`, run the full file inference, and return the effect-contract
+    /// diagnostics (unwrapped from `HirError::Effect`).
+    fn contracts(src: &str) -> Vec<EffectError> {
+        let source = SourceText::new(src.to_string());
+        let lexed = Lexer::new(&source).tokenize();
+        let parse = parser::parse(&lexed.tokens, &source);
+        let file = SourceFile::cast(parse.green).expect("root is SourceFile");
+        let mut hir = hir::core::lower_source_file(file, &lexed.interner);
+        let (_typeck, _map, sink) = infer_file(&mut hir);
+        sink.into_iter()
+            .map(|(_span, e)| match e {
+                HirError::Effect(ee) => ee,
+                other => panic!("effect sink carried a non-effect error: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn matching_annotation_is_accepted() {
+        // declared == inferred, both directions of the live set.
+        assert!(
+            contracts("pure add(int32 a, int32 b) -> int32 {\n    a + b\n}\n").is_empty(),
+            "pure annotation on a pure fn is clean"
+        );
+        assert!(
+            contracts("io report(int32 n) {\n    println(\"{}\", n);\n}\n").is_empty(),
+            "io annotation on an io fn is clean"
+        );
+    }
+
+    #[test]
+    fn pure_annotation_on_effectful_fn_is_rejected() {
+        let ds = contracts("pure report(int32 n) {\n    println(\"{}\", n);\n}\n");
+        assert!(
+            matches!(
+                &ds[..],
+                [EffectError::EffectMismatch { declared, inferred, witness: Some(w), .. }]
+                    if declared == "pure" && inferred == "io" && w.contains("`println`")
+            ),
+            "declared pure, inferred io, witness names println: {ds:?}"
+        );
+    }
+
+    #[test]
+    fn effect_annotation_on_pure_fn_is_rejected() {
+        // the reverse direction: declaring io on an inference-pure fn.
+        let ds = contracts("io add(int32 a, int32 b) -> int32 {\n    a + b\n}\n");
+        assert!(
+            matches!(
+                ds.as_slice(),
+                [EffectError::EffectMismatch { declared, inferred, .. }]
+                    if declared == "io" && inferred == "pure"
+            ),
+            "declared io, inferred pure: {ds:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_effect_name_is_rejected() {
+        let ds = contracts("bogus add(int32 a, int32 b) -> int32 {\n    a + b\n}\n");
+        assert!(
+            matches!(ds.as_slice(), [EffectError::UnknownEffect { name }] if name == "bogus"),
+            "unknown effect name: {ds:?}"
+        );
+    }
+
+    #[test]
+    fn unannotated_fn_has_no_contract() {
+        // an effectful fn with no annotation is silent - inference is total,
+        // annotations optional.
+        assert!(
+            contracts("report(int32 n) {\n    println(\"{}\", n);\n}\n").is_empty(),
+            "no annotation, no contract"
+        );
+    }
+
+    #[test]
+    fn transitive_effect_is_checked_against_the_annotation() {
+        // main declares pure but reaches io two calls deep -> mismatch via the
+        // fixpoint, proving the contract reads the propagated set.
+        let ds = contracts(
+            "reporter(int32 n) {\n    println(\"{}\", n);\n}\n\
+             pure main() {\n    reporter(7);\n}\n",
+        );
+        assert!(
+            matches!(
+                &ds[..],
+                [EffectError::EffectMismatch { function, inferred, witness: Some(w), .. }]
+                    if function == "main" && inferred == "io"
+                        && w.contains("`println`") && w.contains("via `reporter`")
+            ),
+            "main declared pure, witness trails through reporter to println: {ds:?}"
+        );
+    }
+
+    #[test]
+    fn pure_fn_stays_pure_through_the_fixpoint() {
+        // a pure leaf and its pure caller keep the empty set after propagation.
+        let (hir, map) = whole_program(
+            "square(int32 n) -> int32 {\n    n * n\n}\n\
+             main() {\n    let int32 x = square(4);\n}\n",
+        );
+        assert!(total(&hir, &map, "square").is_pure());
+        assert!(
+            total(&hir, &map, "main").is_pure(),
+            "propagating a pure callee adds nothing"
+        );
+    }
+}

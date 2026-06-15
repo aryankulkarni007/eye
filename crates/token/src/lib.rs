@@ -1,4 +1,4 @@
-//! Lexical tokens - the shared vocabulary of the compiler front-end.
+//! lexical tokens - the shared vocabulary of the compiler front-end.
 //!
 //! [`Token`] and [`TokenKind`] are produced by the lexer and consumed by the
 //! syntax and parser crates, so they live in this leaf crate that everything
@@ -6,14 +6,14 @@
 //!
 //! [`TokenKind`] carries the `logos` lexer rules directly: every variant is
 //! annotated with the `#[token]`/`#[regex]` that matches it, so the lexer
-//! crate is a thin driver over `TokenKind::lexer`. Ranges are `text-size`'s
+//! crate is a thin driver over `TokenKind::lexer`. ranges are `text-size`'s
 //! [`TextRange`] - the same range type `rowan` uses for the CST.
 
 use logos::Logos;
 use text_size::{TextRange, TextSize};
 use thin_vec::ThinVec;
 
-/// Builds a [`TextRange`] from a `logos` byte span.
+/// builds a [`TextRange`] from a `logos` byte span.
 fn to_range(span: std::ops::Range<usize>) -> TextRange {
     TextRange::new(
         TextSize::from(span.start as u32),
@@ -21,8 +21,8 @@ fn to_range(span: std::ops::Range<usize>) -> TextRange {
     )
 }
 
-/// A lexeme-level error tag recorded by the logos callbacks. Payload-free: the
-/// `lexer` crate maps each tag to a typed diagnostic kind. Kept in this leaf
+/// a lexeme-level error tag recorded by the logos callbacks. payload-free: the
+/// `lexer` crate maps each tag to a typed diagnostic kind. kept in this leaf
 /// crate so the callbacks carry no `diagnostics` dependency (which would form a
 /// `token -> diagnostics -> syntax -> token` cycle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,14 +41,14 @@ pub enum LexErrorTag {
 #[derive(Debug, Default)]
 pub struct LexExtras(pub ThinVec<(LexErrorTag, TextRange)>);
 
-/// A token -> kind: `TokenKind`, range: `TextRange`
+/// a token -> kind: `TokenKind`, range: `TextRange`
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Token {
     pub kind: TokenKind,
     pub range: TextRange,
 }
 
-/// Every lexical token kind. The `logos` rules live in the
+/// every lexical token kind. the `logos` rules live in the
 /// per-variant attributes; [`TokenKind::lexer`] drives them.
 macro_rules! define_tokens {
     ($(
@@ -85,11 +85,11 @@ define_tokens! {
     Ident = "IDENT",
 
     // literals.
-    // Integers carry an optional base prefix: `0x`/`0X` hex, `0b`/`0B` binary,
-    // `0o`/`0O` octal, else decimal. Logos picks the longest match, so `0x1F`
+    // integers carry an optional base prefix: `0x`/`0X` hex, `0b`/`0B` binary,
+    // `0o`/`0O` octal, else decimal. logos picks the longest match, so `0x1F`
     // takes the hex rule over the decimal rule (which would match only `0`).
-    // The literal's value is parsed in HIR (`parse_int_literal`); codegen emits
-    // it in decimal, so C never sees a `0b`/`0o` prefix it cannot read.
+    // the literal's value is parsed in HIR (`parse_int_literal`); codegen emits
+    // it in decimal, so c never sees a `0b`/`0o` prefix it cannot read.
     #[regex(r"0[xX][0-9a-fA-F]+")]
     #[regex(r"0[bB][01]+")]
     #[regex(r"0[oO][0-7]+")]
@@ -143,7 +143,7 @@ define_tokens! {
     #[token("as")]
     As = "AS",
 
-    // a lone `_`. The ident regex would also match it - `priority = 3`
+    // a lone `_`. the ident regex would also match it - `priority = 3`
     // breaks the tie in favour of `Underscore`. `_foo` still lexes as
     // `Ident` because the regex match is strictly longer.
     #[token("_", priority = 3)]
@@ -177,9 +177,9 @@ define_tokens! {
     PlusEq = "+=",
     #[token("-=")]
     MinusEq = "-=",
-    // The remaining compound forms. Maximal munch keeps each whole: `<<=`
+    // the remaining compound forms. maximal munch keeps each whole: `<<=`
     // outranks `<<`/`<=`/`<`, `>>=` outranks `>>`, and `/=` never collides with
-    // a comment (Eye line comments are `--`, blocks `--*`).
+    // a comment (eye line comments are `--`, blocks `--*`).
     #[token("*=")]
     StarEq = "*=",
     #[token("/=")]
@@ -208,8 +208,8 @@ define_tokens! {
     Slash = "/",
     #[token("%")]
     Percent = "%",
-    // bitwise: ~ prefix complement, ^ xor, <</>> shifts. Infix &/|
-    // (bitand/bitor) reuse the Amp/Pipe tokens, disambiguated by parser
+    // bitwise: ~ prefix complement, ^ xor, <</>> shifts. infix &/|
+    // (bitand/bitor) reuse the amp/pipe tokens, disambiguated by parser
     // position from prefix-ref / enum-separator.
     #[token("~")]
     Tilde = "~",
@@ -245,7 +245,7 @@ define_tokens! {
     Farrow = "=>",
     #[token(".")]
     Dot = ".",
-    // variadic marker in an extern signature. Maximal munch keeps `...`
+    // variadic marker in an extern signature. maximal munch keeps `...`
     // whole over three `.` tokens.
     #[token("...")]
     Ellipsis = "...",
@@ -262,7 +262,7 @@ define_tokens! {
     // allow_greedy: a comment is meant to run to end of line.
     #[regex(r"--([^*\n][^\n]*)?", allow_greedy = true)]
     Lcomment = "LINE COMMENT",
-    // ---…  outranks the line-comment rule on the equal-length --- tie
+    // ---… outranks the line-comment rule on the equal-length --- tie
     #[regex(r"---[^\n]*", priority = 5, allow_greedy = true)]
     Dcomment = "DOC COMMENT",
     #[token("--*", lex_block_comment)]
@@ -276,15 +276,15 @@ define_tokens! {
 // logos matches only the opening byte(s) of these; the callback scans the
 // remainder, bumps the token to its true end, and records a diagnostic for
 // an unclosed or malformed lexeme - so an unclosed literal is still a real
-// String/Char/Bcomment token, never a lex error.
+// string/char/bcomment token, never a lex error.
 
-/// Records a tagged error spanning the just-lexed (bumped) token.
+/// records a tagged error spanning the just-lexed (bumped) token.
 fn diag(lex: &mut logos::Lexer<TokenKind>, tag: LexErrorTag) {
     let range = to_range(lex.span());
     lex.extras.0.push((tag, range));
 }
 
-/// " opened a string literal. Consumes through the closing quote; a newline
+/// " opened a string literal. consumes through the closing quote; a newline
 /// or end of input cuts it short with an "unclosed string literal" diagnostic.
 fn lex_string(lex: &mut logos::Lexer<TokenKind>) {
     let rem = lex.remainder();
@@ -316,7 +316,7 @@ fn lex_string(lex: &mut logos::Lexer<TokenKind>) {
     diag(lex, LexErrorTag::UnclosedString);
 }
 
-/// ' opened a char literal. Mirrors the per-case diagnostics of the old
+/// ' opened a char literal. mirrors the per-case diagnostics of the old
 /// hand-written lex_char: empty literal, unterminated escape, invalid char,
 /// missing closing quote.
 fn lex_char(lex: &mut logos::Lexer<TokenKind>) {
@@ -363,7 +363,7 @@ fn lex_char(lex: &mut logos::Lexer<TokenKind>) {
     }
 }
 
-/// `--*` opened a block comment. Block comments use the symmetric `--*`
+/// `--*` opened a block comment. block comments use the symmetric `--*`
 /// delimiter, so this consumes through the next `--*`.
 fn lex_block_comment(lex: &mut logos::Lexer<TokenKind>) {
     let rem = lex.remainder();

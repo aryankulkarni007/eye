@@ -1,7 +1,7 @@
-//! Compiler pipeline benchmarks. Uses Criterion for statistical analysis.
-//! Run with `cargo bench`.
+//! compiler pipeline benchmarks. uses criterion for statistical analysis.
+//! run with `cargo bench`.
 //!
-//! Each benchmark measures the full pipeline (lex → parse → HIR → MIR → codegen)
+//! each benchmark measures the full pipeline (lex → parse → HIR → MIR → codegen)
 //! on a representative `.eye` program.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
@@ -11,10 +11,10 @@ use hir::core::lower_source_file;
 use lexer::{Lexer, SourceText};
 use mir::lower::lower_function;
 
-/// A moderate-sized program exercising all parser and lowering paths.
+/// a moderate-sized program exercising all parser and lowering paths.
 const COMPLEX_PROGRAM: &str = include_str!("../eyesrc/programs/raytracer.eye");
 
-/// A minimal program for baseline overhead measurement.
+/// a minimal program for baseline overhead measurement.
 const MINIMAL_PROGRAM: &str = "\
 main() {
     let int32 x = 42;
@@ -109,12 +109,14 @@ fn mir_lower(c: &mut Criterion) {
     let mut group = c.benchmark_group("mir-lower");
     group.sample_size(30);
 
-    let hir = {
+    let (hir, typeck) = {
         let source = SourceText::new(COMPLEX_PROGRAM.to_string());
         let lexed = Lexer::new(&source).tokenize();
         let parse = parser::parse(&lexed.tokens, &source);
         let file = ast::SourceFile::cast(parse.green).unwrap();
-        lower_source_file(file, &lexed.interner)
+        let mut hir = lower_source_file(file, &lexed.interner);
+        let typeck = typeck::check_file(&mut hir);
+        (hir, typeck)
     };
 
     group.bench_function("first_fn", |b| {
@@ -126,6 +128,7 @@ fn mir_lower(c: &mut Criterion) {
                 black_box(&hir),
                 &hir.types,
                 black_box(body),
+                black_box(&typeck[&fn_id]),
                 black_box(hir.functions[fn_id].params.len()),
                 black_box(hir.functions[fn_id].ret),
             );
@@ -145,8 +148,10 @@ fn full_pipeline(c: &mut Criterion) {
             let lexed = Lexer::new(&source).tokenize();
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
-            let hir = lower_source_file(file, &lexed.interner);
-            let _ = codegen::core::gen_mir(&hir, &mir::lower_all(&hir));
+            let mut hir = lower_source_file(file, &lexed.interner);
+            let typeck = typeck::check_file(&mut hir);
+            let seed = typeck::expr_type_seed(&typeck);
+            let _ = codegen::core::gen_mir(&hir, &mir::lower_all(&hir, &typeck), &seed);
         });
     });
 
@@ -156,8 +161,10 @@ fn full_pipeline(c: &mut Criterion) {
             let lexed = Lexer::new(&source).tokenize();
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
-            let hir = lower_source_file(file, &lexed.interner);
-            let _ = codegen::core::gen_mir(&hir, &mir::lower_all(&hir));
+            let mut hir = lower_source_file(file, &lexed.interner);
+            let typeck = typeck::check_file(&mut hir);
+            let seed = typeck::expr_type_seed(&typeck);
+            let _ = codegen::core::gen_mir(&hir, &mir::lower_all(&hir, &typeck), &seed);
         });
     });
 

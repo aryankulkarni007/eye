@@ -1,25 +1,25 @@
-//! Pass 1.5: the bounded const-expr evaluator.
+//! pass 1.5: the bounded const-expr evaluator.
 //!
-//! This is const, **not** comptime execution (see `docs/design/HORIZON0.md` and
-//! `docs/features/PRIME.md`). It folds a deliberately narrow expression subset to a
+//! this is const, **not** comptime execution (see `docs/design/HORIZON0.md` and
+//! `docs/features/PRIME.md`). it folds a deliberately narrow expression subset to a
 //! scalar [`ConstValue`]:
 //!
 //! - integer / float / bool / char literals (scalar only - no aggregates);
 //! - the operator set (arithmetic, bitwise, comparison, logical) over const
-//!   operands of matching kind;
+//! operands of matching kind;
 //! - references to other consts (cycle-checked);
 //! - a numeric `as` cast between scalar kinds.
 //!
-//! It explicitly does **not** fold function calls (that is CTFE, far-future),
-//! runtime values, or any aggregate / type-as-value. A non-const operand is a
+//! it explicitly does **not** fold function calls (that is CTFE, far-future),
+//! runtime values, or any aggregate / type-as-value. a non-const operand is a
 //! [`ConstError`].
 //!
-//! Two entry points share the operator appliers below:
+//! two entry points share the operator appliers below:
 //! - [`eval_consts`] folds every `const` item with memoized, cycle-checked
-//!   recursion (a const may reference a not-yet-folded const), filling
-//!   [`Const::value`] and returning the finished name -> value map.
+//! recursion (a const may reference a not-yet-folded const), filling
+//! [`Const::value`] and returning the finished name -> value map.
 //! - [`fold_const_length`] reuses that finished map to fold a `[T; N]` length
-//!   expression to a `u64` (the A6 const-length-array path).
+//! expression to a `u64` (the A6 const-length-array path).
 
 use ast::AstNode;
 use diagnostics::Sink;
@@ -34,7 +34,7 @@ use crate::core::{
     TypedArena,
 };
 
-/// A lookup of const values by name. The top-level pass uses the finished
+/// a lookup of const values by name. the top-level pass uses the finished
 /// name -> value map directly; body lowering layers block-scope consts over it
 /// ([`ScopedConsts`]). `None` means the name is not a (successfully folded)
 /// const in this environment - a poisoned const reads as absent, matching how
@@ -49,8 +49,8 @@ impl ConstEnv for FxHashMap<Text, ConstValue> {
     }
 }
 
-/// The const environment inside a function body: block-scope consts in the
-/// lexical scopes first, then the top-level const map. A runtime local
+/// the const environment inside a function body: block-scope consts in the
+/// lexical scopes first, then the top-level const map. a runtime local
 /// shadowing a const name hides it - the name is not a const there.
 pub(super) struct ScopedConsts<'a> {
     pub scopes: &'a Scopes,
@@ -68,17 +68,17 @@ impl ConstEnv for ScopedConsts<'_> {
     }
 }
 
-/// Fold every top-level `const` to its [`ConstValue`], filling each
-/// [`Const::value`]. Const-to-const references are resolved by memoized,
+/// fold every top-level `const` to its [`ConstValue`], filling each
+/// [`Const::value`]. const-to-const references are resolved by memoized,
 /// cycle-checked recursion; a cycle, a non-const name, a non-const operation,
 /// or division by zero is diagnosed and leaves that const's value `None`
-/// (poison - downstream lowering treats it as already-diagnosed). Returns the
+/// (poison - downstream lowering treats it as already-diagnosed). returns the
 /// finished name -> value map for the array-length path.
 pub(super) fn eval_consts(
     hir: &mut HIR,
     const_asts: &[(ConstId, ast::ConstDef)],
 ) -> FxHashMap<Text, ConstValue> {
-    // name -> initializer expression. A duplicate const name keeps the first
+    // name -> initializer expression. a duplicate const name keeps the first
     // body (the duplicate was already diagnosed in `collect_consts`).
     let mut bodies: FxHashMap<Text, ast::Expr> =
         FxHashMap::with_capacity_and_hasher(const_asts.len(), FxBuildHasher);
@@ -105,18 +105,18 @@ pub(super) fn eval_consts(
         memo, diagnostics, ..
     } = ev;
     hir.diagnostics.extend(diagnostics);
-    // Keep only the successfully folded values; a poisoned const must not pose
+    // keep only the successfully folded values; a poisoned const must not pose
     // as a length of 0.
     memo.into_iter()
         .filter_map(|(name, v)| v.map(|v| (name, v)))
         .collect()
 }
 
-/// Fold every top-level global's initializer to its [`ConstValue`] against the
-/// finished const map, filling each `Global::value`. A global initializer is
-/// the same bounded const-expr as a const (it must be known at C static-init
+/// fold every top-level global's initializer to its [`ConstValue`] against the
+/// finished const map, filling each `Global::value`. a global initializer is
+/// the same bounded const-expr as a const (it must be known at c static-init
 /// time); a non-const initializer is a [`ConstError`] and leaves the value
-/// `None` (poison). Aggregate initializers are out of the scalar floor.
+/// `None` (poison). aggregate initializers are out of the scalar floor.
 pub(super) fn eval_globals(
     hir: &mut HIR,
     global_asts: &[(GlobalId, ast::GlobalDef)],
@@ -132,9 +132,9 @@ pub(super) fn eval_globals(
     hir.diagnostics.extend(diagnostics);
 }
 
-/// Fold a `[T; N]` length expression against the finished const map. A bare
+/// fold a `[T; N]` length expression against the finished const map. a bare
 /// integer literal or a const-expr over already-folded consts yields the count;
-/// anything else is rejected by the caller (`array_len`). Returns `None` and
+/// anything else is rejected by the caller (`array_len`). returns `None` and
 /// emits a [`ConstError`] when the expression is not a non-negative integer
 /// const-expr.
 pub(super) fn fold_const_length(
@@ -161,7 +161,7 @@ pub(super) fn fold_const_length(
     }
 }
 
-/// Memoized, cycle-checked folder over the const-name -> body map. Used while
+/// memoized, cycle-checked folder over the const-name -> body map. used while
 /// the map is still being built, so a reference recurses into [`eval_name`].
 struct Evaluator<'a> {
     bodies: &'a FxHashMap<Text, ast::Expr>,
@@ -171,15 +171,15 @@ struct Evaluator<'a> {
 }
 
 impl Evaluator<'_> {
-    /// Fold the const named `name`, memoizing the result. A re-entry while the
+    /// fold the const named `name`, memoizing the result. a re-entry while the
     /// name is still being folded is a definition cycle.
     fn eval_name(&mut self, name: &Text) -> Option<ConstValue> {
         if let Some(cached) = self.memo.get(name) {
             return cached.clone();
         }
         let Some(body) = self.bodies.get(name).cloned() else {
-            // Not a const at all (a function, struct, or undeclared name used in
-            // a const-expr). The caller (`eval_expr`) anchors the diagnostic.
+            // not a const at all (a function, struct, or undeclared name used in
+            // a const-expr). the caller (`eval_expr`) anchors the diagnostic.
             return None;
         };
         if !self.visiting.insert(name.clone()) {
@@ -193,7 +193,7 @@ impl Evaluator<'_> {
         value
     }
 
-    /// Fold one expression to a [`ConstValue`], or `None` (diagnosed).
+    /// fold one expression to a [`ConstValue`], or `None` (diagnosed).
     fn eval_expr(&mut self, expr: &ast::Expr) -> Option<ConstValue> {
         match expr {
             ast::Expr::Literal(lit) => parse_literal(lit),
@@ -223,7 +223,7 @@ impl Evaluator<'_> {
             }
             ast::Expr::BinExpr(b) => {
                 let op = b.op()?;
-                // Fold both sides even if one fails, so a non-const operand on
+                // fold both sides even if one fails, so a non-const operand on
                 // either side is reported, then bail.
                 let lhs = b.lhs().and_then(|e| self.eval_expr(&e));
                 let rhs = b.rhs().and_then(|e| self.eval_expr(&e));
@@ -241,7 +241,7 @@ impl Evaluator<'_> {
                 let target = c.ty().and_then(|t| type_name(&t));
                 Some(apply_cast(operand, target.as_deref()))
             }
-            // Everything else is not a const expression: a call (CTFE,
+            // everything else is not a const expression: a call (CTFE,
             // far-future), control flow, an aggregate, or a place.
             _ => {
                 self.emit(expr, ConstError::NotAConstExpr);
@@ -256,9 +256,9 @@ impl Evaluator<'_> {
     }
 }
 
-/// Fold an expression against an already-complete const environment: a const
+/// fold an expression against an already-complete const environment: a const
 /// reference is a plain lookup (no cycle is possible once every visible const
-/// is folded). Shares the operator appliers with [`Evaluator`].
+/// is folded). shares the operator appliers with [`Evaluator`].
 pub(super) fn fold_with_map(
     expr: &ast::Expr,
     consts: &dyn ConstEnv,
@@ -325,7 +325,7 @@ pub(super) fn fold_with_map(
     }
 }
 
-/// Parse a scalar literal token into a [`ConstValue`]. A malformed literal the
+/// parse a scalar literal token into a [`ConstValue`]. a malformed literal the
 /// lexer already flagged folds to `None`.
 fn parse_literal(lit: &ast::Literal) -> Option<ConstValue> {
     let token = lit.token()?;
@@ -338,7 +338,7 @@ fn parse_literal(lit: &ast::Literal) -> Option<ConstValue> {
             .filter(|f| f.is_finite())
             .map(ConstValue::Float),
         // U3: non-finite float literals (inf, nan) from overflow not
-        // rejected. Fix independently of type inference.
+        // rejected. fix independently of type inference.
         ast::LiteralKind::Bool => Some(ConstValue::Bool(text == "true")),
         ast::LiteralKind::Char => {
             let inner = text
@@ -351,7 +351,7 @@ fn parse_literal(lit: &ast::Literal) -> Option<ConstValue> {
     }
 }
 
-/// The base name of a (scalar) cast target type, for [`apply_cast`]. Only a
+/// the base name of a (scalar) cast target type, for [`apply_cast`]. only a
 /// bare `IdentType` carries a numeric-cast meaning here.
 fn type_name(ty: &ast::TypeRef) -> Option<SmolStr> {
     match ty {
@@ -380,11 +380,11 @@ fn is_int_type(name: &str) -> bool {
     )
 }
 
-/// Fold a numeric `as` cast between scalar kinds. Only int<->float conversions
+/// fold a numeric `as` cast between scalar kinds. only int<->float conversions
 /// reshape the value; every other target keeps it (a same-kind or unknown cast
-/// is a no-op fold). This mirrors C cast semantics for the scalar floor.
+/// is a no-op fold). this mirrors c cast semantics for the scalar floor.
 // U4: int->float overflow to inf, float->int truncation, char/bool->int
-// signedness not range-checked. Type inference surgery will add checks.
+// signedness not range-checked. type inference surgery will add checks.
 fn apply_cast(value: ConstValue, target: Option<&str>) -> ConstValue {
     match (target, &value) {
         (Some(t), ConstValue::Int(v)) if is_float_type(t) => ConstValue::Float(*v as f64),
@@ -395,7 +395,7 @@ fn apply_cast(value: ConstValue, target: Option<&str>) -> ConstValue {
     }
 }
 
-/// Apply a prefix-unary operator to a folded operand.
+/// apply a prefix-unary operator to a folded operand.
 fn apply_unary(op: ast::UnaryOp, v: ConstValue) -> Result<ConstValue, ConstError> {
     use ast::UnaryOp::*;
     match (op, v) {
@@ -407,7 +407,7 @@ fn apply_unary(op: ast::UnaryOp, v: ConstValue) -> Result<ConstValue, ConstError
     }
 }
 
-/// Apply a binary operator to two folded operands of matching kind. Mixed kinds
+/// apply a binary operator to two folded operands of matching kind. mixed kinds
 /// (e.g. `int + float`) are rejected: the floor has no implicit numeric
 /// promotion, matching the language's explicit-cast rule.
 fn apply_binary(op: ast::BinOp, l: ConstValue, r: ConstValue) -> Result<ConstValue, ConstError> {
@@ -437,7 +437,7 @@ fn apply_binary(op: ast::BinOp, l: ConstValue, r: ConstValue) -> Result<ConstVal
 }
 
 // U2: wrapping arithmetic unchecked against declared type range.
-// const X = int8(200) evaluates to 200 (not -56). Type inference
+// const x = int8(200) evaluates to 200 (not -56). type inference
 // surgery will add value-in-range checks against the declared type.
 fn apply_int(op: ast::BinOp, a: i128, b: i128) -> Result<ConstValue, ConstError> {
     use ConstValue::{Bool, Int};

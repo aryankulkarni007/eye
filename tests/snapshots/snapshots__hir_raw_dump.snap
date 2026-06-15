@@ -1,5 +1,6 @@
 ---
 source: tests/snapshots.rs
+assertion_line: 78
 expression: hir
 ---
 HIR {
@@ -72,6 +73,7 @@ HIR {
                             18,
                         ),
                     ),
+                    declared_effects: [],
                 },
             ],
         },
@@ -291,27 +293,12 @@ HIR {
                         ],
                         _ty: PhantomData<la_arena::Idx<hir::core::body::Block>>,
                     },
-                    expr_types: ArenaMap {
-                        v: [
-                            Some(
-                                TypeRef(
-                                    3,
-                                ),
-                            ),
-                            None,
-                            Some(
-                                TypeRef(
-                                    20,
-                                ),
-                            ),
-                            Some(
-                                TypeRef(
-                                    3,
-                                ),
-                            ),
-                        ],
-                        _ty: PhantomData<la_arena::Idx<hir::core::body::Expr>>,
-                    },
+                    fn_block_ptr: Some(
+                        SyntaxNodePtr {
+                            kind: Block,
+                            range: 7..55,
+                        },
+                    ),
                     local_consts: TypedArena {
                         inner: Arena {
                             len: 0,
@@ -390,14 +377,13 @@ HIR {
                 "isize",
             ),
             Path(
-                "ptr",
-            ),
-            Path(
                 "void",
             ),
+            RawPtr,
             Fn {
                 params: [],
                 ret: None,
+                variadic: false,
             },
             Array {
                 elem: TypeRef(
@@ -412,6 +398,9 @@ HIR {
             ),
         ],
         map: {
+            RawPtr: TypeRef(
+                17,
+            ),
             Path(
                 "int64",
             ): TypeRef(
@@ -421,6 +410,9 @@ HIR {
                 "int32",
             ): TypeRef(
                 3,
+            ),
+            Error: TypeRef(
+                0,
             ),
             Path(
                 "int8",
@@ -447,22 +439,6 @@ HIR {
             ): TypeRef(
                 15,
             ),
-            Array {
-                elem: TypeRef(
-                    5,
-                ),
-                len: 2,
-            }: TypeRef(
-                19,
-            ),
-            Path(
-                "ptr",
-            ): TypeRef(
-                16,
-            ),
-            Error: TypeRef(
-                0,
-            ),
             Path(
                 "uint16",
             ): TypeRef(
@@ -483,6 +459,13 @@ HIR {
             ): TypeRef(
                 14,
             ),
+            Fn {
+                params: [],
+                ret: None,
+                variadic: false,
+            }: TypeRef(
+                18,
+            ),
             Ref(
                 TypeRef(
                     19,
@@ -493,7 +476,15 @@ HIR {
             Path(
                 "void",
             ): TypeRef(
-                17,
+                16,
+            ),
+            Array {
+                elem: TypeRef(
+                    5,
+                ),
+                len: 2,
+            }: TypeRef(
+                19,
             ),
             Path(
                 "float32",
@@ -509,12 +500,6 @@ HIR {
                 "uint32",
             ): TypeRef(
                 7,
-            ),
-            Fn {
-                params: [],
-                ret: None,
-            }: TypeRef(
-                18,
             ),
             Path(
                 "char",

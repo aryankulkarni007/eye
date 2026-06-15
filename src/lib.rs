@@ -2,7 +2,7 @@
 // the flamegraph script can work
 
 // global allocator – move it here so both the binary and the library benefit.
-// The binary will automatically use it because it's part of the same crate.
+// the binary will automatically use it because it's part of the same crate.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -19,7 +19,7 @@ use lexer::{Lexer, SourceText};
 pub fn compile_file(input_path: &Path) -> anyhow::Result<()> {
     let source = SourceText::new(std::fs::read_to_string(input_path)?);
 
-    // Lex
+    // lex
     let lexed = Lexer::new(&source).tokenize();
     if !lexed.diags.is_empty() {
         return Err(anyhow::anyhow!(
@@ -38,13 +38,19 @@ pub fn compile_file(input_path: &Path) -> anyhow::Result<()> {
     let file_ast = ast::SourceFile::cast(parse.green.clone())
         .ok_or_else(|| anyhow::anyhow!("Root node is not a valid SourceFile"))?;
 
-    // hir lowering
-    let hir = lower_source_file(file_ast, &lexed.interner);
+    // hir lowering + typeck
+    let mut hir = lower_source_file(file_ast, &lexed.interner);
     if !hir.diagnostics.is_empty() {
         return Err(anyhow::anyhow!("HIR errors in {}", input_path.display()));
     }
+    let typeck = typeck::check_file(&mut hir);
+    if typeck.values().any(|r| !r.diagnostics.is_empty()) {
+        return Err(anyhow::anyhow!("type errors in {}", input_path.display()));
+    }
 
     // mir lowering + c code generation
-    let _c_source = codegen::core::gen_mir(&hir, &mir::lower_all(&hir));
+    let mirs = mir::lower_all(&hir, &typeck);
+    let seed = typeck::expr_type_seed(&typeck);
+    let _c_source = codegen::core::gen_mir(&hir, &mirs, &seed);
     Ok(())
 }

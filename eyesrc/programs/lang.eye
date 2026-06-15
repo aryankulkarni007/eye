@@ -200,14 +200,14 @@ generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
         tmp = coda_head;
         mut usize ij = 0;
         loop {
-            if ii >= coda_count { break; }
+            if ij >= coda_count { break; }
             -- NOTE: the compiler needs to check that Rvalue matches the declared type
             -- typechecker responsibility - i guess this is coerced to the right type auto
             -- but i suspect not
             let int32 coda_idx = (rand() as float64 / (RAND_MAX + 1) * cons_len) as int32;
             memcpy(tmp, &coda_idx, sizeof(int32));
             tmp += 1;
-            ii += 1; -- coda_head fill loop
+            ij += 1; -- coda_head fill loop
         }
 
         if onset_head != NULL {
@@ -216,7 +216,7 @@ generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
             let char* onset_a = align_alloc(arena, onset_bytes) as char*;
             if onset_a == NULL { exit(1); }
 
-            word_arr[i] = onset_a;
+            word_arr[idx] = onset_a;
             memcpy(onset_a, onset, onset_bytes);
 
             mut usize loc_i = 1;
@@ -237,7 +237,7 @@ generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
         let usize nucleus_bytes = strlen(nucleus);
         let char* nucleus_a = alloc(arena, nucleus_bytes) as ptr;
 
-        if onset_head == NULL { word_arr[i] = nucleus_a; }
+        if onset_head == NULL { word_arr[idx] = nucleus_a; }
         if nucleus_a == NULL  { exit(1);                 }
 
         memcpy(nucleus_a, nucleus, nucleus_bytes);
@@ -283,9 +283,9 @@ print_lang(Language lang) {
     loop {
         if i >= 10 { break; }
         -- nice error that println cannot format array
-        -- does casting ptr to string work
+        -- casting ptr to a string makes it work tho
         println("{}", lang.words[i] as string);
-        if i >= 10 { println(", "); }
+        if i < 9 { println(", "); }
     }
     println("");
 }

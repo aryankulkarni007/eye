@@ -3,9 +3,9 @@ use mir::core::{MirBody, MirStmt, RValue};
 use rustc_hash::FxHashMap;
 use std::fmt::Write as _;
 
-/// Print every function's MIR body as a readable summary (counts, not full
+/// print every function's MIR body as a readable summary (counts, not full
 /// field listings). `mirs` is the pre-lowered MIR map (the database's
-/// `mir_map` query result), shared with C generation so the dump never
+/// `mir_map` query result), shared with c generation so the dump never
 /// re-lowers a body.
 pub fn dump_mir(hir: &HIR, mirs: &FxHashMap<FnId, MirBody>) {
     let fn_names: rustc_hash::FxHashMap<_, _> = hir
@@ -24,7 +24,7 @@ pub fn dump_mir(hir: &HIR, mirs: &FxHashMap<FnId, MirBody>) {
     }
 }
 
-/// Print every function's MIR body as the full Debug representation.
+/// print every function's MIR body as the full debug representation.
 pub fn dump_mir_raw(hir: &HIR, mirs: &FxHashMap<FnId, MirBody>) {
     let fn_names: rustc_hash::FxHashMap<_, _> = hir
         .items

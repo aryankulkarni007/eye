@@ -94,7 +94,7 @@ variant payload through the default-overridable methods.
 
 ## Class partition (locked)
 
-Eight classes across the whole compiler. Partitioned by concern and by feature
+Nine classes across the whole compiler. Partitioned by concern and by feature
 (that is why Const is separate from Type: arrays are a distinct feature, and a
 shape/constant error is a different concern than a type-rule violation).
 
@@ -107,6 +107,7 @@ shape/constant error is a different concern than a type-rule violation).
 | HIR    | Type        | `T`    | type-rule violation: let/arm/return mismatch, struct field unknown/missing, union one-field, op-on-array, `len` arity |
 | HIR    | Pattern     | `P`    | match analysis: duplicate arm, unreachable-after-wildcard, non-exhaustive                                             |
 | HIR    | Const       | `C`    | array shape / CTFE: length not a literal, length zero, length too large, literal index OOB, negative index            |
+| effect | Effect      | `E`    | machine-effect contract (EFFECT.md): unknown effect name (E001), declared/inferred set mismatch (E002). Data in `hir/errors.rs`, produced by `crates/effect` |
 | HIR    | Unsupported | `U`    | no current HIR members. Once held arrays-as-struct-fields and unhoisted-match (both since resolved - see below); the class stays in the taxonomy for future deferrals |
 
 Each class is a typed kind enum implementing the `Diagnostic` trait. None is a

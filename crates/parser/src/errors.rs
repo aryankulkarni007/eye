@@ -1,22 +1,22 @@
-//! Typed parser diagnostics. Two classes:
+//! typed parser diagnostics. two classes:
 //! - [`SyntaxError`] (`S`): a token or node the grammar required but did not
-//!   find.
+//! find.
 //! - [`GrammarError`] (`G`): a deliberate rejection of input the grammar *could*
-//!   parse but the language bans (footguns).
+//! parse but the language bans (footguns).
 //!
-//! Both are carried by [`ParseError`]; the prose message is the
-//! [`Display`](std::fmt::Display) rendering via `thiserror`, never stored as the
+//! both are carried by [`ParseError`]; the prose message is the
+//! [`Display`](std::fmt::display) rendering via `thiserror`, never stored as the
 //! source of truth.
 //!
-//! Each variant carries an **explicit** diagnostic number as its discriminant.
-//! The number is part of the stable surface, so it must never change once
+//! each variant carries an **explicit** diagnostic number as its discriminant.
+//! the number is part of the stable surface, so it must never change once
 //! assigned: append a new variant with the next free number, never renumber or
 //! reorder. `code()` reads the discriminant directly (`*self as u16`), so a
 //! reorder cannot silently shift any other code.
 
 use diagnostics::{Class, Code, Diagnostic};
 
-/// A missing-token / missing-node syntax error (class `S`). One variant per
+/// a missing-token / missing-node syntax error (class `S`). one variant per
 /// distinct grammar message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[repr(u16)]
@@ -133,12 +133,12 @@ pub enum SyntaxError {
 
 impl Diagnostic for SyntaxError {
     fn code(&self) -> Code {
-        // The discriminant IS the stable number; see the module-level note.
+        // the discriminant IS the stable number; see the module-level note.
         Code::new(Class::Syntax, *self as u16)
     }
 }
 
-/// A deliberate grammar rejection (class `G`): input that parses but the
+/// a deliberate grammar rejection (class `G`): input that parses but the
 /// language bans on purpose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[repr(u16)]
@@ -165,7 +165,7 @@ impl Diagnostic for GrammarError {
     }
 }
 
-/// The carrier for every parser diagnostic. Partitioned by class so callers
+/// the carrier for every parser diagnostic. partitioned by class so callers
 /// emit a `SyntaxError`/`GrammarError` and the renderer routes on [`Code`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ParseError {

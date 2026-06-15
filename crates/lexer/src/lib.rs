@@ -1,4 +1,4 @@
-//! The lexer - raw source bytes to a flat [`Token`] stream.
+//! the lexer - raw source bytes to a flat [`Token`] stream.
 //!
 //! [`Lexer::tokenize`] drives `logos` (the lex rules live on [`TokenKind`] in
 //! the `token` crate) and yields a [`Lexed`]: the token vector, the populated
@@ -15,9 +15,9 @@ use text_size::{TextRange, TextSize};
 use diagnostics::{Class, Code, Sink};
 use token::{LexErrorTag, Token, TokenKind};
 
-/// A lexer diagnostic (class `L`). The single source of truth for a malformed
+/// a lexer diagnostic (class `L`). the single source of truth for a malformed
 /// lexeme; the prose message comes from [`std::fmt::Display`] via `thiserror`.
-/// Most variants map one-to-one from a [`LexErrorTag`] recorded by the `token`
+/// most variants map one-to-one from a [`LexErrorTag`] recorded by the `token`
 /// crate's logos callbacks; [`LexError::UnexpectedChar`] is raised here, for a
 /// byte `logos` could not start any token from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -41,7 +41,7 @@ pub enum LexError {
 }
 
 impl LexError {
-    /// Lift a callback-recorded [`LexErrorTag`] into the typed kind.
+    /// lift a callback-recorded [`LexErrorTag`] into the typed kind.
     fn from_tag(tag: LexErrorTag) -> Self {
         match tag {
             LexErrorTag::UnclosedString => LexError::UnclosedString,
@@ -71,24 +71,24 @@ impl diagnostics::Diagnostic for LexError {
     }
 }
 
-/// A interned string handle - an index into an [`Interner`]'s table. `Copy`
+/// a interned string handle - an index into an [`Interner`]'s table. `Copy`
 /// and pointer-free, so name comparison downstream is a `u32` equality check
 /// instead of a `str` compare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Symbol(pub u32);
 
-/// The canonical string table. Every identifier and string literal the lexer
+/// the canonical string table. every identifier and string literal the lexer
 /// sees is interned here, so the same text always maps to the same [`Symbol`].
 ///
-/// Strings are stored as [`SmolStr`]: identifiers - almost always short -
+/// strings are stored as [`SmolStr`]: identifiers - almost always short -
 /// stay inline with no heap allocation, and a cache-hit clone is `O(1)`.
 ///
-/// The lexer pre-populates this during tokenizing; later stages (HIR name
+/// the lexer pre-populates this during tokenizing; later stages (HIR name
 /// resolution) re-intern identifier text against the *same* table - a cache
-/// hit yields the original `Symbol`. The table outlives the lexer: it is
+/// hit yields the original `Symbol`. the table outlives the lexer: it is
 /// handed off in [`Lexed`].
 #[derive(Debug)]
-/// A string interner backed by a hash map. Every distinct string is stored once
+/// a string interner backed by a hash map. every distinct string is stored once
 /// and identified by a lightweight [`Symbol`] handle.
 ///
 /// ```
@@ -116,7 +116,7 @@ impl Interner {
         }
     }
 
-    /// Intern `s`, returning its handle. Idempotent: equal strings always map
+    /// intern `s`, returning its handle. idempotent: equal strings always map
     /// to the same [`Symbol`].
     pub fn intern(&mut self, s: &str) -> Symbol {
         if let Some(&id) = self.map.get(s) {
@@ -129,7 +129,7 @@ impl Interner {
         id
     }
 
-    /// The text behind a [`Symbol`]. Panics if `id` came from another table.
+    /// the text behind a [`Symbol`]. panics if `id` came from another table.
     pub fn lookup(&self, id: Symbol) -> &str {
         debug_assert!(
             (id.0 as usize) < self.vec.len(),
@@ -140,9 +140,9 @@ impl Interner {
         &self.vec[id.0 as usize]
     }
 
-    /// Number of distinct strings interned.
-    /// Retrieve the canonical [`SmolStr`] for `s` if it was already interned.
-    /// Returns `None` if `s` is not in the table. The clone is O(1) - short
+    /// number of distinct strings interned.
+    /// retrieve the canonical [`SmolStr`] for `s` if it was already interned.
+    /// returns `None` if `s` is not in the table. the clone is o(1) - short
     /// strings (≤22 bytes) are inline; long strings bump an `Arc` refcount.
     pub fn get(&self, s: &str) -> Option<SmolStr> {
         self.map.get(s).map(|&sym| self.vec[sym.0 as usize].clone())
@@ -164,8 +164,8 @@ impl Default for Interner {
     }
 }
 
-/// A one-based source position: `line` and `col` (a byte offset from the line
-/// start, not a character count). Both are `u32` rather than `usize` to halve
+/// a one-based source position: `line` and `col` (a byte offset from the line
+/// start, not a character count). both are `u32` rather than `usize` to halve
 /// the struct's size; this caps a source file at ~4 billion lines and ~4 billion
 /// bytes per line, far beyond any real input.
 #[derive(Debug)]
@@ -223,14 +223,18 @@ impl SourceText {
         self.source.as_bytes()
     }
 
-    /// create from an mmap (production)
-    pub fn from_mmap(mmap: Mmap) -> Self {
-        std::str::from_utf8(&mmap).expect("invalid utf-8");
+    /// create from an mmap. returns an error when the file is not valid
+    /// UTF-8 - the user sees a graceful diagnostic rather than a panic.
+    /// both constructors validate UTF-8 so that [`SourceText::as_str`] is
+    /// safe (the `unsafe` call is justified by construction).
+    /// EXPERIMENTAL
+    pub fn from_mmap(mmap: Mmap) -> Result<Self, std::str::Utf8Error> {
+        std::str::from_utf8(&mmap)?;
         let lstart = lstarts(&mmap);
-        SourceText {
+        Ok(SourceText {
             source: SourceHolder::Mmap(mmap),
             lstart,
-        }
+        })
     }
 
     /// create from a string (tests/internal)
@@ -269,7 +273,7 @@ impl SourceText {
         }
     }
 
-    /// Converts a byte offset to a one-based line and a one-based column
+    /// converts a byte offset to a one-based line and a one-based column
     /// counted in UTF-16 code units - the LSP default position encoding.
     /// [`Self::line_col`] reports byte columns; an LSP payload built from
     /// those mis-places every position after a multibyte character on the
@@ -287,7 +291,7 @@ impl SourceText {
         }
     }
 
-    /// The source text a [`TextRange`] covers, or `None` if it is out of
+    /// the source text a [`TextRange`] covers, or `None` if it is out of
     /// bounds or not on `char` boundaries.
     pub fn slice(&self, range: TextRange) -> Option<&str> {
         self.as_str()
@@ -295,8 +299,8 @@ impl SourceText {
     }
 }
 
-/// The complete result of tokenizing: the token stream, the populated string
-/// table, and every diagnostic. Produced by [`Lexer::tokenize`].
+/// the complete result of tokenizing: the token stream, the populated string
+/// table, and every diagnostic. produced by [`Lexer::tokenize`].
 #[derive(Debug)]
 pub struct Lexed {
     pub tokens: Vec<Token>,
@@ -304,8 +308,8 @@ pub struct Lexed {
     pub diags: Sink<LexError>,
 }
 
-/// A thin driver over `logos`.
-/// Holds only the borrowed source;
+/// a thin driver over `logos`.
+/// holds only the borrowed source;
 /// the real work is in [`Lexer::tokenize`].
 pub struct Lexer<'a> {
     pub source: &'a SourceText,
@@ -316,7 +320,7 @@ impl<'a> Lexer<'a> {
         Lexer { source }
     }
 
-    /// Drives `logos` to completion, yielding the token stream (up to and
+    /// drives `logos` to completion, yielding the token stream (up to and
     /// including a synthesized [`TokenKind::Eof`]), the populated string
     /// table, and every diagnostic - see [`Lexed`].
     pub fn tokenize(self) -> Lexed {
@@ -404,13 +408,13 @@ impl StringTable for Interner {
     }
 }
 
-/// EXPERIMENTAL: Per-source-file context bundling the source text and the
-/// lexer's string table. This is the single-file precursor to a multi-file
+/// EXPERIMENTAL: per-source-file context bundling the source text and the
+/// lexer's string table. this is the single-file precursor to a multi-file
 /// `SourceCache` (QUERY.md) that would map `FileId → SourceFile`.
 ///
-/// The `StringTable` impl delegates to the inner [`Interner`], so HIR lowering
+/// the `StringTable` impl delegates to the inner [`Interner`], so HIR lowering
 /// can request canonical strings without knowing which concrete type owns the
-/// table — crucial when the source comes from a project database rather than a
+/// table -- crucial when the source comes from a project database rather than a
 /// single invocation.
 #[derive(Debug)]
 pub struct SourceFile {
@@ -434,13 +438,13 @@ impl StringTable for SourceFile {
 mod tests {
     use super::*;
 
-    /// Tokenize `src` into its full [`Lexed`] result.
+    /// tokenize `src` into its full [`Lexed`] result.
     fn lex(src: &str) -> Lexed {
         let source = SourceText::new(src.to_string());
         Lexer::new(&source).tokenize()
     }
 
-    /// Non-trivia token kinds - the shape the parser actually consumes.
+    /// non-trivia token kinds - the shape the parser actually consumes.
     fn kinds(src: &str) -> Vec<TokenKind> {
         lex(src)
             .tokens
@@ -514,8 +518,8 @@ mod tests {
         assert_eq!(kinds("-- c"), [Eof]); // line comment
     }
 
-    /// Regression: `-` immediately before a multi-byte char used to index
-    /// into the middle of that char and panic. It must lex cleanly now.
+    /// regression: `-` immediately before a multi-byte char used to index
+    /// into the middle of that char and panic. it must lex cleanly now.
     #[test]
     fn minus_before_multibyte_char_no_panic() {
         use TokenKind::*;
@@ -577,7 +581,7 @@ mod tests {
 
     #[test]
     fn crlf_line_tracking() {
-        // Windows `\r\n`: `memchr` finds the `\n`, so the line start lands one
+        // windows `\r\n`: `memchr` finds the `\n`, so the line start lands one
         // byte past it - the `\r` is the trailing byte of the previous line.
         let src = "a\r\nbc\r\nd";
         let st = SourceText::new(src.to_string());
@@ -651,7 +655,7 @@ mod tests {
         assert_eq!(kinds("=> ="), [Farrow, Assign, Eof]);
     }
 
-    /// The v0.2 waterfall enum syntax: `enum X = | A | B ;` - each `|` is a
+    /// the v0.2 waterfall enum syntax: `enum X = | A | B ;` - each `|` is a
     /// `Pipe` token, distinct from the boolean `||`.
     #[test]
     fn waterfall_enum_pipes() {
@@ -692,7 +696,7 @@ mod tests {
         );
         // `matches` is just an identifier - keyword match is exact
         assert_eq!(kinds("matches"), [Ident, Eof]);
-        // `_foo`/`foo_` are idents; bare `_` is the Underscore token
+        // `_foo`/`foo_` are idents; bare `_` is the underscore token
         assert_eq!(kinds("_ _foo foo_"), [Underscore, Ident, Ident, Eof]);
     }
 
@@ -709,7 +713,7 @@ mod tests {
         );
     }
 
-    /// A multi-line block comment with `--*` as both open and close delimiter
+    /// a multi-line block comment with `--*` as both open and close delimiter
     /// - the form used in `eyesrc/design.eye`.
     #[test]
     fn block_comment_multiline() {

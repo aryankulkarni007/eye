@@ -12,11 +12,11 @@ fuzz_target!(|data: &[u8]| {
     let source = String::from_utf8_lossy(data).into_owned();
     let text = SourceText::new(source.clone());
 
-    // Phase 1: lex – must not panic.
+    // phase 1: lex – must not panic.
     let lexed = Lexer::new(&text).tokenize();
 
-    // Phase 2: parse – must not panic even on garbage tokens.
-    // The parser is designed to recover from any input; we test
+    // phase 2: parse – must not panic even on garbage tokens.
+    // the parser is designed to recover from any input; we test
     // that it never unwraps or indexes out of bounds.
     let _parse = parser::parse(&lexed.tokens, &text);
 });

@@ -1,6 +1,6 @@
-//! EXPERIMENTAL: Semantic token legend and server capabilities.
+//! EXPERIMENTAL: semantic token legend and server capabilities.
 //!
-//! Token type indices must match the order in [`legend`] exactly.
+//! token type indices must match the order in [`legend`] exactly.
 
 use lsp_types::{
     SemanticTokenModifier, SemanticTokenType, SemanticTokensLegend, SemanticTokensOptions,

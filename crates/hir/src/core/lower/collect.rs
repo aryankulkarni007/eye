@@ -1,11 +1,11 @@
-//! Pass 1: collect top-level items into [`HIR::items`].
+//! pass 1: collect top-level items into [`HIR::items`].
 
 use ast::AstNode;
 use diagnostics::Span;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use smallvec::SmallVec;
 use smol_str::SmolStr;
-use syntax::{StringTable, SyntaxNode, SyntaxNodePtr, SyntaxToken};
+use syntax::{StringTable, SyntaxKind, SyntaxNode, SyntaxNodePtr, SyntaxToken};
 
 use super::const_eval::ConstEnv;
 use super::types::lower_type_ref;
@@ -14,8 +14,8 @@ use crate::core::{
     OpaqueType, Param, ResolveError, Struct, Text, TypeError, TypeKind, TypeRef, Union, Variant,
 };
 
-/// Lower a declared type and record it - with the type node's span - into
-/// `typed_decls` for [`validate_type_names`]. Item signatures may forward-
+/// lower a declared type and record it - with the type node's span - into
+/// `typed_decls` for [`validate_type_names`]. item signatures may forward-
 /// reference items collected later (`structure A { B b, }` before `B`, an
 /// extern fn before its `type FILE;`), so name validation cannot run inline;
 /// it runs once after every item is collected.
@@ -30,11 +30,11 @@ fn lower_recorded_type(
     ty
 }
 
-/// Pass 1.6 (CLEAK L6, R012): every `Path` name in a collected item
+/// pass 1.6 (CLEAK L6, R012): every `Path` name in a collected item
 /// signature - field, parameter, return, global, and const types - must name
 /// a declared type (primitive, struct, union, enum, or opaque extern type).
-/// Without this an undeclared name is emitted verbatim into C and clang
-/// reports "unknown type name". Runs after all items are collected so forward
+/// without this an undeclared name is emitted verbatim into c and clang
+/// reports "unknown type name". runs after all items are collected so forward
 /// references resolve.
 pub(super) fn validate_type_names(hir: &mut HIR, typed_decls: &[(Span, TypeRef)]) {
     for (span, ty) in typed_decls {
@@ -57,11 +57,11 @@ fn text(token: Option<SyntaxToken>, interner: &dyn StringTable) -> Text {
         .unwrap_or_default()
 }
 
-/// Pass 1a: collect top-level `const` items into the const arena and item scope,
+/// pass 1a: collect top-level `const` items into the const arena and item scope,
 /// *before* [`collect_items`], so a later item's array length (`[T; N]`) can
 /// resolve `N` to a const value once pass 1.5 ([`super::const_eval`]) folds it.
-/// Values are filled in by the evaluator; this pass only records names, types,
-/// and the AST body to fold. Returns the AST nodes so the evaluator can walk
+/// values are filled in by the evaluator; this pass only records names, types,
+/// and the AST body to fold. returns the AST nodes so the evaluator can walk
 /// each initializer without re-traversing the file.
 pub(super) fn collect_consts(
     hir: &mut HIR,
@@ -75,8 +75,8 @@ pub(super) fn collect_consts(
             continue;
         };
         let name: Text = text(c.name(), interner);
-        // Const values are not folded yet, so a const-as-array-length in a
-        // const's *own* type cannot be resolved here. Aggregate const values
+        // const values are not folded yet, so a const-as-array-length in a
+        // const's *own* type cannot be resolved here. aggregate const values
         // are deferred anyway (scalar-only floor), so an empty map is correct.
         let ty = match c.ty() {
             Some(t) => lower_recorded_type(
@@ -92,7 +92,7 @@ pub(super) fn collect_consts(
             ty,
             value: None,
         });
-        // Only other consts exist in scope at this point (this pass runs first);
+        // only other consts exist in scope at this point (this pass runs first);
         // a clash with a struct/fn/enum is caught when that item is collected.
         if hir.items.consts.contains_key(&name) {
             hir.diagnostics.emit(
@@ -106,9 +106,9 @@ pub(super) fn collect_consts(
     const_asts
 }
 
-/// Pass 1b: collect top-level `let`/`mut` globals (addressable static storage).
-/// Runs after consts are folded, so a global's type (`[T; N]`) may reference a
-/// const length. Values are folded by [`super::const_eval::eval_globals`]; this
+/// pass 1b: collect top-level `let`/`mut` globals (addressable static storage).
+/// runs after consts are folded, so a global's type (`[T; N]`) may reference a
+/// const length. values are folded by [`super::const_eval::eval_globals`]; this
 /// pass records name, type, and mutability, and returns the AST initializers.
 pub(super) fn collect_globals(
     hir: &mut HIR,
@@ -136,7 +136,7 @@ pub(super) fn collect_globals(
             mutable,
             value: None,
         });
-        // A global sharing a name with an already-collected const/global is a
+        // a global sharing a name with an already-collected const/global is a
         // duplicate item (other namespaces are checked in `collect_items`).
         if hir.items.consts.contains_key(&name) || hir.items.globals.contains_key(&name) {
             hir.diagnostics.emit(
@@ -150,13 +150,13 @@ pub(super) fn collect_globals(
     global_asts
 }
 
-/// Whether `name` is a C keyword (C11 plus the C23 additions). The C backend
+/// whether `name` is a c keyword (C11 plus the C23 additions). the c backend
 /// emits item names, field names, parameter names, and enum variants verbatim,
-/// so any of them being a C keyword produces illegal C (`.struct = ...`).
-/// Names that are also Eye keywords (`if`, `return`, `union`, ...) never get
+/// so any of them being a c keyword produces illegal c (`.struct = ...`).
+/// names that are also eye keywords (`if`, `return`, `union`, ...) never get
 /// here - the parser rejects them - but they are kept in the list as defense
-/// in depth. The `_X`-style spellings (`_Bool`, `_Atomic`, ...) are omitted:
-/// a leading underscore followed by an uppercase letter is reserved C the
+/// in depth. the `_X`-style spellings (`_Bool`, `_Atomic`, ...) are omitted:
+/// a leading underscore followed by an uppercase letter is reserved c the
 /// user would have to spell deliberately.
 fn is_c_keyword(name: &str) -> bool {
     matches!(
@@ -207,7 +207,7 @@ fn is_c_keyword(name: &str) -> bool {
     )
 }
 
-/// Reject a declared name the backend will emit verbatim when it is a C
+/// reject a declared name the backend will emit verbatim when it is a c
 /// keyword, or when it starts with `__eye` - the backend's own symbol
 /// namespace (string statics, array-wrapper typedefs, the `main` shim).
 /// `what` names the declaration kind for the message.
@@ -231,11 +231,11 @@ fn check_c_keyword(hir: &mut HIR, name: &Text, what: &'static str, span: Span) {
     }
 }
 
-/// Reject `printf` for a name emitted at C file scope in the ordinary
+/// reject `printf` for a name emitted at c file scope in the ordinary
 /// namespace (function, global, type typedef, enum variant): the `println`
 /// intrinsic lowers to libc `printf`, so a user definition collides with the
 /// emitted prototype and shadows the libc symbol with an incompatible
-/// signature. An `extern` declaration of `printf` stays legal - it names the
+/// signature. an `extern` declaration of `printf` stays legal - it names the
 /// same libc symbol (and suppresses the emitted prototype in its favor).
 fn check_reserved_file_scope(hir: &mut HIR, name: &Text, what: &'static str, span: Span) {
     if name == "printf" {
@@ -249,17 +249,39 @@ fn check_reserved_file_scope(hir: &mut HIR, name: &Text, what: &'static str, spa
     }
 }
 
-/// Anchor a diagnostic on an item's name token when present, falling back to the
-/// whole item node. A name conflict is about the name, so the underline should
+/// anchor a diagnostic on an item's name token when present, falling back to the
+/// whole item node. a name conflict is about the name, so the underline should
 /// sit on it rather than the entire declaration.
 fn name_span(name: Option<SyntaxToken>, fallback: &SyntaxNode) -> Span {
     name.map(|t| Span::from(t.text_range()))
         .unwrap_or_else(|| Span::from(SyntaxNodePtr::new(fallback)))
 }
 
-/// Walk top-level items, allocate signatures, populate [`ItemScope`].
-/// Returns the AST nodes for each function so pass 3 can lower their bodies
-/// without re-traversing the file. Emits a diagnostic on duplicate names
+/// the contextual effect annotations preceding a fn name (`io render(...)`),
+/// as `(name, span)` in source order. the parser nests them in an `EffectList`
+/// node; each ident token is one effect. validation against the atom set is the
+/// EFFECT crate's job (EFFECT.md), so this only interns names and their spans.
+fn collect_effect_annotations(
+    f: &ast::FnDef,
+    interner: &dyn StringTable,
+) -> Vec<(Text, Span)> {
+    let Some(list) = f
+        .syntax()
+        .children()
+        .find(|n| n.kind() == SyntaxKind::EffectList)
+    else {
+        return Vec::new();
+    };
+    list.children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| t.kind() == SyntaxKind::Ident)
+        .map(|t| (text(Some(t.clone()), interner), Span::from(t.text_range())))
+        .collect()
+}
+
+/// walk top-level items, allocate signatures, populate [`ItemScope`].
+/// returns the AST nodes for each function so pass 3 can lower their bodies
+/// without re-traversing the file. emits a diagnostic on duplicate names
 /// (later definitions still take effect; the original slot stays allocated
 /// but is shadowed in the scope map).
 pub(super) fn collect_items(
@@ -272,10 +294,10 @@ pub(super) fn collect_items(
     let mut fn_asts = Vec::new();
     for item in file.items() {
         match item {
-            // Collected in pass 1a (`collect_consts`), before this pass, so an
+            // collected in pass 1a (`collect_consts`), before this pass, so an
             // array length here can already reference a const value.
             ast::Item::ConstDef(_) => {}
-            // Collected in pass 1b (`collect_globals`), after const folding.
+            // collected in pass 1b (`collect_globals`), after const folding.
             ast::Item::GlobalDef(_) => {}
             ast::Item::StructDef(s) => {
                 let name: Text = text(s.name(), interner);
@@ -330,7 +352,7 @@ pub(super) fn collect_items(
                             "parameter",
                             name_span(param_ast.name(), param_ast.syntax()),
                         );
-                        // A definition emits the names into the C signature,
+                        // a definition emits the names into the c signature,
                         // where a duplicate is a redefinition error (extern
                         // prototypes are types-only and skip this).
                         if params.iter().any(|p: &Param| p.name == pname) {
@@ -355,12 +377,12 @@ pub(super) fn collect_items(
                 let ret = f
                     .ret_type()
                     .map(|t| lower_recorded_type(hir, &t, const_values, typed_decls));
-                // `main` is the program entry point. The C backend wraps it in
+                // `main` is the program entry point. the c backend wraps it in
                 // an `int main(void)` shim that calls it with no arguments and
-                // adapts whatever it returns to the process exit code. Any
+                // adapts whatever it returns to the process exit code. any
                 // return type is fine, but the shim has nothing to pass for a
                 // parameter, so a parameterized `main` is rejected here rather
-                // than emitting C that clang rejects (a call with too few args).
+                // than emitting c that clang rejects (a call with too few args).
                 if name == "main" && !params.is_empty() {
                     hir.diagnostics.emit(
                         name_span(f.name(), f.syntax()),
@@ -373,8 +395,10 @@ pub(super) fn collect_items(
                     Some(hir.types.intern(TypeKind::Fn {
                         params: param_tys,
                         ret,
+                        variadic: false,
                     }))
                 };
+                let declared_effects = collect_effect_annotations(&f, interner);
                 let fn_id = hir.functions.alloc(Function {
                     name: name.clone(),
                     params,
@@ -383,6 +407,7 @@ pub(super) fn collect_items(
                     is_extern: false,
                     variadic: false,
                     fn_type,
+                    declared_effects,
                 });
                 if hir.items.functions.contains_key(&name)
                     || hir.items.structs.contains_key(&name)
@@ -396,7 +421,7 @@ pub(super) fn collect_items(
                 hir.items.functions.insert(name, fn_id);
                 fn_asts.push((fn_id, f));
             }
-            // A union mirrors struct collection exactly - same field list,
+            // a union mirrors struct collection exactly - same field list,
             // separate arena + scope namespace.
             ast::Item::UnionDef(u) => {
                 let name: Text = text(u.name(), interner);
@@ -438,10 +463,10 @@ pub(super) fn collect_items(
                 }
                 hir.items.unions.insert(name, union_id);
             }
-            // Each signature in an `extern` block becomes a bodyless
+            // each signature in an `extern` block becomes a bodyless
             // [`Function`] flagged `is_extern`, registered in the fn namespace
-            // so calls resolve. No AST body, so nothing is pushed to `fn_asts`.
-            // A `type Name;` declaration becomes an [`OpaqueType`], registered
+            // so calls resolve. no AST body, so nothing is pushed to `fn_asts`.
+            // a `type Name;` declaration becomes an [`OpaqueType`], registered
             // in its own namespace so `Name*` type refs name a real item.
             ast::Item::ExternBlock(eb) => {
                 for item in eb.items() {
@@ -468,10 +493,10 @@ pub(super) fn collect_items(
                         }
                     };
                     let name: Text = text(ef.name(), interner);
-                    // No C symbol can be a keyword, so an extern keyword name
+                    // no c symbol can be a keyword, so an extern keyword name
                     // could never link; reject it like a defined function's.
-                    // Extern *parameter* names are not checked: the emitted
-                    // prototype is types-only, so they never reach the C.
+                    // extern *parameter* names are not checked: the emitted
+                    // prototype is types-only, so they never reach the c.
                     check_c_keyword(hir, &name, "function", name_span(ef.name(), ef.syntax()));
                     let mut params = SmallVec::new();
                     let mut variadic = false;
@@ -498,6 +523,7 @@ pub(super) fn collect_items(
                         Some(hir.types.intern(TypeKind::Fn {
                             params: param_tys,
                             ret,
+                            variadic,
                         }))
                     };
                     let fn_id = hir.functions.alloc(Function {
@@ -508,6 +534,9 @@ pub(super) fn collect_items(
                         is_extern: true,
                         variadic,
                         fn_type,
+                        // extern signatures carry no effect annotations (an
+                        // extern call is always `ffi` by construction).
+                        declared_effects: Vec::new(),
                     });
                     if hir.items.functions.contains_key(&name)
                         || hir.items.structs.contains_key(&name)
@@ -557,12 +586,12 @@ pub(super) fn collect_items(
                         HirError::Resolve(ResolveError::DuplicateItem { name: name.clone() }),
                     );
                 }
-                // Register each variant in the flat index. A second enum
+                // register each variant in the flat index. a second enum
                 // claiming the same variant name conflicts with the first
                 // and is a hard error (the lookup would otherwise be
-                // ambiguous, and the C backend would emit two enum
+                // ambiguous, and the c backend would emit two enum
                 // constants with the same name).
-                // Parallel to the lowered variants (built in source order above),
+                // parallel to the lowered variants (built in source order above),
                 // so index `idx` recovers the ast variant to anchor a conflict
                 // on its name rather than the whole enum.
                 let variant_asts: Vec<_> = e.variants().collect();

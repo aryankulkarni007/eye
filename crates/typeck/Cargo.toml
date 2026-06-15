@@ -1,0 +1,19 @@
+[package]
+name = "eye-typeck"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "typeck"
+
+[dependencies]
+hir.workspace = true
+ast.workspace = true
+syntax.workspace = true
+diagnostics.workspace = true
+la-arena.workspace = true
+rustc-hash.workspace = true
+
+[dev-dependencies]
+lexer.workspace = true
+parser.workspace = true

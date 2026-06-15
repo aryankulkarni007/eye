@@ -1,13 +1,13 @@
-//! End-to-end driver tests. Each test invokes the built `eye` binary on a
+//! end-to-end driver tests. each test invokes the built `eye` binary on a
 //! `.eye` source file, then runs the resulting native binary and inspects
-//! its stdout. These tests cement the externally visible v0.1 behaviour:
-//! the public surface is "I hand you a `.eye` file and the program runs".
+//! its stdout. these tests cement the externally visible v0.1 behaviour:
+//! the public surface is "i hand you a `.eye` file and the program runs".
 
 use std::process::Command;
 
 mod common;
 
-/// The canonical v0.1 program. Captures every node kind the language ships
+/// the canonical v0.1 program. captures every node kind the language ships
 /// with: struct def, fn def, typed and inferred lets, struct literal with
 /// shorthand, field access, `print` lowering.
 #[test]
@@ -42,7 +42,7 @@ main() {
     );
 }
 
-/// Exercises the binop and prefix operator codegen path end-to-end.
+/// exercises the binop and prefix operator codegen path end-to-end.
 #[test]
 fn arithmetic_expression_evaluates_correctly() {
     let source = "\
@@ -56,8 +56,8 @@ main() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "5\n");
 }
 
-/// Exercises every primitive `print` format specifier plus reference-to-struct
-/// (`%p`). Source lives in `eyesrc/lang/print.eye` so the file stays authoritative.
+/// exercises every primitive `print` format specifier plus reference-to-struct
+/// (`%p`). source lives in `eyesrc/lang/print.eye` so the file stays authoritative.
 #[test]
 fn print_eye_covers_every_format_specifier() {
     let source = include_str!("../eyesrc/lang/print.eye");
@@ -94,8 +94,8 @@ fn print_eye_covers_every_format_specifier() {
 
 /// v0.3 end-to-end: enum decls, a statement-position match (printed for
 /// effect) and two value-position matches (one exhaustive, one with a
-/// wildcard) returning into typed `let`s. Source lives in `eyesrc/lang/enums.eye`
-/// so the file stays authoritative. Locks the externally visible v0.3
+/// wildcard) returning into typed `let`s. source lives in `eyesrc/lang/enums.eye`
+/// so the file stays authoritative. locks the externally visible v0.3
 /// behaviour.
 #[test]
 fn v03_eye_lowers_match_and_prints_expected_output() {
@@ -114,9 +114,9 @@ fn v03_eye_lowers_match_and_prints_expected_output() {
     );
 }
 
-/// Horizon 0 / Component 4 (S1): primitive-domain match - int, char, and bool
-/// scrutinees with literal arms, in both value and statement position. Source
-/// lives in `eyesrc/lang/match_prim.eye`. Locks the literal `ArmTest::Const` lowering.
+/// horizon 0 / component 4 (S1): primitive-domain match - int, char, and bool
+/// scrutinees with literal arms, in both value and statement position. source
+/// lives in `eyesrc/lang/match_prim.eye`. locks the literal `ArmTest::Const` lowering.
 #[test]
 fn match_primitive_domains_run() {
     let source = include_str!("../eyesrc/lang/match_prim.eye");
@@ -141,8 +141,8 @@ fn match_primitive_domains_run() {
     );
 }
 
-/// NOTE: EXPERIMENTAL - Match arm guards: `A if flag -> body`. Verifies that
-/// a simple bool-variable guard is ANDed with the variant test at codegen time
+/// NOTE: EXPERIMENTAL - match arm guards: `A if flag -> body`. verifies that
+/// a simple bool-variable guard is anded with the variant test at codegen time
 /// and short-circuits correctly.
 #[test]
 fn match_guard_runs() {
@@ -180,8 +180,8 @@ main() {
     );
 }
 
-/// Horizon 0 / Component 4 (S2): `let` struct destructuring - shorthand, rename,
-/// call-result init (spilled to a temp), and a nested struct value. Source lives
+/// horizon 0 / component 4 (S2): `let` struct destructuring - shorthand, rename,
+/// call-result init (spilled to a temp), and a nested struct value. source lives
 /// in `eyesrc/lang/destructure.eye`.
 #[test]
 fn struct_destructure_let_runs() {
@@ -205,7 +205,7 @@ fn struct_destructure_let_runs() {
 
 /// v0.4 end-to-end: every sized/unsigned integer type compiles under clang
 /// and prints its value with the correct printf specifier (catches a `%lld` /
-/// `%llu` width mismatch that would only surface at C-compile or run time).
+/// `%llu` width mismatch that would only surface at c-compile or run time).
 #[test]
 fn sized_integer_types_compile_and_println() {
     let source = "\
@@ -241,7 +241,7 @@ main() {
     );
 }
 
-/// v0.4 end-to-end: `as` casts compile under clang and carry C cast
+/// v0.4 end-to-end: `as` casts compile under clang and carry c cast
 /// semantics. `300 as uint8` truncates to `44`; an int promoted to float
 /// divides as floating point.
 #[test]
@@ -271,9 +271,9 @@ main() {
     );
 }
 
-/// v0.4 end-to-end: the canonical v0.4 showcase. Every sized/unsigned integer
+/// v0.4 end-to-end: the canonical v0.4 showcase. every sized/unsigned integer
 /// primitive plus the `as` cast paths (truncation, int->float promotion, tight
-/// binding in a widening add, and a widen/narrow roundtrip). Source lives in
+/// binding in a widening add, and a widen/narrow roundtrip). source lives in
 /// `eyesrc/lang/integers.eye` so the file stays authoritative.
 #[test]
 fn v04_eye_lowers_primitives_and_casts() {
@@ -297,10 +297,10 @@ fn v04_eye_lowers_primitives_and_casts() {
     );
 }
 
-/// v0.4 end-to-end: the FFI + union substrate. An `extern` block binds libc
+/// v0.4 end-to-end: the FFI + union substrate. an `extern` block binds libc
 /// `malloc`/`free` (resolved at link), `ptr` is the opaque untyped pointer
 /// bridged to `Point*` via `as`, and a `union` gives overlapping storage whose
-/// members print with their own specifiers. Source lives in `eyesrc/ffi/ffi.eye`.
+/// members print with their own specifiers. source lives in `eyesrc/ffi/ffi.eye`.
 #[test]
 fn ffi_eye_links_libc_and_lowers_union() {
     let source = include_str!("../eyesrc/ffi/ffi.eye");
@@ -319,7 +319,7 @@ fn ffi_eye_links_libc_and_lowers_union() {
     );
 }
 
-/// `--dump-ast` is the user-facing typed-AST smoke test. Keep it aligned with
+/// `--dump-ast` is the user-facing typed-AST smoke test. keep it aligned with
 /// the current syntax surface, including params, returns, externs, unions,
 /// arrays, casts, indexing, assignment, control flow, refs/derefs, and match.
 #[test]
@@ -429,8 +429,8 @@ main() {
 }
 
 /// v0.6 end-to-end: operator completeness - modulo, bitwise binary, prefix
-/// complement/not, compound assignment. Source lives in `eyesrc/lang/operators.eye`
-/// so the file stays authoritative. Locks the externally visible v0.6 behaviour.
+/// complement/not, compound assignment. source lives in `eyesrc/lang/operators.eye`
+/// so the file stays authoritative. locks the externally visible v0.6 behaviour.
 #[test]
 fn v06_eye_runs_operators_and_prints_expected_output() {
     let source = include_str!("../eyesrc/lang/operators.eye");
@@ -460,9 +460,9 @@ fn v06_eye_runs_operators_and_prints_expected_output() {
     assert_eq!(lines[9], "grouped    14");
 }
 
-/// Track 2 vertical slice: a straight-line program lowered HIR -> MIR -> C.
-/// Locks the Segment 1 seam (Let/Binary/Call/Literal); an output assertion, not
-/// a C-text one (codegen makes no decisions, so output is the oracle - R1).
+/// track 2 vertical slice: a straight-line program lowered HIR -> MIR -> c.
+/// locks the segment 1 seam (let/binary/call/literal); an output assertion, not
+/// a c-text one (codegen makes no decisions, so output is the oracle - R1).
 #[test]
 fn mir_path_compiles_and_runs_straight_line_slice() {
     let (out, _) =
@@ -476,13 +476,13 @@ fn mir_path_compiles_and_runs_straight_line_slice() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n");
 }
 
-/// Track 2 Segment 2: statement-position control flow. Exercises `loop`,
+/// track 2 segment 2: statement-position control flow. exercises `loop`,
 /// statement `if`, `break`, `match` -> tag-dispatch, `Assign`, enum values, and
 /// a value-returning function (the `add` helper, compiled but not called - locks
-/// `Return` emission). The `match` arm `Stop -> break` proves the break targets
+/// `Return` emission). the `match` arm `Stop -> break` proves the break targets
 /// the enclosing loop: the emitter renders the match as an `if`/`else if` chain,
-/// not a C `switch` (which would capture the `break` for the switch and loop
-/// forever). An output assertion (R1).
+/// not a c `switch` (which would capture the `break` for the switch and loop
+/// forever). an output assertion (R1).
 #[test]
 fn mir_path_lowers_loop_match_break_and_value_return() {
     let (out, _) = common::run_program(
@@ -512,9 +512,9 @@ fn mir_path_lowers_loop_match_break_and_value_return() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n1\n2\n");
 }
 
-/// Track 2 Segment 2: the control-flow branches the break test above does not
+/// track 2 segment 2: the control-flow branches the break test above does not
 /// reach - `if`/`else`, `continue`, a `match` wildcard arm (`default`), and
-/// compound assignment (`+=`, `-=`). Output assertion (R1).
+/// compound assignment (`+=`, `-=`). output assertion (R1).
 #[test]
 fn mir_path_lowers_else_continue_default_and_compound_assign() {
     let (out, _) = common::run_program(
@@ -548,13 +548,13 @@ fn mir_path_lowers_else_continue_default_and_compound_assign() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "b\n1\nb\n3\n");
 }
 
-/// Track 2 Segment 3, the REDESIGN I3 acid test. A value-position `match` nested
-/// inside the `then` branch of a value-position `if`, bound to a `let`. Lowering
+/// track 2 segment 3, the REDESIGN I3 acid test. a value-position `match` nested
+/// inside the `then` branch of a value-position `if`, bound to a `let`. lowering
 /// emits the match *in place* against the if-temp, assigning it per arm inside
 /// the branch - the shape the deleted `TernaryMatch` ban once rejected (hoisting
 /// the match out of the branch would run it even when the condition is false).
-/// Also exercises a general `Call` (`sides(shape)`) and a value-`match` as a
-/// function-body tail (`sides`). Output assertion (R1); mirrors `eyesrc/programs/wierd.eye`.
+/// also exercises a general `Call` (`sides(shape)`) and a value-`match` as a
+/// function-body tail (`sides`). output assertion (R1); mirrors `eyesrc/programs/wierd.eye`.
 #[test]
 fn mir_path_acid_test_value_match_nested_in_if_branch() {
     let (out, _) = common::run_program(
@@ -592,8 +592,8 @@ fn mir_path_acid_test_value_match_nested_in_if_branch() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "200\n");
 }
 
-/// Driver should refuse non-`.eye` input rather than overwriting an
-/// arbitrary file with generated C.
+/// driver should refuse non-`.eye` input rather than overwriting an
+/// arbitrary file with generated c.
 #[test]
 fn driver_rejects_non_eye_extension() {
     let dir = common::fixture_dir();
@@ -605,7 +605,7 @@ fn driver_rejects_non_eye_extension() {
 
 /// v0.7 end-to-end: fixed arrays as a first-class value type - lvalue index,
 /// `len(x)`, value-copy independence, return-by-value, `&[T; N]` reference, and
-/// multi-dimensional nesting. Source is `eyesrc/lang/arrays.eye`. Locks that the
+/// multi-dimensional nesting. source is `eyesrc/lang/arrays.eye`. locks that the
 /// struct-wrap representation behaves as real value semantics at runtime.
 #[test]
 fn arrays_eye_runs_value_semantics_and_prints_expected_output() {
@@ -634,13 +634,13 @@ fn arrays_eye_runs_value_semantics_and_prints_expected_output() {
     assert_eq!(lines[6], "usize      200");
 }
 
-/// Track 2 Segment 4, the REDESIGN I5 short-circuit proof. `&&`/`||` must lower
+/// track 2 segment 4, the REDESIGN I5 short-circuit proof. `&&`/`||` must lower
 /// to control flow, not to an eager `RValue::Binary`: the right-hand operand
-/// runs only when the left does not already decide the result. The operands
+/// runs only when the left does not already decide the result. the operands
 /// here have an observable side effect (each prints), so eager evaluation would
 /// show up as extra output. `sidet() || sidef()` must print only `T` (the `||`
 /// is already true, so `sidef` never runs); `sidef() && sidet()` must print only
-/// `F` (the `&&` is already false, so `sidet` never runs). The regression would
+/// `F` (the `&&` is already false, so `sidet` never runs). the regression would
 /// be invisible without a side-effecting operand, which no corpus program had.
 #[test]
 fn mir_path_short_circuits_or_and_and_skipping_side_effects() {
@@ -661,16 +661,16 @@ fn mir_path_short_circuits_or_and_and_skipping_side_effects() {
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    // No stray `F` before `a=1` and no stray `T` before `b=0`: the
+    // no stray `F` before `a=1` and no stray `T` before `b=0`: the
     // short-circuited operand was not evaluated.
     assert_eq!(String::from_utf8_lossy(&out.stdout), "T\na=1\nF\nb=0\n");
 }
 
-/// Track 2 Segment 4: structs, references, and pointers. Source is
+/// track 2 segment 4: structs, references, and pointers. source is
 /// `eyesrc/programs/example.eye`, which exercises struct literals (shorthand and
 /// explicit), field access via `.` and via a pointer (`d.x` -> `d->x`), a
 /// `malloc(...) as Vec3*` cast of a call result, a deref lvalue (`*d = ...`) and
-/// a deref operand (`print_vec(*d)`), plus arrays of field reads. Output oracle
+/// a deref operand (`print_vec(*d)`), plus arrays of field reads. output oracle
 /// (R1).
 #[test]
 fn mir_path_runs_struct_pointer_and_deref() {
@@ -687,10 +687,10 @@ fn mir_path_runs_struct_pointer_and_deref() {
     );
 }
 
-/// Same-scope redeclaration is rejected (R015, ruled 2026-06-12):
+/// same-scope redeclaration is rejected (R015, ruled 2026-06-12):
 /// `let x = 1; let x = 2;` in one block is an error, not shadowing.
-/// Shadowing in a nested block scope stays legal (see
-/// `nested_block_shadowing_is_legal`). This reverses the Track 2 Segment 4
+/// shadowing in a nested block scope stays legal (see
+/// `nested_block_shadowing_is_legal`). this reverses the track 2 segment 4
 /// pin (`mir_path_allows_same_block_shadowing`): the conservative reject can
 /// be relaxed to a shadowing rule later; the reverse would break programs.
 #[test]
@@ -713,10 +713,10 @@ fn same_scope_redeclaration_is_rejected() {
     );
 }
 
-/// Shadowing in a *nested* block scope stays legal under R015: the inner
+/// shadowing in a *nested* block scope stays legal under R015: the inner
 /// binding wins inside the block, the outer binding is visible again after.
-/// The emitter suffixes every non-parameter local with its `LocalId`
-/// (`x_0`, `x_1`), so the two declarations never collide in one C scope.
+/// the emitter suffixes every non-parameter local with its `LocalId`
+/// (`x_0`, `x_1`), so the two declarations never collide in one c scope.
 #[test]
 fn nested_block_shadowing_is_legal() {
     let (out, _) = common::run_program(
@@ -739,8 +739,8 @@ fn nested_block_shadowing_is_legal() {
 }
 
 /// `{{`/`}}` print a literal brace in a `println` format string (ruled
-/// 2026-06-12, Rust-style); `{}` stays a placeholder and a lone brace still
-/// prints literally. Output oracle (R1).
+/// 2026-06-12, rust-style); `{}` stays a placeholder and a lone brace still
+/// prints literally. output oracle (R1).
 #[test]
 fn println_brace_escapes_print_literal_braces() {
     let (out, _) = common::run_program(
@@ -761,12 +761,12 @@ fn println_brace_escapes_print_literal_braces() {
     );
 }
 
-/// Track 2 cutover (I2): a call to an undeclared name is rejected with a clean
-/// `use of undeclared name` diagnostic instead of emitting verbatim C. MIR is a
+/// track 2 cutover (I2): a call to an undeclared name is rejected with a clean
+/// `use of undeclared name` diagnostic instead of emitting verbatim c. MIR is a
 /// resolved IR with no node for an unresolved call, so the rejection lives in
 /// HIR lowering. (`bubblesort`/`file` used to pin this - they called libc
-/// without declaring it - but Rust-style FFI restored them; see
-/// `bubblesort_runs` and the C-seam tests below.)
+/// without declaring it - but rust-style FFI restored them; see
+/// `bubblesort_runs` and the c-seam tests below.)
 #[test]
 fn cutover_rejects_undeclared_name_programs() {
     let out = common::compile_expect_failure(
@@ -785,10 +785,10 @@ fn cutover_rejects_undeclared_name_programs() {
     );
 }
 
-/// Early return: `eyesrc/programs/floodfill.eye` is a recursive flood fill that uses bare
+/// early return: `eyesrc/programs/floodfill.eye` is a recursive flood fill that uses bare
 /// `return;` as a guard at the top of the recursion (out-of-bounds, already
-/// filled, wrong colour). It was rejected before early-return landed; it now
-/// compiles and runs. Output oracle (R1): the program prints three counts.
+/// filled, wrong colour). it was rejected before early-return landed; it now
+/// compiles and runs. output oracle (R1): the program prints three counts.
 #[test]
 fn floodfill_runs() {
     let (out, _) = common::run_program(include_str!("../eyesrc/programs/floodfill.eye"));
@@ -801,10 +801,10 @@ fn floodfill_runs() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "9\n9\n1\n");
 }
 
-/// Early return in value position diverges correctly. `return` appears as an
+/// early return in value position diverges correctly. `return` appears as an
 /// `if`-branch tail inside a `let` initializer: when taken it returns from the
 /// function (the binding and the code after it never run); when not taken the
-/// other branch supplies the value. This is the case that, without an
+/// other branch supplies the value. this is the case that, without an
 /// `Expr::Return` arm in MIR `lower_into`, would route through `lower_rvalue`
 /// and hit its `unreachable!`. `pick(5)` takes the else branch (2 + 1 = 3);
 /// `pick(-1)` takes the `return 99`.
@@ -829,10 +829,10 @@ fn early_return_in_value_position_diverges() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n99\n");
 }
 
-/// A `loop` in value position used to panic the compiler at an MIR `unreachable!`.
-/// It now lowers like the other divergent control flow (`return`/`break`): the
+/// a `loop` in value position used to panic the compiler at an MIR `unreachable!`.
+/// it now lowers like the other divergent control flow (`return`/`break`): the
 /// loop runs as a statement and yields the poison `0` (break is valueless today;
-/// break-with-value is Fork D). The program compiles and runs instead of crashing
+/// break-with-value is fork d). the program compiles and runs instead of crashing
 /// the compiler.
 #[test]
 fn value_position_loop_does_not_panic() {
@@ -853,9 +853,9 @@ fn value_position_loop_does_not_panic() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n");
 }
 
-/// A complex (temp-spilling) match guard falls through correctly when false.
+/// a complex (temp-spilling) match guard falls through correctly when false.
 /// `A if x > 0` spills a temp for the comparison; a false guard used to dead-end
-/// (no fallthrough, the value-match temp read uninitialized). The flag-gated
+/// (no fallthrough, the value-match temp read uninitialized). the flag-gated
 /// chain routes a false guard to the next arm. `guard_example.eye` only covered
 /// simple bare-local guards (the one shape that already worked).
 #[test]
@@ -881,12 +881,12 @@ fn complex_match_guard_falls_through() {
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    // A,x=5: guard true -> 1. A,x=0: guard false -> falls past B to `_` -> 9.
-    // B: -> 2.
+    // a,x=5: guard true -> 1. a,x=0: guard false -> falls past b to `_` -> 9.
+    // b: -> 2.
     assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n9\n2\n");
 }
 
-/// A parameter literally named like a generated local (`x_1` vs local `x`
+/// a parameter literally named like a generated local (`x_1` vs local `x`
 /// with MIR id 1, `_t2` vs a temp) must not collide: parameters keep their
 /// bare source name, so colliding generated names are repaired with a
 /// trailing `_` (generated names never end in `_`, keeping the scheme
@@ -916,11 +916,11 @@ fn param_named_like_mangled_local_does_not_collide() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "105\n22\n");
 }
 
-/// A guarded switch whose UNGUARDED arms prove exhaustiveness (no `_`, no
+/// a guarded switch whose UNGUARDED arms prove exhaustiveness (no `_`, no
 /// default) must still initialize the value-match temp on every path: the
 /// last unguarded arm is emitted gated on the flag alone (no scrutinee test),
-/// the guarded chain's analogue of the unguarded chain's `else`. Behavior is
-/// unchanged; the generated C is checked for the flag-only arm so a rogue
+/// the guarded chain's analogue of the unguarded chain's `else`. behavior is
+/// unchanged; the generated c is checked for the flag-only arm so a rogue
 /// scrutinee (bad FFI cast) cannot read the temp uninitialized.
 #[test]
 fn guarded_exhaustive_switch_has_unconditional_tail() {
@@ -953,9 +953,9 @@ fn guarded_exhaustive_switch_has_unconditional_tail() {
     );
 }
 
-/// A guarded wildcard catch-all (`_ if cond`) falls through when the guard is
-/// false. In value position the match is hoisted to a temp; a false guard must
-/// route to the trailing unconditional `_` so the temp is written. Before the
+/// a guarded wildcard catch-all (`_ if cond`) falls through when the guard is
+/// false. in value position the match is hoisted to a temp; a false guard must
+/// route to the trailing unconditional `_` so the temp is written. before the
 /// `Always`-arm lowering this shape was rejected outright.
 #[test]
 fn guarded_wildcard_catchall_falls_through() {
@@ -981,14 +981,14 @@ fn guarded_wildcard_catchall_falls_through() {
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    // A: first arm -> 1. B,true: A fails, `_ if true` -> 9. B,false: `_ if false`
+    // a: first arm -> 1. b,true: a fails, `_ if true` -> 9. b,false: `_ if false`
     // falls through to `_` -> 0.
     assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n9\n0\n");
 }
 
-/// A guarded bare-ident catch-all (`x if cond`) binds the scrutinee, evaluates
-/// the guard against the binding, and falls through when false. The match is the
-/// tail of an `int32`-returning fn (value position - its value is returned). The
+/// a guarded bare-ident catch-all (`x if cond`) binds the scrutinee, evaluates
+/// the guard against the binding, and falls through when false. the match is the
+/// tail of an `int32`-returning fn (value position - its value is returned). the
 /// binding must be in scope for both the guard and the body.
 #[test]
 fn guarded_binding_catchall_falls_through() {
@@ -1017,9 +1017,9 @@ fn guarded_binding_catchall_falls_through() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "100\n20\n0\n");
 }
 
-/// A guarded binding catch-all in genuine statement (discard) position - the
+/// a guarded binding catch-all in genuine statement (discard) position - the
 /// match is run only for the side effects in its arm bodies, not hoisted to a
-/// temp. Exercises the statement-position lowering path (`lower_expr_stmt`),
+/// temp. exercises the statement-position lowering path (`lower_expr_stmt`),
 /// which differs from value position only in how the body is lowered; the guard
 /// and binding handling is shared.
 #[test]
@@ -1052,10 +1052,10 @@ fn guarded_binding_catchall_in_statement_position() {
     );
 }
 
-/// `main` is an ordinary function; the C entry point is a backend shim. An
+/// `main` is an ordinary function; the c entry point is a backend shim. an
 /// integer-returning `main` forwards its value as the process exit code
 /// (`int main(void) { return (int)__eye_main(); }`), so a non-zero return is
-/// observable as the exit status. A bare void `main()` keeps exiting 0.
+/// observable as the exit status. a bare void `main()` keeps exiting 0.
 #[test]
 fn int_returning_main_sets_exit_code() {
     let (out, _) = common::run_program(
@@ -1073,7 +1073,7 @@ fn int_returning_main_sets_exit_code() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "bye\n");
 }
 
-/// `main` may return any type - the C entry shim adapts it. A non-integer
+/// `main` may return any type - the c entry shim adapts it. a non-integer
 /// return (here a struct) is computed for effect and the process exits 0; the
 /// program must still compile and run cleanly (no raw clang error from
 /// returning a struct out of `int main`).
@@ -1095,12 +1095,12 @@ fn non_int_returning_main_compiles_and_exits_zero() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n");
 }
 
-/// Early return *directly* in rvalue position (`let x = return 5;`), not wrapped
-/// in an `if`/`match`. This routes through MIR `lower_rvalue` rather than
+/// early return *directly* in rvalue position (`let x = return 5;`), not wrapped
+/// in an `if`/`match`. this routes through MIR `lower_rvalue` rather than
 /// `lower_into`; without a diverging arm there it would hit the
 /// `non-value expression in rvalue position` `unreachable!` and panic the
-/// compiler. The return diverges, so the binding is dead and `g` returns 5.
-/// (Mirrors Rust, where `let x = return;` is legal.)
+/// compiler. the return diverges, so the binding is dead and `g` returns 5.
+/// (mirrors rust, where `let x = return;` is legal.)
 #[test]
 fn early_return_as_direct_rvalue_diverges() {
     let (out, _) = common::run_program(
@@ -1121,7 +1121,7 @@ fn early_return_as_direct_rvalue_diverges() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "5\n");
 }
 
-/// Object topology: type declarations are emitted in dependency order with
+/// object topology: type declarations are emitted in dependency order with
 /// forward declarations, so a struct may be declared before the types it
 /// embeds, hold a union field, an array field, a nested struct field, and a
 /// self-referential pointer field - all in one program. `Outer` is declared
@@ -1150,8 +1150,8 @@ fn topology_orders_nested_aggregate_fields() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n20\n7\n");
 }
 
-/// A value-recursive struct (infinite size) is rejected in HIR with a clear
-/// diagnostic rather than leaking a raw clang error. Pins that the
+/// a value-recursive struct (infinite size) is rejected in HIR with a clear
+/// diagnostic rather than leaking a raw clang error. pins that the
 /// value-recursion check and the codegen ordering agree.
 #[test]
 fn value_recursive_struct_diagnostic_renders() {
@@ -1167,7 +1167,7 @@ fn value_recursive_struct_diagnostic_renders() {
     );
 }
 
-/// Function pointers: a function name decays to a value of its function type, is
+/// function pointers: a function name decays to a value of its function type, is
 /// stored in a `let`, and called through indirectly (`op(2, 3)`).
 #[test]
 fn function_pointer_value_and_call() {
@@ -1187,8 +1187,8 @@ fn function_pointer_value_and_call() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "5\n");
 }
 
-/// Function pointers as struct fields - a hand-written dispatch table (vtable),
-/// the case object topology (B) and function pointers (C) exercise together. The
+/// function pointers as struct fields - a hand-written dispatch table (vtable),
+/// the case object topology (b) and function pointers (c) exercise together. the
 /// `Ops` struct holds two function-pointer fields; `run` dispatches through them
 /// indirectly and takes the struct by value as a parameter.
 #[test]
@@ -1215,7 +1215,7 @@ fn function_pointer_struct_vtable() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n");
 }
 
-/// A higher-order function: a function-pointer parameter, called indirectly.
+/// a higher-order function: a function-pointer parameter, called indirectly.
 #[test]
 fn higher_order_function_pointer_param() {
     let (out, _) = common::run_program(
@@ -1234,10 +1234,10 @@ fn higher_order_function_pointer_param() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
 }
 
-/// A function that returns a function pointer, then calls the result:
-/// `get()(5)`. The callee of the second call is an rvalue (a call result), not a
+/// a function that returns a function pointer, then calls the result:
+/// `get()(5)`. the callee of the second call is an rvalue (a call result), not a
 /// place, so it spills to a temp - a distinct lowering path from a let/param/
-/// field callee. The postfix `()()` chain must also parse.
+/// field callee. the postfix `()()` chain must also parse.
 #[test]
 fn function_returning_function_pointer() {
     let (out, _) = common::run_program(
@@ -1254,9 +1254,9 @@ fn function_returning_function_pointer() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "6\n");
 }
 
-/// An array of function pointers, indexed and called: `tbl[i](x)`. Exercises the
-/// array wrapper of a function-pointer typedef (the wrapper hard-deps the Fn
-/// node, the Fn node has no hard deps, so the topology orders them correctly).
+/// an array of function pointers, indexed and called: `tbl[i](x)`. exercises the
+/// array wrapper of a function-pointer typedef (the wrapper hard-deps the fn
+/// node, the fn node has no hard deps, so the topology orders them correctly).
 #[test]
 fn array_of_function_pointers() {
     let (out, _) = common::run_program(
@@ -1277,9 +1277,9 @@ fn array_of_function_pointers() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "11\n9\n");
 }
 
-/// Integer literals carry an optional base prefix: `0x`/`0X` hex, `0b`/`0B`
-/// binary, `0o`/`0O` octal. The value is parsed in HIR and emitted in decimal,
-/// so this pins the parse, not C's literal grammar. `0xFF == 255`,
+/// integer literals carry an optional base prefix: `0x`/`0X` hex, `0b`/`0B`
+/// binary, `0o`/`0O` octal. the value is parsed in HIR and emitted in decimal,
+/// so this pins the parse, not c's literal grammar. `0xFF == 255`,
 /// `0b1010 == 10`, `0o17 == 15`.
 #[test]
 fn integer_base_prefixes_parse() {
@@ -1299,7 +1299,7 @@ fn integer_base_prefixes_parse() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "255\n10\n15\n");
 }
 
-/// Every compound assignment form desugars to `a = a <op> b`. Threads one
+/// every compound assignment form desugars to `a = a <op> b`. threads one
 /// mutable accumulator through arithmetic, bitwise, and shift compounds:
 /// `10 *= 3 -> 30`, `/= 2 -> 15`, `+= 1 -> 16`, `-= 4 -> 12`, `%= 7 -> 5`,
 /// `<<= 2 -> 20`, `>>= 1 -> 10`, `&= 12 -> 8`, `|= 1 -> 9`, `^= 3 -> 10`.
@@ -1330,7 +1330,7 @@ fn compound_assignment_forms_evaluate() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "10\n");
 }
 
-/// Immutable-by-default: a `mut` binding accepts reassignment and compound
+/// immutable-by-default: a `mut` binding accepts reassignment and compound
 /// assignment, and the value updates as expected.
 #[test]
 fn mut_binding_allows_reassignment() {
@@ -1351,8 +1351,8 @@ fn mut_binding_allows_reassignment() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "10\n");
 }
 
-/// Immutable-by-default: assigning to a `let` binding is rejected in HIR with a
-/// clear diagnostic, not leaked as a C `const` error.
+/// immutable-by-default: assigning to a `let` binding is rejected in HIR with a
+/// clear diagnostic, not leaked as a c `const` error.
 #[test]
 fn assign_to_let_binding_rejected() {
     let out = common::compile_expect_failure("main() {\n    let int32 x = 5;\n    x = 6;\n}\n");
@@ -1367,7 +1367,7 @@ fn assign_to_let_binding_rejected() {
     );
 }
 
-/// Immutable-by-default reaches through a projection: mutating a field of a
+/// immutable-by-default reaches through a projection: mutating a field of a
 /// `let`-bound struct is rejected, because the write roots in the immutable
 /// binding.
 #[test]
@@ -1390,9 +1390,9 @@ fn field_assign_through_let_binding_rejected() {
     );
 }
 
-/// No-footgun F2 extends to compound assignment: an assignment in an `if`
+/// no-footgun F2 extends to compound assignment: an assignment in an `if`
 /// condition is rejected, so `if x += 5` cannot silently become `if (x = x + 5)`
-/// the way it does in C. Pins that the guard covers every assignment operator,
+/// the way it does in c. pins that the guard covers every assignment operator,
 /// not just plain `=`. (`mut` avoids an immutability error masking the result.)
 #[test]
 fn compound_assignment_in_if_condition_rejected() {
@@ -1409,14 +1409,14 @@ fn compound_assignment_in_if_condition_rejected() {
     );
 }
 
-/// Horizon 0, Component 1 (const): compile-time constants. Exercises a scalar
+/// horizon 0, component 1 (const): compile-time constants. exercises a scalar
 /// const, a const-expr referencing another const, a negative fold, the bitwise
 /// operator set, a comparison folding to bool, float arithmetic, a char const,
 /// and a const (and const-expr) driving a fixed-array length (A6); plus the
 /// block-scope form: a local const referencing top-level and earlier local
 /// consts, inner-block shadowing, a local const as an array length, and a
-/// negative local fold. A const is a value, not storage - the values are
-/// inlined, so this is an output oracle (R1). Source lives in
+/// negative local fold. a const is a value, not storage - the values are
+/// inlined, so this is an output oracle (R1). source lives in
 /// `eyesrc/lang/const.eye` so the file stays authoritative.
 #[test]
 fn const_eye_folds_and_inlines_compile_time_values() {
@@ -1451,7 +1451,7 @@ fn const_eye_folds_and_inlines_compile_time_values() {
     );
 }
 
-/// Block-scope `const` misuse is rejected like the top-level form: assignment
+/// block-scope `const` misuse is rejected like the top-level form: assignment
 /// (a const is a value, not a place) and `&` (it has no address).
 #[test]
 fn local_const_assign_and_ref_are_rejected() {
@@ -1477,7 +1477,7 @@ fn local_const_assign_and_ref_are_rejected() {
     );
 }
 
-/// A block-scope const's initializer is the same bounded const-expr fold as the
+/// a block-scope const's initializer is the same bounded const-expr fold as the
 /// top level: a runtime local in it is rejected (not a constant), and the const
 /// itself is not visible outside its declaring block.
 #[test]
@@ -1507,7 +1507,7 @@ fn local_const_runtime_init_and_scope_escape_are_rejected() {
     );
 }
 
-/// `sizeof(T)` lowers to C `sizeof(ctype)`: fixed-width types have guaranteed
+/// `sizeof(T)` lowers to c `sizeof(ctype)`: fixed-width types have guaranteed
 /// sizes (int8=1, int32=4, int64=8, char=1), a struct of two int32 is 8, and
 /// `count * sizeof(T)` (the malloc-argument shape) folds into a usize value.
 #[test]
@@ -1532,7 +1532,7 @@ fn sizeof_eye_reports_type_sizes() {
     );
 }
 
-/// `sizeof` takes a *type*, not a value or a compound type. A compound-type
+/// `sizeof` takes a *type*, not a value or a compound type. a compound-type
 /// argument (`sizeof(&z)`) is rejected at the floor (deferred), not silently
 /// miscompiled.
 #[test]
@@ -1554,11 +1554,11 @@ fn sizeof_compound_type_is_rejected() {
     );
 }
 
-/// String literals as `&[uint8; N]` (Component 3, Part B): a literal printed
+/// string literals as `&[uint8; N]` (component 3, part b): a literal printed
 /// directly renders as text (`%s`), a stored string round-trips, `len` reports
 /// the visible byte count, and indexing yields the byte value (`uint8` prints as
-/// `%d`, so `s[0]` = 104, `s[4]` = 111). A `char`-typed result prints as `%c`, so
-/// `first`/`last` render `h`/`o`. Closes the old `print`-renders-`%d` string bug.
+/// `%d`, so `s[0]` = 104, `s[4]` = 111). a `char`-typed result prints as `%c`, so
+/// `first`/`last` render `h`/`o`. closes the old `print`-renders-`%d` string bug.
 #[test]
 fn string_eye_byte_array_refs() {
     let source = include_str!("../eyesrc/lang/string.eye");
@@ -1586,7 +1586,7 @@ fn string_eye_byte_array_refs() {
 
 /// caesar.eye: the integrating string program - it decays a stored string to a
 /// `string` parameter, calls libc `strlen`/`putchar` over it (FFI), indexes it,
-/// and does char arithmetic. Runs end to end with the correct cipher output.
+/// and does char arithmetic. runs end to end with the correct cipher output.
 #[test]
 fn caesar_eye_string_decay_and_ffi() {
     let source = include_str!("../eyesrc/ffi/caesar.eye");
@@ -1607,7 +1607,7 @@ fn caesar_eye_string_decay_and_ffi() {
     );
 }
 
-/// Top-level globals (Component 3): a `let` read-only static and a `mut`
+/// top-level globals (component 3): a `let` read-only static and a `mut`
 /// writable static, the latter initialized from a const, mutated through a
 /// function, and read back through `&counter` (a global is addressable, unlike
 /// a const).
@@ -1632,8 +1632,8 @@ fn global_eye_static_storage() {
     );
 }
 
-/// A `let` global is read-only static storage; assigning it is rejected with the
-/// same immutable-by-default diagnostic as a `let` local. A `mut` global opts in.
+/// a `let` global is read-only static storage; assigning it is rejected with the
+/// same immutable-by-default diagnostic as a `let` local. a `mut` global opts in.
 #[test]
 fn global_assign_to_let_is_rejected() {
     let out = common::compile_expect_failure(
@@ -1653,7 +1653,7 @@ fn global_assign_to_let_is_rejected() {
     );
 }
 
-/// A const is a value with no address: `&MAX` is rejected in HIR with a clear
+/// a const is a value with no address: `&MAX` is rejected in HIR with a clear
 /// diagnostic rather than silently taking the address of an inlined temp.
 #[test]
 fn const_address_of_is_rejected() {
@@ -1674,7 +1674,7 @@ fn const_address_of_is_rejected() {
     );
 }
 
-/// A const whose initializer is not a const-expr (here a function call - that
+/// a const whose initializer is not a const-expr (here a function call - that
 /// is compile-time *execution*, the far-future prime layer) is rejected.
 #[test]
 fn const_non_const_initializer_is_rejected() {
@@ -1694,11 +1694,11 @@ fn const_non_const_initializer_is_rejected() {
     );
 }
 
-/// The raw-pointer escape: a write *through* a `let`-bound pointer (`*p = v`)
-/// is not an assignment to the binding itself, so it is allowed and runs. This
-/// is Eye's runtime-freedom seam - immutability tracks the binding, not memory
+/// the raw-pointer escape: a write *through* a `let`-bound pointer (`*p = v`)
+/// is not an assignment to the binding itself, so it is allowed and runs. this
+/// is eye's runtime-freedom seam - immutability tracks the binding, not memory
 /// reached through a pointer.
-/// Documentation example: match arm guards -- checks guard-true, guard-false
+/// documentation example: match arm guards -- checks guard-true, guard-false
 /// fallthrough to wildcard, and multiple guarded arms.
 #[test]
 fn docs_guard_example_compiles_and_runs() {
@@ -1717,7 +1717,7 @@ fn docs_guard_example_compiles_and_runs() {
     );
 }
 
-/// Documentation example: println intrinsic -- every supported type and mixed
+/// documentation example: println intrinsic -- every supported type and mixed
 /// multi-arg formatting.
 #[test]
 fn docs_println_example_compiles_and_runs() {
@@ -1763,9 +1763,9 @@ fn write_through_let_pointer_allowed() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "99\n");
 }
 
-/// Array repeat literal `[value; N]`: scalar fill, const-length fill, element
+/// array repeat literal `[value; N]`: scalar fill, const-length fill, element
 /// coercion, struct value fill, nested/multi-dim, and evaluate-once semantics.
-/// Source lives in `eyesrc/lang/array_fill.eye` so the file stays authoritative.
+/// source lives in `eyesrc/lang/array_fill.eye` so the file stays authoritative.
 #[test]
 fn array_fill_eye_repeat_literal() {
     let source = include_str!("../eyesrc/lang/array_fill.eye");
@@ -1793,7 +1793,7 @@ fn array_fill_eye_repeat_literal() {
     );
 }
 
-/// C seam: a variadic extern (`printf(string fmt, ...)`). The prototype gains
+/// c seam: a variadic extern (`printf(string fmt, ...)`). the prototype gains
 /// `...`, calls pass extra trailing arguments, and no `<stdio.h>` is included -
 /// the extern block is the sole prototype.
 #[test]
@@ -1822,8 +1822,8 @@ main() {
     );
 }
 
-/// C seam: an opaque FFI type (`extern { type FILE; }`) used behind a pointer.
-/// `fopen`/`fclose` round-trip a `FILE*` value; the emitted C declares
+/// c seam: an opaque FFI type (`extern { type FILE; }`) used behind a pointer.
+/// `fopen`/`fclose` round-trip a `FILE*` value; the emitted c declares
 /// `typedef struct FILE FILE;` and no definition.
 #[test]
 fn opaque_extern_type_fopen_roundtrip() {
@@ -1854,9 +1854,9 @@ main() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "closed 0\n");
 }
 
-/// The whole C-seam corpus program: opaque `FILE`, variadic `printf`, and
+/// the whole c-seam corpus program: opaque `FILE`, variadic `printf`, and
 /// `println` together in one unit (the auto printf prototype is skipped
-/// because the program declares its own). Source lives in
+/// because the program declares its own). source lives in
 /// `eyesrc/programs/bubblesort.eye` so the file stays authoritative.
 #[test]
 fn bubblesort_runs() {
@@ -1874,9 +1874,9 @@ fn bubblesort_runs() {
     );
 }
 
-/// `...` is an extern-only C-ABI marker: a defined fn cannot take it (Eye has
+/// `...` is an extern-only c-ABI marker: a defined fn cannot take it (eye has
 /// no varargs access), it must be the last parameter, and it needs at least
-/// one named parameter before it (the C calling convention requires one).
+/// one named parameter before it (the c calling convention requires one).
 #[test]
 fn variadic_misuse_is_rejected() {
     let out = common::compile_expect_failure(
@@ -1934,9 +1934,9 @@ fn variadic_misuse_is_rejected() {
 
 /// CLEAK L1/L2 (coercion-point unification): string decay at struct-literal
 /// fields and array-literal elements, through codegen to a running binary.
-/// Also covers an integer literal adopting a wide annotated type (M1's
+/// also covers an integer literal adopting a wide annotated type (M1's
 /// positive side): the printed `int64` value only survives if the literal's
-/// C temp is 64-bit.
+/// c temp is 64-bit.
 #[test]
 fn coercion_point_decay_and_wide_literals_run() {
     let source = "\
@@ -1965,5 +1965,47 @@ main() {
         "cvc\nab cd\n5000000000\n",
         "stderr was: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// S2C C3 hardening: MIR's type fallback yields the error sentinel (not a
+/// silent `int32`), which renders as `void* /* ERROR TY */` in generated c.
+/// every showcase program the driver accepts must produce c free of that
+/// marker - proof the typeck walker types every expression MIR consumes (the
+/// A3 fallback never fires). programs the driver rejects (unimplemented
+/// features) are skipped. sources are copied into a fixture dir so the corpus
+/// tree is not touched.
+#[test]
+fn corpus_generates_no_error_type() {
+    let programs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("eyesrc/programs");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&programs).expect("read eyesrc/programs") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("eye") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read program");
+        let dir = common::fixture_dir();
+        let src_path = common::write_source(&dir, "prog.eye", &source);
+        let out = Command::new(common::DRIVER)
+            .arg(&src_path)
+            .arg("--dump-c")
+            .output()
+            .expect("invoke driver");
+        if !out.status.success() {
+            continue; // rejected program (unimplemented feature) - not in scope
+        }
+        let c = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !c.contains("ERROR TY"),
+            "{}: generated C contains an error type - the MIR A3 fallback fired, \
+             so the typeck walker left an expression MIR needs untyped",
+            path.display()
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 10,
+        "expected to check the showcase corpus, only checked {checked} programs"
     );
 }

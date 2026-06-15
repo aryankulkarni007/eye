@@ -1,5 +1,5 @@
-//! Per-function body IR: the expression, statement, pattern, local, and block
-//! arenas plus a source map back to syntax pointers. One [`Body`] per fn so
+//! per-function body IR: the expression, statement, pattern, local, and block
+//! arenas plus a source map back to syntax pointers. one [`Body`] per fn so
 //! editing a single fn body invalidates only that body.
 
 use ast::{AssignOp, BinOp, UnaryOp};
@@ -10,9 +10,9 @@ use thin_vec::ThinVec;
 
 use super::*;
 
-/// Per-function body IR.
+/// per-function body IR.
 ///
-/// EXPERIMENTAL(typed-arena): Arena fields use [`TypedArena<T, XId>`], paired
+/// EXPERIMENTAL(typed-arena): arena fields use [`TypedArena<T, XId>`], paired
 /// with the corresponding `*Id` newtypes from [`ids`](super::ids).
 #[derive(Debug, Default)]
 pub struct Body {
@@ -20,16 +20,19 @@ pub struct Body {
     pub stmts: TypedArena<Stmt, StmtId>,
     pub pats: TypedArena<Pat, PatId>,
     pub locals: TypedArena<Local, LocalId>,
-    /// Top-level statements of the fn body, in source order.
+    /// top-level statements of the fn body, in source order.
     pub block: ThinVec<StmtId>,
-    /// Optional tail expression of the body block (none for v0.1).
+    /// optional tail expression of the body block (none for v0.1).
     pub tail: Option<ExprId>,
     pub source_map: BodySourceMap,
     pub blocks: TypedArena<Block, BlockId>,
     pub block_source_map: ArenaMap<Idx<Block>, SyntaxNodePtr>,
-    pub expr_types: ArenaMap<Idx<Expr>, TypeRef>,
-    /// Block-scope `const` declarations. Same value/no-storage semantics as a
-    /// top-level [`Const`](super::Const), but scoped to the declaring block,
+    /// the fn body block's syntax pointer, anchoring whole-body diagnostics
+    /// (a missing return value). set once per body at fn lowering; read by the
+    /// typeck pass's return-type enforcement.
+    pub fn_block_ptr: Option<SyntaxNodePtr>,
+    /// block-scope `const` declarations. same value/no-storage semantics as a
+    /// top-level [`Const`](super::const), but scoped to the declaring block,
     /// so they live in the body, not the module-level arena (which sits behind
     /// `&HIR` and cannot grow during body lowering).
     pub local_consts: TypedArena<LocalConst, LocalConstId>,
@@ -50,15 +53,15 @@ pub struct Local {
     pub pat: PatId,
 }
 
-/// A block-scope `const`: a compile-time value folded at lowering against the
+/// a block-scope `const`: a compile-time value folded at lowering against the
 /// consts visible at the declaration site (top-level consts plus enclosing
-/// local consts). Like a top-level const it is inlined at MIR lowering, has no
+/// local consts). like a top-level const it is inlined at MIR lowering, has no
 /// address (`&` of it is rejected), and is not an assignable place. `value` is
 /// `None` when the fold failed (already diagnosed - poison).
 #[derive(Debug)]
 pub struct LocalConst {
     pub name: Text,
-    /// The declared type (always explicit at the floor - no inference).
+    /// the declared type (always explicit at the floor - no inference).
     pub ty: TypeRef,
     pub value: Option<ConstValue>,
 }
@@ -78,7 +81,7 @@ pub enum Stmt {
         mutable: bool,
     },
     Expr(ExprId),
-    /// A block-scope `const` declaration. Purely compile-time: the value is
+    /// a block-scope `const` declaration. purely compile-time: the value is
     /// already folded into [`Body::local_consts`] and every reference inlines
     /// it, so MIR lowering emits nothing for this statement.
     Const(LocalConstId),
@@ -88,19 +91,19 @@ pub enum Stmt {
 pub enum Pat {
     Bind(LocalId),
     /// `Enum.Variant` qualified or bare variant pattern in a match arm.
-    /// Resolved at lowering against the scrutinee enum.
+    /// resolved at lowering against the scrutinee enum.
     Variant {
         enum_id: EnumId,
         idx: u32,
     },
-    /// An int / char / bool literal pattern (`1`, `'a'`, `true`). Float and
-    /// string literals are not patterns (see the parser's `pat`). Matched by
+    /// an int / char / bool literal pattern (`1`, `'a'`, `true`). float and
+    /// string literals are not patterns (see the parser's `pat`). matched by
     /// equality against the scrutinee; the domain check lives in the match
     /// lowering.
     Literal(Literal),
-    /// Irrefutable struct destructure (`Point { x, y }` / `Point { x: px }`):
-    /// each field binds a local. Exhaustive - every struct field is bound (no
-    /// `..`/ignore yet). Used by `let` today; match arms gain it (with guards)
+    /// irrefutable struct destructure (`Point { x, y }` / `Point { x: px }`):
+    /// each field binds a local. exhaustive - every struct field is bound (no
+    /// `..`/ignore yet). used by `let` today; match arms gain it (with guards)
     /// later. MIR expands it into one field-projection `Let` per binding.
     Struct {
         ty: Text,
@@ -111,7 +114,7 @@ pub enum Pat {
     Missing,
 }
 
-/// One field binding inside a [`Pat::Struct`]: project `field` off the scrutinee
+/// one field binding inside a [`Pat::Struct`]: project `field` off the scrutinee
 /// and bind it to `local` (the local's name is the field name, or the rename).
 #[derive(Debug)]
 pub struct StructPatBinding {
@@ -123,7 +126,7 @@ pub struct StructPatBinding {
 pub enum Expr {
     Missing,
     Literal(Literal),
-    /// Resolved local, function, or unknown name. Resolution result is stored
+    /// resolved local, function, or unknown name. resolution result is stored
     /// here so later passes don't redo the lookup.
     Path(Resolution),
     Binary {
@@ -141,7 +144,7 @@ pub enum Expr {
     },
     /// `[a, b, c]` array literal.
     ArrayLit(ThinVec<ExprId>),
-    /// `[value; N]` array repeat: `value` copied `N` times. The element is
+    /// `[value; N]` array repeat: `value` copied `N` times. the element is
     /// evaluated once; `count` is a resolved const length.
     ArrayRepeat {
         value: ExprId,
@@ -175,7 +178,7 @@ pub enum Expr {
     },
     Break,
     Continue,
-    /// `return expr;` / `return;`. Diverges, so it carries no value type. Valid
+    /// `return expr;` / `return;`. diverges, so it carries no value type. valid
     /// only in statement position (like `Break`/`Continue`); MIR lowers it to a
     /// `Return` statement.
     Return(Option<ExprId>),
@@ -193,17 +196,23 @@ pub enum Expr {
         scrut: ExprId,
         arms: ThinVec<MatchArm>,
     },
-    /// `sizeof(T)` kernel intrinsic: a compile-time `usize`. The value is the
-    /// target layout size, which Eye does not model - it leans on the C backend
+    /// `sizeof(T)` kernel intrinsic: a compile-time `usize`. the value is the
+    /// target layout size, which eye does not model - it leans on the c backend
     /// (`sizeof(ctype)`), so the type is carried verbatim to codegen rather than
-    /// folded to an Eye integer. Recognized by callee name like `print`/`len`,
+    /// folded to an eye integer. recognized by callee name like `print`/`len`,
     /// so a user-defined `sizeof` shadows it.
     SizeOf(TypeRef),
+    /// `len(arr)` kernel intrinsic: the element count of the operand's array
+    /// type, a compile-time `usize`. lowering emits this node (keeping the
+    /// structural arity/place + array-ness checks) and the count is folded at
+    /// MIR lowering from the operand's type in `TypeckResults` - so lowering,
+    /// which holds no types after the S2C cutover, need not compute it.
+    Len(ExprId),
     Block(BlockId),
 }
 
-/// A visitor over [`Expr`] variants with default no-op fallthrough.
-/// Implementors override only the variants they care about instead of
+/// a visitor over [`Expr`] variants with default no-op fallthrough.
+/// implementors override only the variants they care about instead of
 /// writing a full enum match.
 pub trait VisitExpr {
     fn visit_missing(&mut self) {}
@@ -228,9 +237,10 @@ pub trait VisitExpr {
     fn visit_cast(&mut self, _operand: ExprId, _ty: &TypeRef) {}
     fn visit_match(&mut self, _scrut: ExprId, _arms: &[MatchArm]) {}
     fn visit_size_of(&mut self, _ty: &TypeRef) {}
+    fn visit_len(&mut self, _operand: ExprId) {}
     fn visit_block(&mut self, _block: BlockId) {}
 
-    /// Visit an expression, dispatching to the per-variant method.
+    /// visit an expression, dispatching to the per-variant method.
     fn visit_expr(&mut self, expr: &Expr) {
         match expr {
             Expr::Missing => self.visit_missing(),
@@ -259,13 +269,14 @@ pub trait VisitExpr {
             Expr::Cast { operand, ty } => self.visit_cast(*operand, ty),
             Expr::Match { scrut, arms } => self.visit_match(*scrut, arms),
             Expr::SizeOf(ty) => self.visit_size_of(ty),
+            Expr::Len(operand) => self.visit_len(*operand),
             Expr::Block(block) => self.visit_block(*block),
         }
     }
 }
 
 impl Expr {
-    /// Visit direct expression-id children stored on this expression. Block
+    /// visit direct expression-id children stored on this expression. block
     /// contents live behind [`BlockId`] and are intentionally left to callers
     /// that have access to the surrounding [`Body`].
     pub fn for_each_child_expr(&self, mut f: impl FnMut(ExprId)) {
@@ -285,7 +296,8 @@ impl Expr {
             Expr::Unary { operand, .. }
             | Expr::Ref { operand }
             | Expr::Deref { operand }
-            | Expr::Cast { operand, .. } => f(*operand),
+            | Expr::Cast { operand, .. }
+            | Expr::Len(operand) => f(*operand),
             Expr::Return(value) => {
                 if let Some(v) = value {
                     f(*v);
@@ -323,17 +335,22 @@ impl Expr {
 #[derive(Debug)]
 pub struct MatchArm {
     pub pat: PatId,
-    /// Optional guard expression (`pat if expr -> body`).
-    /// Evaluated only when the pattern matches; the arm body runs only when
+    /// optional guard expression (`pat if expr -> body`).
+    /// evaluated only when the pattern matches; the arm body runs only when
     /// the guard is also true.
     pub guard: Option<ExprId>,
     pub body: ExprId,
+    /// source span of the whole arm (`pat (if guard)? -> body`). the match
+    /// type-judgment diagnostics (domain, coverage, duplicate, unreachable)
+    /// run in the typeck pass, which has no AST; this lets them anchor on the
+    /// arm exactly as lowering once did. inert for MIR.
+    pub ptr: SyntaxNodePtr,
 }
 
 #[derive(Debug)]
 pub struct StructLitField {
     pub name: Text,
-    /// Always materialized. Shorthand `Point { x }` is desugared at lowering
+    /// always materialized. shorthand `Point { x }` is desugared at lowering
     /// into `Point { x: x }` where the value is a synthesized `Path` expr
     /// whose source-map entry points at the same `StructLitField` syntax node
     /// as the field name.
@@ -349,7 +366,7 @@ pub enum Literal {
     Char(char),
 }
 
-/// Result of name resolution for a `NameRef`. Diagnostic-friendly: unresolved
+/// result of name resolution for a `NameRef`. diagnostic-friendly: unresolved
 /// becomes [`Resolution::Unresolved`] (not a hard error here).
 #[derive(Debug, Clone)]
 pub enum Resolution {
@@ -357,19 +374,19 @@ pub enum Resolution {
     Fn(FnId),
     Struct(StructId),
     Enum(EnumId),
-    /// A top-level compile-time constant. A value (inlined at MIR lowering to
+    /// a top-level compile-time constant. a value (inlined at MIR lowering to
     /// its folded [`ConstValue`]); usable in value position, but `&const` is
     /// illegal (it has no address) and it is not an assignable place.
     Const(ConstId),
-    /// A block-scope `const` ([`Body::local_consts`]). Same semantics as
+    /// a block-scope `const` ([`Body::local_consts`]). same semantics as
     /// [`Resolution::Const`], but resolved lexically rather than at module
     /// level.
     LocalConst(LocalConstId),
-    /// A top-level global: addressable static storage. Unlike a const, it has an
+    /// a top-level global: addressable static storage. unlike a const, it has an
     /// address (`&G` is legal) and is an assignable place when declared `mut`.
-    /// MIR lowers a reference to `Place::Global` (a named C symbol).
+    /// MIR lowers a reference to `Place::Global` (a named c symbol).
     Global(GlobalId),
-    /// A specific variant of an enum. Produced either by qualified access
+    /// a specific variant of an enum. produced either by qualified access
     /// (`Shape.Circle` lowers the whole `FieldExpr` to this) or by
     /// type-directed lookup in a typed context (`let Shape sh = Circle;`).
     Variant {

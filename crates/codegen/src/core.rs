@@ -1,14 +1,14 @@
-//! Codegen: HIR -> MIR -> C source.
+//! codegen: HIR -> MIR -> c source.
 //!
-//! Codegen makes no semantic decisions. It lowers the HIR to MIR
+//! codegen makes no semantic decisions. it lowers the HIR to MIR
 //! ([`mir::lower`]), which flattens control flow and three-addresses every
-//! expression, then mechanically prints the MIR to C ([`mir_emit`]). The
+//! expression, then mechanically prints the MIR to c ([`mir_emit`]). the
 //! supporting modules are pure rendering helpers shared with that emitter:
 //! - [`types`]: type/declarator rendering and the printf specifier map.
 //! - [`arrays`]: the fixed-array struct-wrap representation and the
-//!   program-wide wrapper-typedef collection.
+//! program-wide wrapper-typedef collection.
 //!
-//! The public entry point is [`gen_mir`].
+//! the public entry point is [`gen_mir`].
 
 mod arrays;
 mod mir_emit;

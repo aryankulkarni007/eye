@@ -1,11 +1,11 @@
 //! EXPERIMENTAL: LSP message loop and dispatch backed by a salsa [`Database`].
 //!
-//! The database owns all incremental compilation state. Every request or
+//! the database owns all incremental compilation state. every request or
 //! notification handler gets either `&Database` (queries) or `&mut Database`
-//! (input mutation, e.g. `set_text` on `didChange`). The document store maps
-//! URIs to salsa input handles — never raw strings.
+//! (input mutation, e.g. `set_text` on `didChange`). the document store maps
+//! uris to salsa input handles -- never raw strings.
 //!
-//! Future: when `compile_file` is decomposed into per-function queries,
+//! future: when `compile_file` is decomposed into per-function queries,
 //! handlers will call fine-grained methods like `db.lower_fn(fn_id)` instead
 //! of the whole-file result.
 

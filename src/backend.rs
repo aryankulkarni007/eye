@@ -27,7 +27,7 @@ pub fn emit_and_compile(
     c_file.write_all(generated_c.as_bytes())?;
     println!("c source written to {}", c_output_path.display());
 
-    // Default to `-O0` for the dev/test loop (links far faster); `--release`
+    // default to `-O0` for the dev/test loop (links far faster); `--release`
     // opts into `-O2` for a shipping build.
     let opt_level = if release { "-O2" } else { "-O0" };
     println!("invoking c compiler...");
@@ -55,8 +55,8 @@ pub fn emit_and_compile(
     Ok(())
 }
 
-/// Pipe `source` through `clang-format`, returning the formatted text or the
-/// original input on any failure. Drains stdin from a dedicated writer thread
+/// pipe `source` through `clang-format`, returning the formatted text or the
+/// original input on any failure. drains stdin from a dedicated writer thread
 /// so the call cannot deadlock when both pipes fill.
 fn format_with_clang_format(source: String) -> String {
     let mut child = match Command::new("clang-format")

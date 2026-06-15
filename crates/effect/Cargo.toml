@@ -1,0 +1,18 @@
+[package]
+name = "eye-effect"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "effect"
+
+[dependencies]
+hir.workspace = true
+typeck.workspace = true
+diagnostics.workspace = true
+rustc-hash.workspace = true
+
+[dev-dependencies]
+lexer.workspace = true
+parser.workspace = true
+ast.workspace = true

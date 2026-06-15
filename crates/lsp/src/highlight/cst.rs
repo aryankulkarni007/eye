@@ -316,9 +316,9 @@ fn classify_pat(pat: &ast::Pat, spans: &mut Vec<ClassifiedSpan>, hir: Option<&HI
         }
         ast::Pat::BareIdentPat(bp) => {
             // A5 fix: use HIR name resolution to distinguish
-            //   `match x { y => y }`  (y is a local binding → VARIABLE)
+            // `match x { y => y }` (y is a local binding → VARIABLE)
             // from
-            //   `match shape { Circle => ... }`  (Circle is a variant → ENUM_MEMBER)
+            // `match shape { Circle => ... }` (circle is a variant → enum_member)
             if let Some(nr) = bp.name()
                 && let Some(token) = nr.name()
             {

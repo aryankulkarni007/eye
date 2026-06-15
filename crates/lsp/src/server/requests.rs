@@ -1,7 +1,7 @@
 //! EXPERIMENTAL: LSP request handlers backed by the salsa [`Database`].
 //!
-//! Every handler receives an immutable `&Database` for query access and an
-//! immutable `&DocumentStore` for URI-to-input mapping. The queries are
+//! every handler receives an immutable `&Database` for query access and an
+//! immutable `&DocumentStore` for URI-to-input mapping. the queries are
 //! salsa-memoized, so repeated requests within one revision reuse cached
 //! results without re-execution.
 
@@ -35,8 +35,9 @@ pub fn handle_request(
                     let source = SourceText::new(input.text(db).to_owned());
                     let lexed = database::lex(db, input);
                     let parse = database::parse(db, input);
-                    let hir = database::lowered_file(db, input);
-                    compute_semantic_tokens(&source, &lexed, &parse, &hir).unwrap_or(
+                    let checked = database::lowered_file(db, input);
+                    let hir = &checked.hir;
+                    compute_semantic_tokens(&source, &lexed, &parse, hir).unwrap_or(
                         lsp_types::SemanticTokens {
                             result_id: None,
                             data: vec![],

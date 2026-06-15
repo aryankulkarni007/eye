@@ -1,8 +1,8 @@
 //! EXPERIMENTAL: LSP notification handlers backed by the salsa [`Database`].
 //!
-//! On every `didOpen` / `didChange` the handler mutates the salsa input and
-//! re-queries. Diagnostics phase-gate exactly like the CLI driver: lexer,
-//! then parser, then HIR. The HIR phase goes through the *per-function*
+//! on every `didOpen` / `didChange` the handler mutates the salsa input and
+//! re-queries. diagnostics phase-gate exactly like the CLI driver: lexer,
+//! then parser, then HIR. the HIR phase goes through the *per-function*
 //! query path (`database::hir_diagnostics`), so an edit that re-parses but
 //! leaves a function's body node intact re-checks only the changed bodies.
 
@@ -52,7 +52,7 @@ pub fn handle_notification(
     Ok(())
 }
 
-/// Query the database and publish every diagnostic (lexer, parser, HIR),
+/// query the database and publish every diagnostic (lexer, parser, HIR),
 /// short-circuiting exactly as the CLI driver does.
 fn publish_diagnostics(
     connection: &Connection,
@@ -81,7 +81,7 @@ fn compute_diagnostics(
     source: SourceText,
     uri: &Url,
 ) -> Vec<lsp_types::Diagnostic> {
-    // Phase 1 -- lexer: no tree exists, so root is None.
+    // phase 1 -- lexer: no tree exists, so root is none.
     let lexed = database::lex(db, input);
     if !lexed.diags.is_empty() {
         return diags_to_lsp(
@@ -93,7 +93,7 @@ fn compute_diagnostics(
         );
     }
 
-    // Phase 2 -- parser: tree exists.
+    // phase 2 -- parser: tree exists.
     let parse = database::parse(db, input);
     let root = parse.syntax();
     if !parse.diagnostics.is_empty() {
@@ -106,7 +106,7 @@ fn compute_diagnostics(
         );
     }
 
-    // Phase 3 -- HIR: item-scope + per-function body diagnostics.
+    // phase 3 -- HIR: item-scope + per-function body diagnostics.
     diags_to_lsp(
         &source,
         uri,

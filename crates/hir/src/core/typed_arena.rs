@@ -1,21 +1,21 @@
-//! EXPERIMENTAL: Type-safe arena wrapper.
+//! EXPERIMENTAL: type-safe arena wrapper.
 //!
 //! [`TypedArena<T, Id>`] wraps an [`Arena<T>`] and returns `Id` (a newtype
-//! around [`Idx<T>`]) from [`alloc`](TypedArena::alloc) instead of a raw
-//! `Idx<T>`.  Together with the newtype indices in [`ids`](super::ids) this
+//! around [`Idx<T>`]) from [`alloc`](typedarena::alloc) instead of a raw
+//! `Idx<T>`. together with the newtype indices in [`ids`](super::ids) this
 //! makes every arena index carry its element type at the type level, so a
 //! `StructId` and a `FnId` are distinct types that the compiler refuses to
 //! mix up.
 //!
-//! The wrapper is transparent to everything that reads from arenas (`Index`,
+//! the wrapper is transparent to everything that reads from arenas (`Index`,
 //! `IndexMut`, `iter`, `len`) so the vast majority of call sites need no
 //! changes beyond the struct-field type.
 //!
 //! # `ArenaMap` compatibility
 //!
-//! [`ArenaMap`](la_arena::ArenaMap) in `la_arena` v0.3 is concretely typed to
-//! key on [`Idx<T>`], so `ArenaMap` fields in [`Body`](super::Body) still
-//! store `Idx<T>` keys.  Use `.into()` to convert a newtype `Id` to `Idx<T>`
+//! [`ArenaMap`](la_arena::arenamap) in `la_arena` v0.3 is concretely typed to
+//! key on [`Idx<T>`], so `ArenaMap` fields in [`Body`](super::body) still
+//! store `Idx<T>` keys. use `.into()` to convert a newtype `Id` to `Idx<T>`
 //! when calling `ArenaMap::insert` / `get`.
 
 use std::marker::PhantomData;
@@ -23,10 +23,10 @@ use std::ops::{Index, IndexMut};
 
 use la_arena::{Arena, Idx};
 
-/// EXPERIMENTAL(typed-arena): An arena that returns a newtype `Id` from
-/// [`alloc`](TypedArena::alloc) instead of a raw [`Idx<T>`].
+/// EXPERIMENTAL(typed-arena): an arena that returns a newtype `Id` from
+/// [`alloc`](typedarena::alloc) instead of a raw [`Idx<T>`].
 ///
-/// `Id` must implement [`From<Idx<T>>`] (for [`alloc`](TypedArena::alloc))
+/// `Id` must implement [`From<Idx<T>>`] (for [`alloc`](typedarena::alloc))
 /// and [`Into<Idx<T>>`] (for [`Index`] / [`IndexMut`]).
 /// `PhantomData<fn() -> Id>` rather than `PhantomData<*const Id>`: the arena
 /// neither stores nor points at an `Id`, and the `fn` spelling keeps the
@@ -62,21 +62,21 @@ impl<T, Id> Default for TypedArena<T, Id> {
     }
 }
 
-// ---- allocation (requires Id: From<Idx<T>>) --------------------------------
+// ---- allocation (requires id: from<idx<t>>) --------------------------------
 
 impl<T, Id: From<Idx<T>>> TypedArena<T, Id> {
-    /// Allocate a new element, returning its typed index.
+    /// allocate a new element, returning its typed index.
     pub fn alloc(&mut self, value: T) -> Id {
         Id::from(self.inner.alloc(value))
     }
 
-    /// Borrow the inner [`Arena<T>`] for low-level `ArenaMap` operations.
+    /// borrow the inner [`Arena<T>`] for low-level `ArenaMap` operations.
     pub fn inner(&self) -> &Arena<T> {
         &self.inner
     }
 }
 
-// ---- read / write (requires Id: Into<Idx<T>>) ------------------------------
+// ---- read / write (requires id: into<idx<t>>) ------------------------------
 
 impl<T, Id: Into<Idx<T>> + Copy> Index<Id> for TypedArena<T, Id> {
     type Output = T;
@@ -92,41 +92,41 @@ impl<T, Id: Into<Idx<T>> + Copy> IndexMut<Id> for TypedArena<T, Id> {
     }
 }
 
-// ---- iteration (requires Id: From<Idx<T>>) ---------------------------------
+// ---- iteration (requires id: from<idx<t>>) ---------------------------------
 
 impl<T, Id: From<Idx<T>>> TypedArena<T, Id> {
-    /// Iterate over `(Id, &T)` pairs in insertion order.
+    /// iterate over `(Id, &T)` pairs in insertion order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (Id, &T)> + DoubleEndedIterator + Clone {
         self.inner.iter().map(|(idx, value)| (Id::from(idx), value))
     }
 
-    /// The number of elements in the arena.
+    /// the number of elements in the arena.
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
-    /// Whether the arena is empty.
+    /// whether the arena is empty.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
 
-    /// Allocate a new element and return the raw [`Idx<T>`] (for callers that
-    /// need to pass the index to an [`ArenaMap`](la_arena::ArenaMap)).
+    /// allocate a new element and return the raw [`Idx<T>`] (for callers that
+    /// need to pass the index to an [`ArenaMap`](la_arena::arenamap)).
     pub fn alloc_raw(&mut self, value: T) -> Idx<T> {
         self.inner.alloc(value)
     }
 }
 
-/// EXPERIMENTAL(typed-arena): Macro to define a type-safe arena index newtype.
+/// EXPERIMENTAL(typed-arena): macro to define a type-safe arena index newtype.
 ///
 /// `$name` becomes a struct newtype around [`Idx<$inner>`] that implements
 /// [`From<Idx<$inner>>`] and [`Into<Idx<$inner>>`].
 ///
-/// # Example
+/// # example
 ///
 /// ```ignore
-/// arena_id!(StructId, Struct);
-/// arena_id!(FnId, Function);
+/// arena_id!(structid, struct);
+/// arena_id!(fnid, function);
 /// ```
 #[macro_export]
 macro_rules! arena_id {

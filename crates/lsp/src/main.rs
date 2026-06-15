@@ -1,4 +1,4 @@
-//! `eye-lsp` binary — stdio language server for `.eye` files.
+//! `eye-lsp` binary -- stdio language server for `.eye` files.
 
 use lsp_server::Connection;
 

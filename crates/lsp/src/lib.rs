@@ -1,6 +1,6 @@
-//! Eye language server: semantic highlighting and compiler diagnostics.
+//! eye language server: semantic highlighting and compiler diagnostics.
 //!
-//! Split by concern:
+//! split by concern:
 //! - [`legend`]: semantic token legend and server capabilities
 //! - [`documents`]: open buffer store
 //! - [`highlight`]: semantic token computation (CST + lexer)
@@ -16,7 +16,7 @@ pub mod server;
 pub use highlight::compute_semantic_tokens;
 pub use legend::server_capabilities;
 
-/// Run initialize + the main message loop. Caller must join I/O threads afterward.
+/// run initialize + the main message loop. caller must join i/o threads afterward.
 pub fn run(connection: &lsp_server::Connection) -> anyhow::Result<()> {
     let caps = server_capabilities();
     connection.initialize(serde_json::to_value(caps)?)?;

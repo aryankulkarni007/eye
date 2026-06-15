@@ -8,6 +8,7 @@ name = "mir"
 
 [dependencies]
 hir.workspace = true
+typeck.workspace = true
 ast.workspace = true
 la-arena.workspace = true
 rustc-hash.workspace = true

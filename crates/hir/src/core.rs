@@ -1,22 +1,22 @@
 //! HIR: AST -> name-resolved, desugared, arena-allocated IR.
 //!
-//! Two layers per crate:
-//! - **ItemTree**: module-level signatures (structs, enums, fn headers). One
-//!   per file. Forward references work because all items are collected before
-//!   any body is lowered.
-//! - **Body**: per-function expression/statement/pattern arenas plus a source
-//!   map back to syntax pointers. Per-fn so editing one fn body invalidates
-//!   only that body, not the whole crate.
+//! two layers per crate:
+//! - **itemtree**: module-level signatures (structs, enums, fn headers). one
+//! per file. forward references work because all items are collected before
+//! any body is lowered.
+//! - **body**: per-function expression/statement/pattern arenas plus a source
+//! map back to syntax pointers. per-fn so editing one fn body invalidates
+//! only that body, not the whole crate.
 //!
-//! The module is split by concern:
+//! the module is split by concern:
 //! - [`ids`]: typed arena-index aliases.
 //! - [`items`]: module-level item signatures + the [`ItemScope`].
 //! - [`types`]: [`TypeRef`], the HIR-time (unresolved) type representation.
 //! - [`body`]: the per-fn body IR ([`Body`], [`Expr`], [`Stmt`], [`Pat`], ...).
 //! - [`lower`]: the lowering logic and entry point [`lower_source_file`],
-//!   split into `lower/{scopes,ctx,types,collect,fn_body,stmt,pat,expr}`.
+//! split into `lower/{scopes,ctx,types,collect,fn_body,stmt,pat,expr}`.
 //!
-//! This file holds only the top-level [`HIR`] aggregate and re-exports every
+//! this file holds only the top-level [`HIR`] aggregate and re-exports every
 //! submodule so the public path stays `hir::core::*`.
 
 mod body;
@@ -47,17 +47,17 @@ pub use typed_arena::TypedArena;
 
 pub type Text = SmolStr;
 
-/// Decode a string-literal's source spelling (without surrounding quotes) into
-/// its byte sequence, expanding escapes. This is the single source of truth for
+/// decode a string-literal's source spelling (without surrounding quotes) into
+/// its byte sequence, expanding escapes. this is the single source of truth for
 /// a string's byte content: its length is the literal's `N` in `&[uint8; N]` and
-/// its bytes seed the backing static. The *stored* `Literal::String` keeps the
-/// raw spelling (the `print` / format paths re-emit it as a C string literal and
-/// let C decode), so this decoder feeds only `N` and the byte-array initializer.
+/// its bytes seed the backing static. the *stored* `Literal::String` keeps the
+/// raw spelling (the `print` / format paths re-emit it as a c string literal and
+/// let c decode), so this decoder feeds only `N` and the byte-array initializer.
 ///
-/// Recognized escapes: `\n \t \r \0 \\ \" \'`. An unrecognized escape keeps both
-/// bytes (the backslash and the char), matching the lenient front end. A `\0`
-/// embeds a NUL, which truncates `strlen` / `%s` on the C-string backing - an
-/// accepted limit of the C-backed representation.
+/// recognized escapes: `\n \t \r \0 \\ \" \'`. an unrecognized escape keeps both
+/// bytes (the backslash and the char), matching the lenient front end. a `\0`
+/// embeds a NUL, which truncates `strlen` / `%s` on the c-string backing - an
+/// accepted limit of the c-backed representation.
 ///
 /// ```
 /// # use hir::core::decode_string_literal;
@@ -94,8 +94,8 @@ pub fn decode_string_literal(raw: &str) -> Vec<u8> {
     out
 }
 
-/// Decode a char literal's inner text (between the quotes) to a single `char`,
-/// expanding the same escapes as [`decode_string_literal`]. Multi-char bodies
+/// decode a char literal's inner text (between the quotes) to a single `char`,
+/// expanding the same escapes as [`decode_string_literal`]. multi-char bodies
 /// take the first decoded char; an empty body falls back to NUL, matching the
 /// lenient front end.
 ///
@@ -103,7 +103,7 @@ pub fn decode_string_literal(raw: &str) -> Vec<u8> {
 /// # use hir::core::decode_char_literal;
 /// assert_eq!(decode_char_literal("\\n"), '\n');
 /// assert_eq!(decode_char_literal("\\\\"), '\\');
-/// assert_eq!(decode_char_literal("A"), 'A');
+/// assert_eq!(decode_char_literal("a"), 'a');
 /// assert_eq!(decode_char_literal(""), '\0');
 /// assert_eq!(decode_char_literal("\\'"), '\'');
 /// ```
@@ -128,23 +128,23 @@ pub fn decode_char_literal(inner: &str) -> char {
     }
 }
 
-/// Create an [`FxHashMap`] with the given initial capacity. Avoids the resize
+/// create an [`FxHashMap`] with the given initial capacity. avoids the resize
 /// overhead that `Default` incurs when the eventual size is known.
 pub fn fx_map<K, V>(capacity: usize) -> FxHashMap<K, V> {
     FxHashMap::with_capacity_and_hasher(capacity, FxBuildHasher)
 }
 
-/// Create an [`FxHashSet`] with the given initial capacity.
+/// create an [`FxHashSet`] with the given initial capacity.
 pub fn fx_set<V>(capacity: usize) -> FxHashSet<V> {
     FxHashSet::with_capacity_and_hasher(capacity, FxBuildHasher)
 }
 
-/// Top-level lowered module. Items live in flat arenas; bodies are keyed by
+/// top-level lowered module. items live in flat arenas; bodies are keyed by
 /// [`FnId`] through [`Function::body`].
 ///
-/// EXPERIMENTAL(typed-arena): Arena fields use [`TypedArena<T, XId>`] so every
+/// EXPERIMENTAL(typed-arena): arena fields use [`TypedArena<T, XId>`] so every
 /// index carries its element type at the type level and the compiler refuses
-/// to mix up `StructId` with `FnId`.  Every `hir.structs[id]` and
+/// to mix up `StructId` with `FnId`. every `hir.structs[id]` and
 /// `arena.alloc(value)` site is unchanged because [`Index<StructId>`] and
 /// [`TypedArena::alloc`] work through the wrapper.
 #[derive(Debug, Default)]
@@ -158,20 +158,20 @@ pub struct HIR {
     pub fields: TypedArena<Field, FieldId>,
     pub functions: TypedArena<Function, FnId>,
     pub bodies: TypedArena<Body, BodyId>,
-    /// Module-level scope. Both namespaces flat for v0.1 since structs + fns
+    /// module-level scope. both namespaces flat for v0.1 since structs + fns
     /// don't collide (struct names start uppercase by convention, but the
     /// resolver treats them in one map until the language says otherwise).
     pub items: ItemScope,
-    /// Diagnostics produced during lowering. Non-empty means the input had
+    /// diagnostics produced during lowering. non-empty means the input had
     /// semantic issues even if the parser was happy.
     pub diagnostics: Sink<HirError>,
-    /// Interned type representations. Every [`TypeRef`] handle in this HIR
+    /// interned type representations. every [`TypeRef`] handle in this HIR
     /// is valid in this interner.
     ///
-    /// Plain (no `RefCell`): collection interns through `&mut HIR`, and body
+    /// plain (no `RefCell`): collection interns through `&mut HIR`, and body
     /// lowering owns a working interner inside [`lower::LoweringCtx`] (taken
     /// from here and restored by the whole-file wrapper, or cloned from the
-    /// frozen scope by the per-fn query path). After lowering completes the
+    /// frozen scope by the per-fn query path). after lowering completes the
     /// interner is read-only, which is what the salsa query layer requires
     /// (`Send + Sync` query results, no interior mutability).
     pub types: TypeInterner,

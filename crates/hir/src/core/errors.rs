@@ -1,15 +1,18 @@
-//! Typed HIR diagnostics, partitioned into the four HIR error classes:
-//! [`ResolveError`] (`R`), [`TypeError`] (`T`), [`PatternError`] (`P`), and
-//! [`ConstError`] (`C`). (The `U` "unsupported" class exists in the diagnostics
-//! taxonomy but currently has no HIR members.) All are carried by
+//! typed HIR diagnostics, partitioned into the HIR error classes:
+//! [`ResolveError`] (`R`), [`TypeError`] (`T`), [`PatternError`] (`P`),
+//! [`ConstError`] (`C`), and [`EffectError`] (`E`). (the `U` "unsupported"
+//! class exists in the diagnostics taxonomy but currently has no HIR members.)
+//! `EffectError` data lives here (the `HirError` aggregate keeps the crate
+//! graph acyclic) but its only producer is `crates/effect` (EFFECT.md). all
+//! are carried by
 //! [`HirError`], the single accumulator kind, so lowering keeps one
-//! [`Sink`](diagnostics::Sink) while every entry stays concretely typed for
+//! [`Sink`](diagnostics::sink) while every entry stays concretely typed for
 //! in-crate `matches!` assertions.
 //!
 //! `Display` is hand-written rather than derived via `thiserror`: several
 //! messages need list-joining and pluralization that a static `#[error("...")]`
-//! template cannot express. The `Display + Debug` bound is what the
-//! [`Diagnostic`](diagnostics::Diagnostic) trait requires; how each impl
+//! template cannot express. the `Display + Debug` bound is what the
+//! [`Diagnostic`](diagnostics::diagnostic) trait requires; how each impl
 //! supplies it is a per-crate choice.
 
 use std::fmt;
@@ -53,51 +56,51 @@ pub enum ResolveError {
     EnumNameAsValue {
         name: Text,
     },
-    /// A name in value position resolves to nothing: not a local, function,
-    /// type, or variant. The `print`/`len` call intrinsics are excepted (they
-    /// are sniffed by their unresolved name). This is the principled
+    /// a name in value position resolves to nothing: not a local, function,
+    /// type, or variant. the `print`/`len` call intrinsics are excepted (they
+    /// are sniffed by their unresolved name). this is the principled
     /// replacement for the old unresolved-name accident, where the HIR-walk
-    /// backend emitted any unknown identifier verbatim as C (an undeclared
+    /// backend emitted any unknown identifier verbatim as c (an undeclared
     /// `printf(...)` the linker resolved, the bare `return` keyword); MIR is a
-    /// resolved IR, so it diagnoses here instead. See `docs/planning/DEFER.md`.
+    /// resolved IR, so it diagnoses here instead. see `docs/planning/DEFER.md`.
     UnresolvedName {
         name: Text,
     },
-    /// A struct type name used in value position (`let x = Point;`). A struct is
-    /// a type, not a value. Sibling of [`ResolveError::EnumNameAsValue`]; a
+    /// a struct type name used in value position (`let x = Point;`). a struct is
+    /// a type, not a value. sibling of [`ResolveError::EnumNameAsValue`]; a
     /// struct *literal* (`Point { .. }`) is a separate, valid form.
     StructNameAsValue {
         name: Text,
     },
-    /// An item, field, or parameter name that is a C keyword (`struct`,
-    /// `register`, ...). The C backend emits these names verbatim (fields as
+    /// an item, field, or parameter name that is a c keyword (`struct`,
+    /// `register`, ...). the c backend emits these names verbatim (fields as
     /// `.name`, parameters and items as bare identifiers), so a keyword would
-    /// produce illegal C. Rejected at collection rather than mangled: a mangled
-    /// name would diverge from the source in the emitted C and any debugger.
+    /// produce illegal c. rejected at collection rather than mangled: a mangled
+    /// name would diverge from the source in the emitted c and any debugger.
     NameIsCKeyword {
         name: Text,
-        /// What kind of declaration carried the name (`"field"`, `"parameter"`,
+        /// what kind of declaration carried the name (`"field"`, `"parameter"`,
         /// `"function"`, ...), for the message.
         what: &'static str,
     },
-    /// A struct literal whose name is not a declared struct or union
-    /// (`Foo { x: 1 }` with no `Foo`). Without this check the literal emits
+    /// a struct literal whose name is not a declared struct or union
+    /// (`Foo { x: 1 }` with no `Foo`). without this check the literal emits
     /// `(Foo){ .x = 1 }` and clang reports an undeclared identifier.
     UnknownStructLiteral {
         name: Text,
     },
-    /// A type annotation names a type that is not declared: not a primitive,
-    /// struct, union, enum, or opaque extern type. Without this check the name
-    /// is emitted verbatim and clang reports "unknown type name". Checked on
+    /// a type annotation names a type that is not declared: not a primitive,
+    /// struct, union, enum, or opaque extern type. without this check the name
+    /// is emitted verbatim and clang reports "unknown type name". checked on
     /// every declared type: fields, parameters, return types, globals, consts,
     /// `let` annotations, and casts. `sizeof` arguments are deliberately
-    /// exempt - `sizeof(ctype)` leans on the C backend as the layout
+    /// exempt - `sizeof(ctype)` leans on the c backend as the layout
     /// authority (docs/features/SIZEOF.md).
     UnknownTypeName {
         name: Text,
     },
-    /// A `let`/`mut`/`const` binding whose name is already bound in the same
-    /// lexical scope (ruled 2026-06-12). Shadowing in a *nested* scope stays
+    /// a `let`/`mut`/`const` binding whose name is already bound in the same
+    /// lexical scope (ruled 2026-06-12). shadowing in a *nested* scope stays
     /// legal; same-scope rebinding is rejected conservatively (it can be
     /// relaxed to a shadowing rule later; the reverse would break programs).
     DuplicateLocal {
@@ -130,19 +133,19 @@ pub enum TypeError {
     },
     /// `return expr;` with a value in a function that returns nothing.
     ReturnValueInVoid,
-    /// A struct/union that contains itself by value (directly, mutually, or
-    /// through an array), making it infinite-size. The cycle must be broken with
+    /// a struct/union that contains itself by value (directly, mutually, or
+    /// through an array), making it infinite-size. the cycle must be broken with
     /// a pointer (`Node* next`, not `Node next`).
     RecursiveValueType {
         name: Text,
     },
-    /// A call `e(...)` whose callee `e` is a value that is not a function
+    /// a call `e(...)` whose callee `e` is a value that is not a function
     /// pointer (e.g. `let int32 x = 5; x(3);`).
     CallNonFunction {
         found: String,
     },
-    /// `main` declares parameters. The C entry shim calls it with none, so a
-    /// parameterized `main` would emit C that clang rejects. (Any *return* type
+    /// `main` declares parameters. the c entry shim calls it with none, so a
+    /// parameterized `main` would emit c that clang rejects. (any *return* type
     /// is allowed - the shim adapts it to the process exit code.)
     MainHasParams,
     UnionLiteralFieldCount {
@@ -174,31 +177,31 @@ pub enum TypeError {
     SizeofArity {
         found: usize,
     },
-    /// `sizeof`'s argument is not a named type. At the floor only a bare type
+    /// `sizeof`'s argument is not a named type. at the floor only a bare type
     /// name is accepted (`sizeof(int32)`, `sizeof(Point)`); compound types
     /// (`sizeof(&T)`, `sizeof([T; N])`) and value expressions are rejected.
     SizeofNotAType,
     MatchScrutineeNotEnum,
-    /// Assignment to a binding declared immutable with `let` (Eye is
-    /// immutable-by-default; `mut` opts in). Covers compound assignment and
-    /// writes through a field/index projection rooted in the binding. A write
+    /// assignment to a binding declared immutable with `let` (eye is
+    /// immutable-by-default; `mut` opts in). covers compound assignment and
+    /// writes through a field/index projection rooted in the binding. a write
     /// through a pointer (`*p = ..`) is not tracked - the raw-pointer escape.
     AssignToImmutable {
         name: Text,
     },
-    /// A call expression that produces no value (void) where a value is
+    /// a call expression that produces no value (void) where a value is
     /// expected - e.g. `let int32 x = f()` where `f` returns nothing, or
     /// `return f()` in a typed function.
     VoidValueInValuePosition,
-    /// A `let` / `mut` binding with no type annotation. Type inference is on
+    /// a `let` / `mut` binding with no type annotation. type inference is on
     /// hiatus, so an explicit type is required; without it the binding would
     /// reach codegen as an `Error` type.
     MissingTypeAnnotation {
         name: Text,
     },
-    /// A call with the wrong number of arguments (CLEAK L3). For a variadic
+    /// a call with the wrong number of arguments (CLEAK L3). for a variadic
     /// extern signature `expected` is the minimum (the named parameters); a
-    /// non-variadic call must match the count exactly. Argument *types* are
+    /// non-variadic call must match the count exactly. argument *types* are
     /// not checked here (that is the typeck pass); the count never needs
     /// inference.
     CallArityMismatch {
@@ -208,38 +211,38 @@ pub enum TypeError {
         /// `true` when the callee is variadic, so `expected` is a minimum.
         variadic: bool,
     },
-    /// Indexing a value of type `ptr` (CLEAK L7). `ptr` is the untyped
-    /// pointer (C `void*`): it has no element type, so `p[i]` cannot be
+    /// indexing a value of type `ptr` (CLEAK L7). `ptr` is the untyped
+    /// pointer (c `void*`): it has no element type, so `p[i]` cannot be
     /// sized and clang rejects the subscript.
     IndexOnPtr,
-    /// Dereferencing a value of type `ptr`. It has no pointee type, so `*p`
+    /// dereferencing a value of type `ptr`. it has no pointee type, so `*p`
     /// has no value type; clang rejects the indirection under `-pedantic`.
     DerefOfPtr,
-    /// Arithmetic or bitwise operation on a value of type `ptr` (CLEAK P1).
-    /// `void*` arithmetic is a GNU extension, not standard C, and there is no
-    /// element size to scale by. Comparisons (`==`, `<`, ...) stay allowed.
+    /// arithmetic or bitwise operation on a value of type `ptr` (CLEAK P1).
+    /// `void*` arithmetic is a GNU extension, not standard c, and there is no
+    /// element size to scale by. comparisons (`==`, `<`, ...) stay allowed.
     ArithmeticOnPtr {
         op: &'static str,
     },
-    /// An integer literal whose value does not fit the integer type the
+    /// an integer literal whose value does not fit the integer type the
     /// context gives it (CLEAK M1): the declared type at a `let`, argument,
-    /// return, or field, or the `int32` literal default. Without this check
-    /// the raw decimal is emitted into C and the value silently truncates
+    /// return, or field, or the `int32` literal default. without this check
+    /// the raw decimal is emitted into c and the value silently truncates
     /// (clang only warns).
     IntLiteralOutOfRange {
-        /// The literal as written, including a leading `-` when negated.
+        /// the literal as written, including a leading `-` when negated.
         value: String,
         ty: Text,
         min: String,
         max: String,
     },
-    /// A struct literal field with no field name (`Point { 1, 2 }`).
-    /// Positional initialization is not supported: lowering carries fields by
+    /// a struct literal field with no field name (`Point { 1, 2 }`).
+    /// positional initialization is not supported: lowering carries fields by
     /// name only, so a positional value would be silently dropped (the struct
     /// would be zero-initialized).
     StructLitPositional,
     /// `println` placeholder/argument count mismatch (U5): the `{}` count in a
-    /// literal format string must equal the value-argument count. Unchecked,
+    /// literal format string must equal the value-argument count. unchecked,
     /// an exhausted placeholder emitted `%d` with no matching argument and
     /// extra arguments were forwarded to printf - varargs UB both ways.
     PrintlnArityMismatch {
@@ -247,16 +250,16 @@ pub enum TypeError {
         args: usize,
     },
     /// `println` with no arguments at all: there is no format string, and the
-    /// bare `printf()` it emitted is not legal C.
+    /// bare `printf()` it emitted is not legal c.
     PrintlnMissingFormat,
-    /// A char literal outside ASCII: `char` is one byte, but the literal's
-    /// UTF-8 encoding is more than one, and the multibyte C char constant it
+    /// a char literal outside ASCII: `char` is one byte, but the literal's
+    /// UTF-8 encoding is more than one, and the multibyte c char constant it
     /// emitted has an implementation-defined value.
     CharLiteralNotAscii {
         ch: char,
     },
-    /// Arithmetic or bitwise operation on an enum value (ruled 2026-06-12:
-    /// enums are opaque, not ordinal). Comparisons stay allowed; `as` casts
+    /// arithmetic or bitwise operation on an enum value (ruled 2026-06-12:
+    /// enums are opaque, not ordinal). comparisons stay allowed; `as` casts
     /// to an integer type stay as the explicit escape.
     ArithmeticOnEnum {
         op: &'static str,
@@ -280,35 +283,35 @@ pub enum PatternError {
         enum_name: Text,
         missing: Vec<Text>,
     },
-    /// A primitive-domain match is not total. `bool` is finite-provable, so
+    /// a primitive-domain match is not total. `bool` is finite-provable, so
     /// `missing` names the uncovered values (`true`/`false`); `int`/`char` are
     /// too large to enumerate, so `missing` is empty and the fix is a `_` arm.
     NonExhaustivePrimitive {
         ty: Text,
         missing: Vec<Text>,
     },
-    /// A pattern that cannot belong to the scrutinee's domain - a literal against
+    /// a pattern that cannot belong to the scrutinee's domain - a literal against
     /// an enum, a variant against a primitive, or a `bool` literal against an
     /// integer (and vice versa).
     PatternDomainMismatch {
         scrutinee: Text,
         pattern: Text,
     },
-    /// A struct destructure (`let Point { .. } = p`) names a type that is not a
+    /// a struct destructure (`let Point { .. } = p`) names a type that is not a
     /// known struct.
     DestructureNotAStruct {
         ty: Text,
     },
-    /// A struct destructure binds a field the struct does not have.
+    /// a struct destructure binds a field the struct does not have.
     DestructureUnknownField {
         ty: Text,
         field: Text,
     },
-    /// A struct destructure binds the same field twice.
+    /// a struct destructure binds the same field twice.
     DestructureDuplicateField {
         field: Text,
     },
-    /// A struct destructure does not bind every field. Destructuring is
+    /// a struct destructure does not bind every field. destructuring is
     /// exhaustive at the floor (no `..`/ignore yet), so a missing field is an
     /// error.
     DestructureNonExhaustive {
@@ -317,7 +320,7 @@ pub enum PatternError {
     },
 }
 
-/// `C`: array-shape / compile-time-constant errors. Not `Copy`: the const-expr
+/// `C`: array-shape / compile-time-constant errors. not `Copy`: the const-expr
 /// variants carry the offending name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstError {
@@ -329,35 +332,56 @@ pub enum ConstError {
         len: u64,
     },
     NegativeIndex,
-    /// A `const` whose initializer references itself, directly or through a
+    /// a `const` whose initializer references itself, directly or through a
     /// chain of other consts.
     ConstCycle {
         name: Text,
     },
-    /// A name in a const-expr that does not resolve to another `const` (a local,
+    /// a name in a const-expr that does not resolve to another `const` (a local,
     /// a function, an undeclared name - none are compile-time values).
     ConstUnknownName {
         name: Text,
     },
-    /// An operation a const-expr cannot fold: a function call (that is CTFE,
+    /// an operation a const-expr cannot fold: a function call (that is CTFE,
     /// far-future), or any non-constant operand.
     NotAConstExpr,
-    /// Integer division or modulo by a zero constant.
+    /// integer division or modulo by a zero constant.
     ConstDivByZero,
     /// `&const` - taking the address of a value that has none.
     RefOfConst {
         name: Text,
     },
-    /// Assigning to a `const` - it is a value, not storage.
+    /// assigning to a `const` - it is a value, not storage.
     AssignToConst {
         name: Text,
     },
-    /// A `const` used as an array length whose folded value is not a
+    /// a `const` used as an array length whose folded value is not a
     /// non-negative integer.
     ArrayLenNotInteger,
 }
 
-/// The single HIR diagnostic kind. Lowering accumulates a `Sink<HirError>`;
+/// `E`: machine-EFFECT contract failures (EFFECT.md). the data lives here so the
+/// `HirError` aggregate stays the single accumulator kind; `crates/effect` is
+/// the only producer (it owns the atom set and runs inference).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectError {
+    /// an effect annotation names something outside the atom set (`pure`, `io`,
+    /// `ffi`, `state`). effect names are contextual keywords, so this is a
+    /// semantic error at validation, not a parse error - better recovery.
+    UnknownEffect { name: Text },
+    /// a fn's declared effect set does not equal its inferred set (the
+    /// exact-match contract). `declared`/`inferred` are rendered set
+    /// descriptions (`pure`, or `io | state`); `witness` is an optional
+    /// "why" trail to a concrete primitive (EFFECT.md witness edges).
+    EffectMismatch {
+        function: Text,
+        declared: String,
+        inferred: String,
+        witness: Option<String>,
+    },
+}
+
+/// the single HIR diagnostic kind. lowering accumulates a `Sink<HirError>`;
 /// the renderer routes on [`Code`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirError {
@@ -365,6 +389,7 @@ pub enum HirError {
     Type(TypeError),
     Pattern(PatternError),
     Const(ConstError),
+    Effect(EffectError),
 }
 
 impl From<ResolveError> for HirError {
@@ -387,8 +412,13 @@ impl From<ConstError> for HirError {
         HirError::Const(e)
     }
 }
+impl From<EffectError> for HirError {
+    fn from(e: EffectError) -> Self {
+        HirError::Effect(e)
+    }
+}
 
-/// Join names as a comma-separated list of backtick-quoted items.
+/// join names as a comma-separated list of backtick-quoted items.
 fn join_ticked(items: &[Text]) -> String {
     items
         .iter()
@@ -733,6 +763,26 @@ impl fmt::Display for ConstError {
     }
 }
 
+impl fmt::Display for EffectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EffectError::UnknownEffect { name } => write!(
+                f,
+                "unknown effect `{name}`; the effects are `pure`, `io`, `ffi`, `state`"
+            ),
+            EffectError::EffectMismatch {
+                function,
+                declared,
+                inferred,
+                ..
+            } => write!(
+                f,
+                "`{function}` declares `{declared}` but its effect is `{inferred}`"
+            ),
+        }
+    }
+}
+
 impl fmt::Display for HirError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -740,6 +790,7 @@ impl fmt::Display for HirError {
             HirError::Type(e) => e.fmt(f),
             HirError::Pattern(e) => e.fmt(f),
             HirError::Const(e) => e.fmt(f),
+            HirError::Effect(e) => e.fmt(f),
         }
     }
 }
@@ -827,6 +878,21 @@ impl Diagnostic for HirError {
                 ConstError::AssignToConst { .. } => Code::new(Class::Const, 11),
                 ConstError::ArrayLenNotInteger => Code::new(Class::Const, 12),
             },
+            HirError::Effect(e) => match e {
+                EffectError::UnknownEffect { .. } => Code::new(Class::Effect, 1),
+                EffectError::EffectMismatch { .. } => Code::new(Class::Effect, 2),
+            },
+        }
+    }
+
+    fn notes(&self) -> Vec<std::borrow::Cow<'static, str>> {
+        match self {
+            // the witness trail to the concrete primitive that produced the
+            // unexpected EFFECT (EFFECT.md witness edges).
+            HirError::Effect(EffectError::EffectMismatch {
+                witness: Some(w), ..
+            }) => vec![std::borrow::Cow::Owned(w.clone())],
+            _ => Vec::new(),
         }
     }
 }

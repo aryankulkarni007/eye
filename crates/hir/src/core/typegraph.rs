@@ -1,23 +1,23 @@
-//! Type-declaration dependency graph: the shared edge model behind both the
-//! value-recursion check (this crate) and the C type-declaration ordering
-//! (codegen). Both must classify edges identically - a divergence would either
-//! reject a valid program or emit unorderable C (a raw clang error) - so this
+//! type-declaration dependency graph: the shared edge model behind both the
+//! value-recursion check (this crate) and the c type-declaration ordering
+//! (codegen). both must classify edges identically - a divergence would either
+//! reject a valid program or emit unorderable c (a raw clang error) - so this
 //! module is the single source of that classification.
 //!
-//! A node is a nominal type (struct/union, by name), a fixed-array value wrapper
+//! a node is a nominal type (struct/union, by name), a fixed-array value wrapper
 //! (by element type + length), or a function-pointer typedef (by params + ret).
-//! Node X has a **hard edge** to node Y when Y's C definition must be emitted
-//! before X's: X embeds Y by value. A pointer or reference to a nominal/array Y
-//! is a **soft edge** - Y is forward-declared first (every struct, union, and
+//! node x has a **hard edge** to node y when y's c definition must be emitted
+//! before x's: x embeds y by value. a pointer or reference to a nominal/array y
+//! is a **soft edge** - y is forward-declared first (every struct, union, and
 //! array wrapper gets a named-tag forward declaration) - and yields no node,
 //! which is what lets a struct hold a pointer to itself (`Node* next`) or a
-//! pointer to an array of itself (`&[Node; 4]`). A function-pointer typedef has
+//! pointer to an array of itself (`&[Node; 4]`). a function-pointer typedef has
 //! no forward-declared form, so naming it is always a hard edge; but its own
 //! param/return types are soft (a function type may name incomplete types), so a
 //! function-pointer typedef has no hard dependencies and never forms a cycle.
 //!
-//! Cycle detection uses Tarjan's SCC algorithm (O(V + E)) instead of the
-//! earlier per-node DFS walk (O(V²)). The closed-form SCC membership also
+//! cycle detection uses tarjan's SCC algorithm (o(v + e)) instead of the
+//! earlier per-node DFS walk (o(v²)). the closed-form SCC membership also
 //! makes [`SccInfo::same_cycle`] a constant-time lookup.
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -26,18 +26,21 @@ use crate::core::{Expr, HIR, Stmt, Text, TypeInterner, TypeKind, TypeRef, VisitT
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeNode {
-    /// A struct or union, by name.
+    /// a struct or union, by name.
     Nominal(Text),
-    /// The value wrapper for `[elem; len]`.
+    /// the value wrapper for `[elem; len]`.
     Array { elem: TypeRef, len: u64 },
-    /// A function-pointer typedef `(params) -> ret`.
+    /// a function-pointer typedef `(params) -> ret`.
     Fn {
         params: Vec<TypeRef>,
         ret: Option<TypeRef>,
+        /// carried so a variadic and a non-variadic signature with the same
+        /// params/ret dedup as *distinct* typedefs (their c differs by `...`).
+        variadic: bool,
     },
 }
 
-/// True when `name` is a user struct or union. Enums are excluded: they have no
+/// true when `name` is a user struct or union. enums are excluded: they have no
 /// dependencies and are emitted before every struct/union definition, so a field
 /// of enum type never needs an ordering edge.
 fn is_nominal(hir: &HIR, name: &Text) -> bool {
@@ -64,10 +67,15 @@ impl VisitTypeRef for HardDepsVisitor<'_> {
             &TypeKind::Array { elem, len } if !self.under_pointer => {
                 self.out.push(TypeNode::Array { elem, len });
             }
-            &TypeKind::Fn { ref params, ret } => {
+            &TypeKind::Fn {
+                ref params,
+                ret,
+                variadic,
+            } => {
                 self.out.push(TypeNode::Fn {
                     params: params.clone(),
                     ret,
+                    variadic,
                 });
             }
             _ => {}
@@ -82,8 +90,8 @@ impl VisitTypeRef for HardDepsVisitor<'_> {
     }
 }
 
-/// Append the nodes whose C definition must precede a definition that embeds
-/// `ty` by value. See the module docs for the edge rules.
+/// append the nodes whose c definition must precede a definition that embeds
+/// `ty` by value. see the module docs for the edge rules.
 pub fn hard_deps(hir: &HIR, ty: TypeRef, out: &mut Vec<TypeNode>) {
     let types = &hir.types;
     let mut visitor = HardDepsVisitor {
@@ -95,8 +103,8 @@ pub fn hard_deps(hir: &HIR, ty: TypeRef, out: &mut Vec<TypeNode>) {
     types.walk(ty, &mut visitor);
 }
 
-/// Like [`hard_deps`] but treats every node as if it is behind a pointer
-/// (soft edges). Used for function-pointer param/return types and recursive
+/// like [`hard_deps`] but treats every node as if it is behind a pointer
+/// (soft edges). used for function-pointer param/return types and recursive
 /// pointer fields.
 fn soft_deps(hir: &HIR, ty: TypeRef, out: &mut Vec<TypeNode>) {
     let types = &hir.types;
@@ -109,7 +117,7 @@ fn soft_deps(hir: &HIR, ty: TypeRef, out: &mut Vec<TypeNode>) {
     types.walk(ty, &mut visitor);
 }
 
-/// The dependency nodes of a node itself: a nominal's fields (each embedded by
+/// the dependency nodes of a node itself: a nominal's fields (each embedded by
 /// value), or an array wrapper's element (`elem data[N]`, embedded by value).
 fn node_deps(hir: &HIR, node: &TypeNode, out: &mut Vec<TypeNode>) {
     match node {
@@ -119,10 +127,10 @@ fn node_deps(hir: &HIR, node: &TypeNode, out: &mut Vec<TypeNode>) {
             }
         }
         TypeNode::Array { elem, .. } => hard_deps(hir, *elem, out),
-        TypeNode::Fn { params, ret } => {
-            // A function-pointer typedef may reference incomplete param/return
+        TypeNode::Fn { params, ret, .. } => {
+            // a function-pointer typedef may reference incomplete param/return
             // types (a forward declaration suffices), so each is a soft edge:
-            // compute as if behind a pointer. A nested function type is still a
+            // compute as if behind a pointer. a nested function type is still a
             // hard edge (its typedef has no forward form).
             for &p in params {
                 soft_deps(hir, p, out);
@@ -134,7 +142,7 @@ fn node_deps(hir: &HIR, node: &TypeNode, out: &mut Vec<TypeNode>) {
     }
 }
 
-/// The field types of a nominal type (struct or union) by name.
+/// the field types of a nominal type (struct or union) by name.
 fn nominal_field_types(hir: &HIR, name: &Text) -> Vec<TypeRef> {
     if let Some(&id) = hir.items.structs.get(name) {
         return hir.structs[id]
@@ -171,10 +179,15 @@ impl VisitTypeRef for WrapperNodesVisitor<'_> {
                     self.out.push(node);
                 }
             }
-            TypeKind::Fn { ref params, ret } => {
+            TypeKind::Fn {
+                ref params,
+                ret,
+                variadic,
+            } => {
                 let node = TypeNode::Fn {
                     params: params.clone(),
                     ret,
+                    variadic,
                 };
                 if self.seen.insert(node.clone()) {
                     self.out.push(node);
@@ -185,9 +198,9 @@ impl VisitTypeRef for WrapperNodesVisitor<'_> {
     }
 }
 
-/// Register every array wrapper and function-pointer typedef inside `ty`,
+/// register every array wrapper and function-pointer typedef inside `ty`,
 /// innermost first (post-order), so a nested wrapper/typedef is a node before
-/// the one that embeds it. A function-pointer typedef is a discoverable node
+/// the one that embeds it. a function-pointer typedef is a discoverable node
 /// even when it appears only as a bare local or parameter, so its typedef is
 /// always emitted (the advisor's discovery touch-point).
 fn collect_wrapper_nodes(
@@ -200,10 +213,10 @@ fn collect_wrapper_nodes(
     types.walk(ty, &mut visitor);
 }
 
-/// Every type-declaration node in the program, in a deterministic order: nominal
+/// every type-declaration node in the program, in a deterministic order: nominal
 /// types in arena (declaration) order, then every distinct array wrapper found
-/// by walking the program, innermost wrapper first. This order only fixes
-/// tie-breaks; the emission order is [`topo_order`]. (When run before bodies are
+/// by walking the program, innermost wrapper first. this order only fixes
+/// tie-breaks; the emission order is [`topo_order`]. (when run before bodies are
 /// lowered - the value-recursion check - body-local wrappers are simply absent,
 /// which is fine: a cycle can only form through a struct/union field.)
 pub fn collect_type_nodes(hir: &HIR) -> Vec<TypeNode> {
@@ -248,9 +261,10 @@ pub fn collect_type_nodes(hir: &HIR) -> Vec<TypeNode> {
                 collect_wrapper_nodes(ty, types, &mut seen, &mut nodes);
             }
         }
-        for (_, &ty) in body.expr_types.iter() {
-            collect_wrapper_nodes(ty, types, &mut seen, &mut nodes);
-        }
+        // array/fn-ptr wrappers that surface only as an expression's type (an
+        // intermediate value with no declared local) are seeded into
+        // `topo_order` from the typeck results, since lowering no longer stamps
+        // expression types (S2C C5).
         for (_, stmt) in body.stmts.iter() {
             if let Stmt::Let { ty: Some(ty), .. } = stmt {
                 collect_wrapper_nodes(*ty, types, &mut seen, &mut nodes);
@@ -268,17 +282,26 @@ pub fn collect_type_nodes(hir: &HIR) -> Vec<TypeNode> {
     nodes
 }
 
-/// The type-declaration definitions in dependency order: every node appears
-/// after all nodes it embeds by value. Kahn's algorithm, seeded and tie-broken
-/// in node (arena/discovery) order so the generated C is deterministic. A
+/// the type-declaration definitions in dependency order: every node appears
+/// after all nodes it embeds by value. kahn's algorithm, seeded and tie-broken
+/// in node (arena/discovery) order so the generated c is deterministic. a
 /// residual value cycle (rejected upstream by [`cyclic_nodes`]) leaves nodes
 /// unorderable; they are appended in node order rather than dropped, so this is
 /// total and never panics.
-pub fn topo_order(hir: &HIR) -> Vec<TypeNode> {
+pub fn topo_order(hir: &HIR, extra: &[TypeRef]) -> Vec<TypeNode> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
-    let nodes = collect_type_nodes(hir);
+    let mut nodes = collect_type_nodes(hir);
+    // seed wrapper typedefs that only surface as expression/temp types - codegen
+    // passes the whole-file typeck expr types (S2C C5). declaration-derived nodes
+    // already in `nodes` are de-duplicated via `seen`.
+    if !extra.is_empty() {
+        let mut seen: FxHashSet<TypeNode> = nodes.iter().cloned().collect();
+        for &ty in extra {
+            collect_wrapper_nodes(ty, &hir.types, &mut seen, &mut nodes);
+        }
+    }
     let index: FxHashMap<TypeNode, usize> = nodes
         .iter()
         .cloned()
@@ -328,8 +351,8 @@ pub fn topo_order(hir: &HIR) -> Vec<TypeNode> {
     order
 }
 
-/// Computed SCC (strongly connected component) information over the
-/// type-declaration graph, built with Tarjan's algorithm (O(V + E)).
+/// computed SCC (strongly connected component) information over the
+/// type-declaration graph, built with tarjan's algorithm (o(v + e)).
 pub struct SccInfo {
     nodes: Vec<TypeNode>,
     index: FxHashMap<TypeNode, usize>,
@@ -338,19 +361,19 @@ pub struct SccInfo {
 }
 
 impl SccInfo {
-    /// Whether `node` lies on a value-dependency cycle.
+    /// whether `node` lies on a value-dependency cycle.
     pub fn contains(&self, node: &TypeNode) -> bool {
         self.index
             .get(node)
             .is_some_and(|&i| self.cyclic_scc[self.scc_id[i]])
     }
 
-    /// Whether any cycle exists.
+    /// whether any cycle exists.
     pub fn is_empty(&self) -> bool {
         !self.cyclic_scc.iter().any(|&c| c)
     }
 
-    /// Whether two nodes belong to the same cyclic SCC (same cycle).
+    /// whether two nodes belong to the same cyclic SCC (same cycle).
     pub fn same_cycle(&self, a: &TypeNode, b: &TypeNode) -> bool {
         let Some(&ia) = self.index.get(a) else {
             return false;
@@ -364,8 +387,8 @@ impl SccInfo {
     }
 }
 
-/// Build the type-declaration graph and compute its SCCs.
-/// Returns the [`SccInfo`] with cycle information.
+/// build the type-declaration graph and compute its sccs.
+/// returns the [`SccInfo`] with cycle information.
 pub fn compute_scc(hir: &HIR) -> SccInfo {
     let nodes = collect_type_nodes(hir);
     let n = nodes.len();
@@ -376,8 +399,8 @@ pub fn compute_scc(hir: &HIR) -> SccInfo {
         .map(|(i, n)| (n, i))
         .collect();
 
-    // Build adjacency list from hard deps. Self-loops are included so
-    // Tarjan's SCC can detect single-node cycles (e.g. `structure A { A a }`).
+    // build adjacency list from hard deps. self-loops are included so
+    // tarjan's SCC can detect single-node cycles (e.g. `structure A { A a }`).
     let mut deps = vec![Vec::new(); n];
     let mut edge_seen: FxHashSet<(usize, usize)> = fx_set(n.max(1) * 2);
     for (i, node) in nodes.iter().enumerate() {
@@ -392,7 +415,7 @@ pub fn compute_scc(hir: &HIR) -> SccInfo {
         }
     }
 
-    // Tarjan's SCC algorithm — O(V + E)
+    // tarjan's SCC algorithm -- o(v + e)
     const UNVISITED: u32 = u32::MAX;
     let mut tarjan_idx = 0u32;
     let mut indices = vec![UNVISITED; n];
@@ -460,7 +483,7 @@ pub fn compute_scc(hir: &HIR) -> SccInfo {
         }
     }
 
-    // Classify: an SCC is cyclic if it has >1 node or has a self-loop
+    // classify: an SCC is cyclic if it has >1 node or has a self-loop
     let mut scc_size = vec![0usize; scc_count];
     let mut has_self_loop = vec![false; scc_count];
     for v in 0..n {
@@ -484,8 +507,8 @@ pub fn compute_scc(hir: &HIR) -> SccInfo {
     }
 }
 
-/// Convenience wrapper: the set of all cyclic type nodes.
-/// Prefer [`compute_scc`] when you also need [`SccInfo::same_cycle`].
+/// convenience wrapper: the set of all cyclic type nodes.
+/// prefer [`compute_scc`] when you also need [`SccInfo::same_cycle`].
 pub fn cyclic_nodes(hir: &HIR) -> FxHashSet<TypeNode> {
     let scc = compute_scc(hir);
     scc.nodes
@@ -495,8 +518,8 @@ pub fn cyclic_nodes(hir: &HIR) -> FxHashSet<TypeNode> {
         .collect()
 }
 
-/// Whether two nodes lie on the same value-dependency cycle.
-/// Prefer [`SccInfo::same_cycle`] when the SCC info is already computed.
+/// whether two nodes lie on the same value-dependency cycle.
+/// prefer [`SccInfo::same_cycle`] when the SCC info is already computed.
 pub fn same_value_cycle(hir: &HIR, a: &TypeNode, b: &TypeNode) -> bool {
     let scc = compute_scc(hir);
     scc.same_cycle(a, b)

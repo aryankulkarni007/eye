@@ -1,19 +1,24 @@
-//! Match-arm pattern lowering.
+//! match-arm pattern lowering.
 
 use ast::AstNode;
 use syntax::SyntaxNodePtr;
 
 use super::LoweringCtx;
-use crate::core::{EnumId, Pat, PatId, ResolveError, Text};
+use crate::core::{Pat, PatId, ResolveError, Text};
 
 impl<'a> LoweringCtx<'a> {
-    /// Lower a match arm pattern. Bare-ident and qualified-path patterns are
-    /// resolved against the scrutinee enum directly (spec says no bindings),
-    /// so a name that doesn't match a variant of `scrut_enum` is an error
-    /// rather than silently introducing a binding. Failure produces
-    /// `Pat::Missing`; the caller's coverage check treats Missing as
-    /// "uncovered" so a typo can't accidentally satisfy exhaustiveness.
-    pub(super) fn lower_match_pat(&mut self, pat: &ast::Pat, scrut_enum: Option<EnumId>) -> PatId {
+    /// lower a match arm pattern - structurally, with no scrutinee type. a bare
+    /// ident is classified by NAME: it is a variant iff it resolves to a known
+    /// variant in the flat item-scope index, otherwise it introduces a binding
+    /// (an irrefutable named wildcard). this is the rustc/rust-analyzer rule -
+    /// a constructor name is always a constructor, never context-dependent - and
+    /// it removes the type dependency that blocked the cutover. the judgments
+    /// that DO need the scrutinee type (a variant of the wrong enum, a variant
+    /// over a primitive, coverage, exhaustiveness, duplicates, unreachable arms)
+    /// run in the typeck match pass. a failed name resolution produces
+    /// `Pat::Missing`, which the typeck coverage check treats as "uncovered" so
+    /// a typo cannot accidentally satisfy exhaustiveness.
+    pub(super) fn lower_match_pat(&mut self, pat: &ast::Pat) -> PatId {
         let ptr = SyntaxNodePtr::new(pat.syntax());
         match pat {
             ast::Pat::WildcardPat(_) => self.alloc_pat(Pat::Wildcard, ptr),
@@ -25,6 +30,10 @@ impl<'a> LoweringCtx<'a> {
                 }
                 None => self.alloc_pat(Pat::Missing, ptr),
             },
+            // a qualified `Enum.Variant` pattern resolves purely by name (no
+            // scrutinee type): the qualifier must be a declared enum and the
+            // name one of its variants. whether that enum matches the scrutinee
+            // is the typeck pass's job (`PatternEnumMismatch`).
             ast::Pat::PathPat(pp) => {
                 let qual: Text = self.text(pp.qualifier().and_then(|n| n.name()));
                 let vname: Text = self.text(pp.name().and_then(|n| n.name()));
@@ -37,19 +46,6 @@ impl<'a> LoweringCtx<'a> {
                     );
                     return self.alloc_pat(Pat::Missing, ptr);
                 };
-                if let Some(scrut_eid) = scrut_enum
-                    && scrut_eid != qual_enum
-                {
-                    let scrut_name = self.hir.enums[scrut_eid].name.clone();
-                    self.emit(
-                        ptr,
-                        ResolveError::PatternEnumMismatch {
-                            pattern_enum: qual.clone(),
-                            scrutinee_enum: scrut_name,
-                        },
-                    );
-                    return self.alloc_pat(Pat::Missing, ptr);
-                }
                 let enum_def = &self.hir.enums[qual_enum];
                 match enum_def.variant_index.get(&vname).copied() {
                     Some(idx) => self.alloc_pat(
@@ -71,38 +67,18 @@ impl<'a> LoweringCtx<'a> {
                     }
                 }
             }
+            // a bare ident: a variant if the name is one (flat index), else a
+            // binding. the binding's type is the scrutinee's, which lowering no
+            // longer knows - the typeck pass records it (a `None` local type
+            // here, filled by `TypeckResults::local_types`).
             ast::Pat::BareIdentPat(bp) => {
                 let name: Text = self.text(bp.name().and_then(|n| n.name()));
-                // Scrutinee enum known: resolve strictly against its variants
-                // so cross-enum bare patterns become a clean diagnostic.
-                if let Some(eid) = scrut_enum {
-                    let enum_def = &self.hir.enums[eid];
-                    if let Some(&idx) = enum_def.variant_index.get(&name) {
-                        return self.alloc_pat(Pat::Variant { enum_id: eid, idx }, ptr);
-                    }
-                    let enum_name = enum_def.name.clone();
-                    self.emit(
-                        ptr,
-                        ResolveError::NoSuchVariant {
-                            enum_name,
-                            variant: name.clone(),
-                        },
-                    );
-                    return self.alloc_pat(Pat::Missing, ptr);
-                }
-                // Scrutinee type unknown: fall back to the global variant
-                // index. Still no bindings - an unresolved name is an error,
-                // not a fresh local.
                 if let Some(&(enum_id, idx)) = self.hir.items.variants.get(&name) {
                     return self.alloc_pat(Pat::Variant { enum_id, idx }, ptr);
                 }
-                self.emit(
-                    ptr,
-                    ResolveError::UnknownVariantInPattern {
-                        variant: name.clone(),
-                    },
-                );
-                self.alloc_pat(Pat::Missing, ptr)
+                let (pat_id, local_id) = self.alloc_bind_pat(name.clone(), None, false, ptr);
+                self.scopes.define(name, local_id);
+                pat_id
             }
         }
     }

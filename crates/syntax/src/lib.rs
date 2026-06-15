@@ -1,4 +1,4 @@
-//! The unified syntax-kind enum and the `rowan` language binding.
+//! the unified syntax-kind enum and the `rowan` language binding.
 //!
 //! `rowan` keeps one kind enum for every node in the tree - leaves (tokens)
 //! and internal nodes alike - so [`SyntaxKind`] is the superset of the lexer's
@@ -6,12 +6,12 @@
 
 use token::TokenKind;
 
-/// Defines [`SyntaxKind`] from a single variant list and derives the
+/// defines [`SyntaxKind`] from a single variant list and derives the
 /// `u16` -> variant lookup from it, so the `repr` discriminants and the
 /// reverse mapping can never drift apart.
 macro_rules! syntax_kinds {
     ($($variant:ident),* $(,)?) => {
-        /// Every kind of node that can appear in the concrete syntax tree.
+        /// every kind of node that can appear in the concrete syntax tree.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(u16)]
         pub enum SyntaxKind {
@@ -19,7 +19,7 @@ macro_rules! syntax_kinds {
         }
 
         impl SyntaxKind {
-            /// Inverse of `self as u16`. `raw` must come from a prior
+            /// inverse of `self as u16`. `raw` must come from a prior
             /// `kind as u16` on this same enum (rowan upholds this).
             #[inline]
             fn from_u16(raw: u16) -> SyntaxKind {
@@ -54,7 +54,7 @@ syntax_kinds! {
     EnumDef, Variant,
     UnionDef,
     ExternBlock, ExternFn, ExternTypeDef,
-    FnDef, ParamList, Param, Variadic, Block,
+    FnDef, EffectList, ParamList, Param, Variadic, Block,
     IdentType, RefType, PtrType, ArrayType, FnType, FnTypeParam,
     LetStmt, ExprStmt,
     Literal, NameRef, CallExpr, ArgList,
@@ -70,8 +70,8 @@ syntax_kinds! {
 }
 
 impl SyntaxKind {
-    /// Trivia is syntactically inert: whitespace, newlines and comments.
-    /// The parser skips it for lookahead but the tree still stores it.
+    /// trivia is syntactically inert: whitespace, newlines and comments.
+    /// the parser skips it for lookahead but the tree still stores it.
     #[inline]
     pub fn is_trivia(self) -> bool {
         matches!(
@@ -85,7 +85,7 @@ impl SyntaxKind {
     }
 }
 
-/// Lifts a lexer token kind into the unified kind. The exhaustive `match`
+/// lifts a lexer token kind into the unified kind. the exhaustive `match`
 /// is deliberate: a new [`TokenKind`] variant fails to compile here until
 /// it is mapped.
 impl From<TokenKind> for SyntaxKind {
@@ -172,7 +172,7 @@ impl From<TokenKind> for SyntaxKind {
     }
 }
 
-/// The `rowan` language marker for eye. Binds [`SyntaxKind`] as the tree's
+/// the `rowan` language marker for eye. binds [`SyntaxKind`] as the tree's
 /// kind type; conversion to/from rowan's raw `u16` kind is allocation- and
 /// transmute-free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -195,14 +195,14 @@ pub type SyntaxToken = rowan::SyntaxToken<EyeLang>;
 pub type SyntaxNodeChildren = rowan::SyntaxNodeChildren<EyeLang>;
 pub type SyntaxNodePtr = rowan::ast::SyntaxNodePtr<EyeLang>;
 
-/// A node's source range with leading and trailing trivia stripped, so a
+/// a node's source range with leading and trailing trivia stripped, so a
 /// diagnostic underlines exactly the meaningful tokens rather than the
 /// surrounding whitespace, newlines, and comments the lossless tree attaches
-/// to a node's edges. Tokens are visited in source order; the span runs from
-/// the first non-trivia token's start to the last non-trivia token's end. A
+/// to a node's edges. tokens are visited in source order; the span runs from
+/// the first non-trivia token's start to the last non-trivia token's end. a
 /// node with no non-trivia tokens falls back to its full range.
 ///
-/// Returns `text_size::TextRange` - the same type rowan re-exports as
+/// returns `text_size::TextRange` - the same type rowan re-exports as
 /// `rowan::TextRange` - spelled by its `text_size` path to match the rest of
 /// the workspace (`diagnostics::Span`, lexer, parser).
 pub fn trimmed_text_range(node: &SyntaxNode) -> text_size::TextRange {
@@ -220,9 +220,9 @@ pub fn trimmed_text_range(node: &SyntaxNode) -> text_size::TextRange {
     text_size::TextRange::new(first.text_range().start(), end)
 }
 
-/// Maps eye surface syntax - punctuation and keywords - to [`SyntaxKind`],
+/// maps eye surface syntax - punctuation and keywords - to [`SyntaxKind`],
 /// so grammar code reads as `p.at(T![;])` instead of naming enum variants.
-/// Every punctuation/keyword token in [`TokenKind`] has an arm here; expands
+/// every punctuation/keyword token in [`TokenKind`] has an arm here; expands
 /// to a fully-qualified path so the macro is usable in both expression and
 /// pattern position.
 #[macro_export]
@@ -303,24 +303,24 @@ macro_rules! T {
 
 // ---------------------------------------------------------------------------
 // EXPERIMENTAL: shared string table trait for the query-driven pipeline
-// (QUERY.md). Defined here so both `lexer` (the concrete `Interner`) and `hir`
+// (QUERY.md). defined here so both `lexer` (the concrete `Interner`) and `hir`
 // (which consumes it) share a single dependency rather than coupling directly.
 // ---------------------------------------------------------------------------
 
 pub use smol_str::SmolStr;
 
-/// EXPERIMENTAL: A read-only string table that maps `&str` to a canonical
+/// EXPERIMENTAL: a read-only string table that maps `&str` to a canonical
 /// [`SmolStr`] when the string has been pre-interned (e.g. by the lexer).
-/// The returned clone is O(1) - short strings (<=22 bytes) are inline; long
+/// the returned clone is o(1) - short strings (<=22 bytes) are inline; long
 /// strings bump an `Arc` refcount.
 ///
-/// Why a trait?  The lexer's [`Interner`] is the only implementation today,
-/// but in a multi-file query architecture (QUERY.md) a `SourceFile` wrapper
+/// why a trait? the lexer's [`Interner`] is the only implementation today,
+/// but in a multi-file QUERY architecture (QUERY.md) a `SourceFile` wrapper
 /// would also implement this, letting HIR lowering request strings without
 /// caring which concrete type owns the table.
 ///
-/// # Stability
-/// Experimental (2026-06-11). The trait may gain lookup-by-id methods when
+/// # stability
+/// experimental (2026-06-11). the trait may gain lookup-by-id methods when
 /// `Symbol` handles are threaded downstream.
 pub trait StringTable {
     fn get(&self, s: &str) -> Option<SmolStr>;
@@ -330,7 +330,7 @@ pub trait StringTable {
 mod tests {
     use super::*;
 
-    /// Every `T!` arm expands to the corresponding `SyntaxKind` variant. A new
+    /// every `T!` arm expands to the corresponding `SyntaxKind` variant. a new
     /// arm that resolves to the wrong variant - or a renamed variant that
     /// breaks an arm - fails compilation here, not at the call site.
     #[test]
@@ -396,7 +396,7 @@ mod tests {
         assert!(matches!(k, T![if]));
     }
 
-    /// New v0.2 token kinds map through `From<TokenKind>`. Every other variant
+    /// new v0.2 token kinds map through `From<TokenKind>`. every other variant
     /// is covered by the exhaustive `match` in the impl itself.
     #[test]
     fn from_tokenkind_v02_tokens() {
@@ -417,7 +417,7 @@ mod tests {
         );
     }
 
-    /// `u16` round-trip through the rowan language binding. Picks new v0.2
+    /// `u16` round-trip through the rowan language binding. picks new v0.2
     /// node kinds plus a few originals to prove `from_u16` returns the right
     /// variant for the full enum range.
     #[test]
@@ -457,7 +457,7 @@ mod tests {
         }
     }
 
-    /// Trivia detection still recognises every trivia variant. Guards against
+    /// trivia detection still recognises every trivia variant. guards against
     /// a new variant slipping in without being classified.
     #[test]
     fn trivia_classification() {

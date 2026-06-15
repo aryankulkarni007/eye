@@ -64,6 +64,11 @@ From [FARFUTURE.md](FARFUTURE.md) section 3 and the top gap in [AUDIT.md](design
 Effects depend on the typeck split. The typeck split depends only on the freeze.
 So typeck is the next large structural build after const.
 
+**Status:** The typeck split (S1 shadow mode) and effect system (S4 fixpoint +
+annotations + contracts) are BUILT as of 2026-06-14. The remaining build work
+on the dual inference engine is the S2 cutover (C2/C4/C5/D), S3 new judgments,
+S5 signature firewall, S6 parallel wave, and S7 row-polymorphic effects.
+
 ## Horizon 2 - The extensibility engine (far-future, ~v10)
 
 From [FARFUTURE.md](FARFUTURE.md) section 2. This is the identity of the language:
@@ -83,15 +88,17 @@ until the engine arrives. It needs three subsystems first:
 The `match` B2 seam goes live in this horizon. Do not start it until const and
 the typeck split have landed.
 
-## Horizon 3 - Native codegen via Cranelift (independent)
+## Horizon 3 - Native codegen via Cranelift (in progress, independent)
 
-From [FARFUTURE.md](FARFUTURE.md) section 4. Replace the C backend with a native
-code generator. The MIR boundary already exists, so this is a backend swap.
-Payoffs: escape C's undefined-behavior model, lower bounds traps to lean
-conditional jumps (zero-cost safety), and compile IR straight to binary
-in-memory (no disk I/O). This adds no language power, so it competes with
-identity work for time. It can slot in any time after the MIR boundary, which is
-now.
+From [FARFUTURE.md](FARFUTURE.md) section 4. Cranelift native codegen is **on
+the way** as an independent work stream. The MIR boundary already exists, so
+this is a backend swap. Payoffs: eliminate C and clang from the toolchain,
+remove C's undefined-behavior model from the compilation path, enable
+in-memory compilation (JIT compilation and LSP evaluation), lower bounds traps
+to lean conditional jumps (zero-cost safety), and remove disk I/O from the
+compile loop. This adds no language power (it is a transparent backend
+replacement), so it runs on its own timeline, independent of the inference
+engine work.
 
 ## Orthogonal axis - runtime safety (deferred)
 
@@ -105,12 +112,15 @@ and no runtime length. One later theme, off the critical path. See
 ```
 const (finite) ---> (kernel freeze) ----------------------------------------+
        |                                                                     |
-       +--> typeck surgery ---> effects ---> optimizations                   |
+       +--> typeck surgery (S1 built, S2 cutover, S3 pending) ----+         |
+                  |                                                |         |
+                  +--> effects (S4 built, S7 row-polymorphic = pending)      |
                   |                                                          |
                   +--> prime VM (WASM) ---> macro engine ---> generics, containers, identity payoff
                                               (far-future, "when ready")
 
-Cranelift --- parallel, any time after the MIR boundary, adds no language power
+Cranelift --- independent, on the way (MIR boundary ready)
+Inference infrastructure: S5 (firewall), S6 (parallel wave) --- parallelizable, post-cutover
 ```
 
 Correction (see [PRIME.md](features/PRIME.md)): an earlier draft called the bottleneck

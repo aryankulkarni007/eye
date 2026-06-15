@@ -1,8 +1,8 @@
-//! Diagnostic rendering at the binary edge.
+//! diagnostic rendering at the binary edge.
 //!
-//! The core crates emit typed [`Diagnostic`](diagnostics::Diagnostic) kinds and
-//! accumulate them in a [`Sink`](diagnostics::Sink). Here, and only here, those
-//! typed diagnostics are turned into human output with `ariadne`. No core crate
+//! the core crates emit typed [`Diagnostic`](diagnostics::diagnostic) kinds and
+//! accumulate them in a [`Sink`](diagnostics::sink). here, and only here, those
+//! typed diagnostics are turned into human output with `ariadne`. no core crate
 //! depends on a renderer, so this can be swapped or rethemed without touching
 //! them.
 
@@ -14,7 +14,7 @@ use diagnostics::{Diag, Severity, Span};
 use lexer::SourceText;
 use syntax::SyntaxNode;
 
-/// The byte range `ariadne` underlines for a span: [`Span::trimmed_range`] does
+/// the byte range `ariadne` underlines for a span: [`Span::trimmed_range`] does
 /// the resolve-and-trim against the parse `root` (shared with the language
 /// server); this only adapts the result to `ariadne`'s `usize` range.
 fn resolve(span: &Span, root: Option<&SyntaxNode>) -> Range<usize> {
@@ -22,7 +22,7 @@ fn resolve(span: &Span, root: Option<&SyntaxNode>) -> Range<usize> {
     usize::from(r.start())..usize::from(r.end())
 }
 
-/// Render every diagnostic in `diags` against `source`. Each phase produces a
+/// render every diagnostic in `diags` against `source`. each phase produces a
 /// `Sink<K>`; the caller boxes it with `Sink::into_diags()` and passes the
 /// `Vec<Diag>` here. `root` is the parse tree when one exists, used to trim
 /// trivia off pointer spans; pass `None` for the pre-parse lexer phase.

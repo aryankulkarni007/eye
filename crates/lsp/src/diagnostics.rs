@@ -1,10 +1,10 @@
-//! Compiler diagnostics as LSP `publishDiagnostics` payloads.
+//! compiler diagnostics as LSP `publishDiagnostics` payloads.
 //!
-//! Every phase (lexer, parser, HIR) accumulates typed diagnostics in a
-//! `Sink<K>` and boxes them into the cross-layer [`Diag`] carrier. This module
+//! every phase (lexer, parser, HIR) accumulates typed diagnostics in a
+//! `Sink<K>` and boxes them into the cross-layer [`Diag`] carrier. this module
 //! turns a `Vec<Diag>` from any phase into LSP [`Diagnostic`]s, so the server
 //! surfaces the *same* diagnostics the `eye` binary renders - not just parse
-//! errors. The mapping has one definition here; the phase orchestration (which
+//! errors. the mapping has one definition here; the phase orchestration (which
 //! sink to publish, and when) lives in [`crate::server::notifications`].
 
 use std::fmt::Write as _;
@@ -19,7 +19,7 @@ use text_size::TextRange;
 
 use lexer::SourceText;
 
-/// Map one phase's boxed diagnostics into LSP diagnostics.
+/// map one phase's boxed diagnostics into LSP diagnostics.
 ///
 /// `root` is the parse tree when one exists; HIR spans are [`syntax::SyntaxNodePtr`]s
 /// that need it to resolve, while lexer/parser spans are tight byte ranges and
@@ -41,7 +41,7 @@ pub fn diags_to_lsp(
                 Severity::Warning => DiagnosticSeverity::WARNING,
             };
 
-            // The primary message; notes and the help hint have no dedicated
+            // the primary message; notes and the help hint have no dedicated
             // LSP field, so fold them into the message body the editor shows on
             // hover - the same text the CLI renderer prints below the span.
             let mut message = d.kind.to_string();
@@ -52,7 +52,7 @@ pub fn diags_to_lsp(
                 let _ = write!(message, "\nhelp: {help}");
             }
 
-            // Secondary labels become related-information so the editor can jump
+            // secondary labels become related-information so the editor can jump
             // to the supporting spans (e.g. a conflicting earlier definition).
             let related: Vec<DiagnosticRelatedInformation> = d
                 .kind

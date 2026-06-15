@@ -2,19 +2,44 @@
 <!-- in the compiler pipeline-->
 
 - parallelised bidirectional type and effect inference
-  i.e. each system will have a preliminary pass on all source files (multi-threaded)
-  since we will already have a dependency graph, we can use this for the second
-  resolution pass.
+  RATIFIED 2026-06-12 as **sealed-body inference** - full design in
+  docs/features/TYPECK.md (types) and docs/features/EFFECT.md (effects).
+  Summary: no inference fact ever crosses a fn boundary (signatures are the
+  only inter-fn channel), so per-body checking is embarrassingly parallel;
+  wave 1 = rayon over bodies (types + effect atoms in one task), wave 2 = the
+  effect fixpoint (Tarjan condensation, bitset unions - the only serial
+  part, O(V+E) on byte-sized sets).
 
-  I imagine we will implement
-  Hindley-Miller approach to type inference
-  Row-Polymorphism approach to effect inference
+  BUILD STATUS as of 2026-06-15:
+  + S1 (shadow-mode walker): BUILT
+  + S2 (cutover, steps A-D): IN PROGRESS (A-C1-C3 complete, C4 complete,
+    C2+C5+D remaining)
+  + S3 (new judgments): DESIGNED, NOT BUILT
+  + S4 (effect inference + fixpoint + annotations + contract): BUILT (2026-06-14)
+  + S5 (signature firewall): DESIGNED, NOT BUILT
+  + S6 (parallel wave: rayon per-body + lock-free interner): DESIGNED, NOT BUILT
+  + S7 (row-polymorphic effects): DESIGNED, NOT BUILT (see EFFECT.md)
 
-  This should also be threaded through the LSP/
+  An earlier draft of this section named Hindley-Milner for types. Replaced:
+  global HM is what forfeits the per-body parallelism above (its purpose is
+  inferring unannotated signatures, which the Explicit Contract bans).
+  Unification, if ever needed, arrives as TYPECK.md Tier 3: body-local
+  variables solved at the seal, never escaping a signature. Row-polymorphic
+  effects upgrades from the monomorphic kernel to effect variables on fn
+  types (S7), enabling precise tracking through higher-order fns.
 
-  We will need to consider cycle detection and main thread bottlenecking
-  in that case we may need to look into constraint graph partitioning, where we
-  will parallelise the resolution pass by splitting into sub-graphs
+  Threaded through the LSP via salsa parallel queries + cancellation; the
+  whole-program effect fixpoint runs off the latency path. Cycle handling:
+  the SCC condensation *is* the fixpoint (no iteration); constraint-graph
+  partitioning beyond that is unnecessary at the chosen lattice cost.
+
+---
+
+The segmentation S0-S7 tracks the build plan. After S6 (parallel wave) and
+S7 (row-polymorphic effects), the dual inference engine reaches its designed
+end state: per-body checking is embarrassingly parallel, effect tracking is
+precise through higher-order fn calls, and the lock-free interner eliminates
+the last shared-memory bottleneck.
 
 - parallelised lexing and parsing
   trivial with rayon work-stealing pool
@@ -23,10 +48,30 @@
   will require preliminary pass -> resolution pass too
 
 - dependency barrier (global resolution)
-  perhaps we should implement a global symbol table protected by RwLock -> maybe even design
-  an architecture that doesn't need locks
-  then we can parallelise symbol collection whereby each worker thread reports the symbols it
-  finds and then we synchronise
+  RESOLVED for the type layer 2026-06-12: the lock-free architecture exists
+  and needs no RwLock. The one shared-write structure (the type interner)
+  goes lock-free via `boxcar::Vec` (append-only arena, atomic reads) +
+  `papaya::HashMap` (lock-free-read dedup); everything else is task-owned
+  (per-body results) or read-shared (salsa snapshots). See TYPECK.md "The
+  parallel wave". Global *symbol* interning at the multifile milestone uses
+  the same pattern (`lasso::ThreadedRodeo`); worker-collect-then-merge
+  remains the fallback if a lock-free table ever disappoints.
+
+- Cranelift backend (independent of the inference engine):
+  The Cranelift native codegen is on the way, independent of all inference
+  work. The MIR boundary already exists, so this is a backend swap. Payoffs:
+  eliminate C and clang from the toolchain, provide in-memory compilation
+  (JIT and LSP uses), and enable target-specific optimizations without C
+  semantics. See MASTERPLAN.md Horizon 3.
+
+- determinism gate for S6 (parallel wave):
+  The parallel wave introduces nondeterministic `TypeRef` ordering because
+  parallel interleaving changes `intern` call order. A CI gate must diff the
+  C output of the full corpus under parallel vs serial execution, proving
+  byte-identical output despite nondeterministic handle values. The design
+  rule: no observable output may depend on `TypeRef` numeric order; tie-
+  breaks in codegen ordering must use names/structure, not handles. The gate
+  enforces this rule mechanically.
 
 - memory pressure:
   for very large code repositories, storing all ASTs in memory while we operate on them is

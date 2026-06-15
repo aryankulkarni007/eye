@@ -1,7 +1,7 @@
 use lexer::{Interner, Symbol};
 
-/// Prints the interned string table - every identifier and string literal,
-/// deduplicated, in intern order. Proof the lexer populated the interner
+/// prints the interned string table - every identifier and string literal,
+/// deduplicated, in intern order. proof the lexer populated the interner
 /// handed off in `Lexed`; HIR name resolution will re-intern against it.
 pub fn dump_symbols(interner: &Interner) {
     println!("\n--- SYMBOLS ({}) ---", interner.len());

@@ -1,27 +1,27 @@
-//! The typed AST - a thin, typed *view* over the lossless CST.
+//! the typed AST - a thin, typed *view* over the lossless CST.
 //!
-//! The CST ([`SyntaxNode`]) is untyped: every node is the same Rust type and
-//! the only thing distinguishing them is a [`SyntaxKind`] tag. That is what
+//! the CST ([`SyntaxNode`]) is untyped: every node is the same rust type and
+//! the only thing distinguishing them is a [`SyntaxKind`] tag. that is what
 //! makes it lossless and cheap to build, but it is miserable to walk - every
 //! access is a `match` on a kind.
 //!
-//! This module layers typed wrappers on top. Each grammar node gets a
+//! this module layers typed wrappers on top. each grammar node gets a
 //! zero-cost newtype around the `SyntaxNode` it wraps; the wrapper exposes
 //! named accessors (`.name()`, `.fields()`, …) instead of raw child iteration.
-//! Nothing is copied - an [`AstNode`] is one `SyntaxNode` (an `Arc` handle),
+//! nothing is copied - an [`AstNode`] is one `SyntaxNode` (an `Arc` handle),
 //! so casting is a kind check and a move.
 //!
-//! ## Generated vs. hand-written
+//! ## generated vs. hand-written
 //!
-//! The structural layer - every node/enum struct and its child accessors -
+//! the structural layer - every node/enum struct and its child accessors -
 //! is **generated** from `eye.ungram` into [`generated`] by `cargo xtask
-//! codegen`. This module hand-writes only what a structural generator cannot
+//! codegen`. this module hand-writes only what a structural generator cannot
 //! derive: the [`AstNode`] trait, the [`support`] helpers, and the four
 //! semantic accessors ([`LetStmt::kind`], [`BinExpr::op`], [`PrefixExpr::op`],
 //! [`Literal::literal_kind`]) plus their operator/kind enums.
 //!
-//! The view is *partial and lazy*: accessors return `Option`/iterators and
-//! recompute on every call. A malformed parse simply yields `None` for the
+//! the view is *partial and lazy*: accessors return `Option`/iterators and
+//! recompute on every call. a malformed parse simply yields `None` for the
 //! missing piece.
 
 use std::marker::PhantomData;
@@ -31,24 +31,24 @@ use syntax::{SyntaxKind, SyntaxNode, SyntaxNodeChildren, SyntaxToken, T};
 mod generated;
 pub use generated::*;
 
-/// The shared interface of every typed node: a checked downcast from the
+/// the shared interface of every typed node: a checked downcast from the
 /// untyped [`SyntaxNode`] and a borrow back to it.
 pub trait AstNode {
-    /// True if a node of this [`SyntaxKind`] can be cast to `Self`.
+    /// true if a node of this [`SyntaxKind`] can be cast to `Self`.
     fn can_cast(kind: SyntaxKind) -> bool
     where
         Self: Sized;
 
-    /// Downcast an untyped node. Returns `None` if the kind does not match.
+    /// downcast an untyped node. returns `None` if the kind does not match.
     fn cast(syntax: SyntaxNode) -> Option<Self>
     where
         Self: Sized;
 
-    /// The untyped node underneath - the escape hatch back to the CST.
+    /// the untyped node underneath - the escape hatch back to the CST.
     fn syntax(&self) -> &SyntaxNode;
 }
 
-/// A lazy iterator over the children of a node castable to `N`. The named
+/// a lazy iterator over the children of a node castable to `N`. the named
 /// type lets generated accessor signatures stay concrete.
 pub struct AstChildren<N> {
     inner: SyntaxNodeChildren,
@@ -72,24 +72,24 @@ impl<N: AstNode> Iterator for AstChildren<N> {
     }
 }
 
-/// Child-access helpers the generated accessors are built from. Each is a
+/// child-access helpers the generated accessors are built from. each is a
 /// cheap cursor walk over a node's immediate children - recomputed on every
 /// call, never cached.
 pub mod support {
     use super::{AstChildren, AstNode};
     use syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
-    /// The first child node castable to `N`.
+    /// the first child node castable to `N`.
     pub fn child<N: AstNode>(parent: &SyntaxNode) -> Option<N> {
         parent.children().find_map(N::cast)
     }
 
-    /// Every child node castable to `N`, in source order.
+    /// every child node castable to `N`, in source order.
     pub fn children<N: AstNode>(parent: &SyntaxNode) -> AstChildren<N> {
         AstChildren::new(parent)
     }
 
-    /// The first *direct* child token of exactly `kind`. Tokens nested inside
+    /// the first *direct* child token of exactly `kind`. tokens nested inside
     /// a child node are not direct children, so this never reaches into them.
     pub fn token(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxToken> {
         parent
@@ -101,11 +101,11 @@ pub mod support {
 
 // ---- hand-written semantic accessors ----
 //
-// The structural generator emits child/token accessors; it cannot derive
-// meaning. The four nodes below carry a category that lives in a token kind:
+// the structural generator emits child/token accessors; it cannot derive
+// meaning. the four nodes below carry a category that lives in a token kind:
 // these `impl` blocks layer that on top of the generated structs.
 
-/// Whether a binding is immutable (`let`) or mutable (`mut`).
+/// whether a binding is immutable (`let`) or mutable (`mut`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LetKind {
     Let,
@@ -140,7 +140,7 @@ impl GlobalDef {
     }
 }
 
-/// Which kind of literal a [`Literal`] node holds.
+/// which kind of literal a [`Literal`] node holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LiteralKind {
     Int,
@@ -151,7 +151,7 @@ pub enum LiteralKind {
 }
 
 impl Literal {
-    /// The single literal token. Leading trivia can land inside the node, so
+    /// the single literal token. leading trivia can land inside the node, so
     /// this skips trivia rather than taking the first token blindly.
     pub fn token(&self) -> Option<SyntaxToken> {
         self.syntax()
@@ -160,7 +160,7 @@ impl Literal {
             .find(|t| !t.kind().is_trivia())
     }
 
-    /// The literal's category, derived from its token kind.
+    /// the literal's category, derived from its token kind.
     pub fn literal_kind(&self) -> Option<LiteralKind> {
         Some(match self.token()?.kind() {
             SyntaxKind::Int => LiteralKind::Int,
@@ -173,7 +173,7 @@ impl Literal {
     }
 }
 
-/// A binary operator. Mirrors the operator token kinds the grammar folds into
+/// a binary operator. mirrors the operator token kinds the grammar folds into
 /// a [`BinExpr`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinOp {
@@ -198,7 +198,7 @@ pub enum BinOp {
 }
 
 impl BinOp {
-    /// The operator a token kind denotes, or `None` for a non-operator kind.
+    /// the operator a token kind denotes, or `None` for a non-operator kind.
     fn from_kind(kind: SyntaxKind) -> Option<BinOp> {
         Some(match kind {
             T![+] => BinOp::Add,
@@ -253,7 +253,7 @@ impl fmt::Display for BinOp {
 }
 
 impl BinExpr {
-    /// The operator token - the direct child token between the two operands.
+    /// the operator token - the direct child token between the two operands.
     pub fn op_token(&self) -> Option<SyntaxToken> {
         self.syntax()
             .children_with_tokens()
@@ -261,13 +261,13 @@ impl BinExpr {
             .find(|t| BinOp::from_kind(t.kind()).is_some())
     }
 
-    /// The operator.
+    /// the operator.
     pub fn op(&self) -> Option<BinOp> {
         BinOp::from_kind(self.op_token()?.kind())
     }
 }
 
-/// A prefix-unary operator: `-` negate, `~` bitwise-complement, `!` logical-not.
+/// a prefix-unary operator: `-` negate, `~` bitwise-complement, `!` logical-not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
     Neg,
@@ -276,7 +276,7 @@ pub enum UnaryOp {
 }
 
 impl UnaryOp {
-    /// The prefix operator a token kind denotes, or `None` otherwise.
+    /// the prefix operator a token kind denotes, or `None` otherwise.
     fn from_kind(kind: SyntaxKind) -> Option<UnaryOp> {
         Some(match kind {
             T![-] => UnaryOp::Neg,
@@ -299,7 +299,7 @@ impl fmt::Display for UnaryOp {
 }
 
 impl PrefixExpr {
-    /// The operator - whichever prefix token leads the expression.
+    /// the operator - whichever prefix token leads the expression.
     pub fn op(&self) -> Option<UnaryOp> {
         self.syntax()
             .children_with_tokens()
@@ -308,7 +308,7 @@ impl PrefixExpr {
     }
 }
 
-/// An assignment operator: plain `=` or a compound form (`+=`, `-=`, `*=`,
+/// an assignment operator: plain `=` or a compound form (`+=`, `-=`, `*=`,
 /// `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssignOp {
@@ -326,7 +326,7 @@ pub enum AssignOp {
 }
 
 impl AssignOp {
-    /// The assignment operator a token kind denotes, or `None` otherwise.
+    /// the assignment operator a token kind denotes, or `None` otherwise.
     fn from_kind(kind: SyntaxKind) -> Option<AssignOp> {
         Some(match kind {
             T![=] => AssignOp::Assign,
@@ -344,8 +344,8 @@ impl AssignOp {
         })
     }
 
-    /// The binary operator a compound assignment desugars to (`a += b` is
-    /// `a = a + b`), or `None` for the plain `=`. Lets MIR lowering map every
+    /// the binary operator a compound assignment desugars to (`a += b` is
+    /// `a = a + b`), or `None` for the plain `=`. lets MIR lowering map every
     /// compound form uniformly instead of enumerating each one.
     pub fn to_bin_op(self) -> Option<BinOp> {
         Some(match self {
@@ -384,7 +384,7 @@ impl fmt::Display for AssignOp {
 }
 
 impl AssignExpr {
-    /// The assignment operator - the direct child token between the operands.
+    /// the assignment operator - the direct child token between the operands.
     pub fn op(&self) -> Option<AssignOp> {
         self.syntax()
             .children_with_tokens()
@@ -398,7 +398,7 @@ mod tests {
     use super::*;
     use lexer::{Lexer, SourceText};
 
-    /// Lex + parse `src` and cast the CST root to a typed [`SourceFile`].
+    /// lex + parse `src` and cast the CST root to a typed [`SourceFile`].
     fn source_file(src: &str) -> SourceFile {
         let source = SourceText::new(src.to_string());
         let tokens = Lexer::new(&source).tokenize().tokens;
@@ -406,7 +406,7 @@ mod tests {
         SourceFile::cast(parse.green).expect("root is a SourceFile")
     }
 
-    /// The canonical `main.eye` program - exercises every v0.1 node kind.
+    /// the canonical `main.eye` program - exercises every v0.1 node kind.
     const MAIN_EYE: &str = "\
 structure Point {
     int32 x,
@@ -495,7 +495,7 @@ main() {
         assert_eq!(lit_fields[0].name().unwrap().text(), "x");
     }
 
-    /// Digs out the value expression of the first statement, which must be a
+    /// digs out the value expression of the first statement, which must be a
     /// `let` - a shorthand for the operator tests below.
     fn first_let_value(src: &str) -> Expr {
         let file = source_file(src);
@@ -532,8 +532,8 @@ main() {
 
     #[test]
     fn bitwise_binds_above_equality() {
-        // No-footgun precedence (Rust-style): `a & b == c` parses as
-        // `(a & b) == c`, never C's `a & (b == c)`.
+        // no-footgun precedence (rust-style): `a & b == c` parses as
+        // `(a & b) == c`, never c's `a & (b == c)`.
         let Expr::BinExpr(top) = first_let_value("main() {\n    let r = a & b == c;\n}\n") else {
             panic!("top expr is a binop");
         };

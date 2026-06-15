@@ -1,6 +1,6 @@
-//! EXPERIMENTAL: Semantic token computation against cached salsa query results.
+//! EXPERIMENTAL: semantic token computation against cached salsa query results.
 //!
-//! Unlike the pre-Database LSP (which ran its own lexer + parser), this module
+//! unlike the pre-database LSP (which ran its own lexer + parser), this module
 //! receives the already-compiled result from `database::lowered_file` and
 //! enriches CST-only classification with HIR name resolution - specifically to
 //! fix the A5 pattern-variable mis-classification (`BareIdentPat -> VARIABLE`
@@ -70,8 +70,8 @@ fn push_token(
     prev_line: &mut u32,
     prev_start: &mut u32,
 ) {
-    // Semantic-token columns and lengths are UTF-16 code units (the LSP
-    // default encoding), not bytes. Byte-based values mis-place and
+    // semantic-token columns and lengths are UTF-16 code units (the LSP
+    // default encoding), not bytes. byte-based values mis-place and
     // over-extend every token at or after a multibyte character on its line,
     // and a strict client garbles the rest of the file from there.
     let lc = source.line_col_utf16(range.start());
@@ -113,8 +113,9 @@ mod tests {
         let source = SourceText::new(input.text(&db).to_owned());
         let lexed = database::lex(&db, input);
         let parse = database::parse(&db, input);
-        let hir = database::lowered_file(&db, input);
-        let tokens = compute_semantic_tokens(&source, &lexed, &parse, &hir).unwrap();
+        let checked = database::lowered_file(&db, input);
+        let hir = &checked.hir;
+        let tokens = compute_semantic_tokens(&source, &lexed, &parse, hir).unwrap();
         assert!(!tokens.data.is_empty());
         assert!(tokens.data.iter().any(|t| t.token_type == legend::KEYWORD));
     }
@@ -133,17 +134,18 @@ add(int32 a, int32 b) -> int32 {
         let source = SourceText::new(input.text(&db).to_owned());
         let lexed = database::lex(&db, input);
         let parse = database::parse(&db, input);
-        let hir = database::lowered_file(&db, input);
-        let tokens = compute_semantic_tokens(&source, &lexed, &parse, &hir).unwrap();
+        let checked = database::lowered_file(&db, input);
+        let hir = &checked.hir;
+        let tokens = compute_semantic_tokens(&source, &lexed, &parse, hir).unwrap();
         assert!(!tokens.data.is_empty());
     }
 
-    /// Semantic-token positions and lengths are UTF-16 code units, not bytes
+    /// semantic-token positions and lengths are UTF-16 code units, not bytes
     /// (the statistics.eye highlight failure: box-drawing and non-breaking
     /// hyphen characters in comments made every token length byte-inflated).
     #[test]
     fn semantic_tokens_use_utf16_units() {
-        // The comment is 10 UTF-16 units (`-- ` + 6 box chars + `x`) but
+        // the comment is 10 UTF-16 units (`-- ` + 6 box chars + `x`) but
         // 3 + 6 * 3 + 1 = 22 bytes. `let` follows on the same line.
         let src = "-- ──────x\nlet y = 1;";
         let db = Database::default();
@@ -151,8 +153,9 @@ add(int32 a, int32 b) -> int32 {
         let source = SourceText::new(input.text(&db).to_owned());
         let lexed = database::lex(&db, input);
         let parse = database::parse(&db, input);
-        let hir = database::lowered_file(&db, input);
-        let tokens = compute_semantic_tokens(&source, &lexed, &parse, &hir).unwrap();
+        let checked = database::lowered_file(&db, input);
+        let hir = &checked.hir;
+        let tokens = compute_semantic_tokens(&source, &lexed, &parse, hir).unwrap();
         let comment = &tokens.data[0];
         assert_eq!(
             comment.length, 10,
@@ -165,7 +168,7 @@ add(int32 a, int32 b) -> int32 {
 
     /// A5 regression: a bare-ident match pattern is a VARIABLE when the name
     /// is not a declared enum variant (a binding over a primitive scrutinee),
-    /// and ENUM_MEMBER when it is.
+    /// and enum_member when it is.
     #[test]
     fn bare_ident_pat_uses_hir_variant_resolution() {
         let src = "\
@@ -179,8 +182,9 @@ f(E e, int32 x) -> int32 {
         let input = database::SourceFileInput::new(&db, "test.eye".into(), src.into());
         let lexed = database::lex(&db, input);
         let parse = database::parse(&db, input);
-        let hir = database::lowered_file(&db, input);
-        let classified = cst::classify_spans(&parse.syntax(), Some(&hir));
+        let checked = database::lowered_file(&db, input);
+        let hir = &checked.hir;
+        let classified = cst::classify_spans(&parse.syntax(), Some(hir));
 
         // `lookup_ident` keys on the token's exact range: (offset of the
         // pattern occurrence, ident length).
@@ -188,13 +192,13 @@ f(E e, int32 x) -> int32 {
             let offset = src.find(needle).expect("needle in source") as u32;
             cst::lookup_ident(TextRange::at(offset.into(), len.into()), &classified)
         };
-        // The pattern `Circle ->` (not the declaration) resolves as a variant.
+        // the pattern `Circle ->` (not the declaration) resolves as a variant.
         assert_eq!(
             type_at("Circle ->", 6),
             Some(legend::ENUM_MEMBER),
             "variant pattern must classify as ENUM_MEMBER"
         );
-        // The binding `y ->` over an int scrutinee is a variable, not a variant.
+        // the binding `y ->` over an int scrutinee is a variable, not a variant.
         assert_eq!(
             type_at("y ->", 1),
             Some(legend::VARIABLE),
@@ -211,8 +215,9 @@ f(E e, int32 x) -> int32 {
         let source = SourceText::new(input.text(&db).to_owned());
         let lexed = database::lex(&db, input);
         let parse = database::parse(&db, input);
-        let hir = database::lowered_file(&db, input);
-        let tokens = compute_semantic_tokens(&source, &lexed, &parse, &hir).unwrap();
+        let checked = database::lowered_file(&db, input);
+        let hir = &checked.hir;
+        let tokens = compute_semantic_tokens(&source, &lexed, &parse, hir).unwrap();
         let keyword_count = tokens
             .data
             .iter()

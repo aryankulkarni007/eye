@@ -1,10 +1,10 @@
-//! Lexical scope stack used while lowering a function body.
+//! lexical scope stack used while lowering a function body.
 
 use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use crate::core::{LocalConstId, LocalId, Text};
 
-/// What a name in a lexical scope frame binds to: a runtime local (`let`/`mut`
+/// what a name in a lexical scope frame binds to: a runtime local (`let`/`mut`
 /// or a pattern binding) or a block-scope `const`.
 #[derive(Debug, Clone, Copy)]
 pub enum Binding {
@@ -52,7 +52,7 @@ impl Scopes {
         self.stack.iter().rev().find_map(|f| f.get(name).copied())
     }
 
-    /// True when `name` is already bound in the innermost frame. Used to
+    /// true when `name` is already bound in the innermost frame. used to
     /// reject same-scope redeclaration (R015); a binding in an *outer* frame
     /// is shadowing, which stays legal.
     pub fn declared_in_current(&self, name: &Text) -> bool {

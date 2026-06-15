@@ -10,10 +10,10 @@ use crate::core::{
     ConstError, HIR, HirError, Literal, Text, TypeInterner, TypeKind, TypeRef, VisitTypeRef,
 };
 
-/// The primitive type names the pipeline accepts in a `Path` type. Mirrors
-/// the C backend's primitive rendering table (`codegen::core::types`): a
+/// the primitive type names the pipeline accepts in a `Path` type. mirrors
+/// the c backend's primitive rendering table (`codegen::core::types`): a
 /// `Path` name outside this list and the declared items would be emitted
-/// verbatim into C ("unknown type name", CLEAK L6).
+/// verbatim into c ("unknown type name", CLEAK L6).
 pub(super) fn is_primitive_type_name(n: &str) -> bool {
     matches!(
         n,
@@ -32,13 +32,12 @@ pub(super) fn is_primitive_type_name(n: &str) -> bool {
             | "bool"
             | "char"
             | "string"
-            | "ptr"
     )
 }
 
-/// Every `Path` name inside `ty` that does not resolve to a declared type:
+/// every `Path` name inside `ty` that does not resolve to a declared type:
 /// not a primitive, struct, union, enum, or opaque extern type (L6, R012).
-/// Walks refs, pointers, arrays, and fn types, so `&Foo` and `[Foo; 2]`
+/// walks refs, pointers, arrays, and fn types, so `&Foo` and `[Foo; 2]`
 /// report `Foo`.
 pub(super) fn unknown_type_names(ty: TypeRef, types: &TypeInterner, hir: &HIR) -> Vec<Text> {
     struct Unknown<'h> {
@@ -76,6 +75,9 @@ pub(super) fn lower_type_ref(
 ) -> TypeRef {
     match ty {
         ast::TypeRef::IdentType(it) => match it.name() {
+            // `ptr` is structural (`TypeKind::RawPtr`), not a named path:
+            // judgments dispatch on the variant, never on the name.
+            Some(t) if t.text() == "ptr" => types.intern(TypeKind::RawPtr),
             Some(t) => types.intern(TypeKind::Path(SmolStr::from(t.text()))),
             None => types.intern(TypeKind::Error),
         },
@@ -115,22 +117,28 @@ pub(super) fn lower_type_ref(
             let ret = ft
                 .ret_type()
                 .map(|t| lower_type_ref(&t, diagnostics, consts, types));
-            types.intern(TypeKind::Fn { params, ret })
+            // fn-pointer *type syntax* has no variadic form; only an extern
+            // signature does, and that flows in via `Function::fn_type`.
+            types.intern(TypeKind::Fn {
+                params,
+                ret,
+                variadic: false,
+            })
         }
     }
 }
 
-/// Extract an array length from the `[T; N]` length slot. `N` is a bounded
+/// extract an array length from the `[T; N]` length slot. `N` is a bounded
 /// const-expr: an integer literal, a `const` reference, or arithmetic over
-/// those (A6). A non-const length, a non-integer const, or zero is a
+/// those (A6). a non-const length, a non-integer const, or zero is a
 /// [`ConstError`].
 pub(super) fn array_len(
     len: Option<ast::Expr>,
     diagnostics: &mut Sink<HirError>,
     consts: &dyn ConstEnv,
 ) -> Option<u64> {
-    // Fast path: a bare integer literal needs no const map (and gives the
-    // ArrayLenZero / ArrayLenTooLarge diagnostics on the literal itself).
+    // fast path: a bare integer literal needs no const map (and gives the
+    // arraylenzero / arraylentoolarge diagnostics on the literal itself).
     let expr = len?;
     if let ast::Expr::Literal(lit) = &expr
         && matches!(lit.literal_kind(), Some(ast::LiteralKind::Int))
@@ -160,7 +168,7 @@ pub(super) fn array_len(
             }
         };
     }
-    // General path: fold a const-expr against the finished const map.
+    // general path: fold a const-expr against the finished const map.
     match fold_const_length(&expr, consts, diagnostics) {
         Some(0) => {
             diagnostics.emit(
@@ -173,10 +181,10 @@ pub(super) fn array_len(
     }
 }
 
-/// Parse an integer literal's text into its value, honoring a base prefix:
-/// `0x`/`0X` hex, `0b`/`0B` binary, `0o`/`0O` octal, decimal otherwise. The
+/// parse an integer literal's text into its value, honoring a base prefix:
+/// `0x`/`0X` hex, `0b`/`0B` binary, `0o`/`0O` octal, decimal otherwise. the
 /// lexer regex already constrains the digit set per base, so the only failure
-/// reachable here is overflow of `u128`. Shared by every int-literal parse site
+/// reachable here is overflow of `u128`. shared by every int-literal parse site
 /// (`lower_literal` and array lengths).
 pub(super) fn parse_int_literal(text: &str) -> Option<u128> {
     let (radix, digits) = match text.as_bytes() {
@@ -186,28 +194,6 @@ pub(super) fn parse_int_literal(text: &str) -> Option<u128> {
         _ => (10, text),
     };
     u128::from_str_radix(digits, radix).ok()
-}
-
-pub(super) fn literal_type(lit: &Literal, types: &mut TypeInterner) -> TypeRef {
-    match lit {
-        Literal::Int(_) => types.intern(TypeKind::Path(SmolStr::new_static("int32"))),
-        Literal::Float(_) => types.intern(TypeKind::Path(SmolStr::new_static("float64"))),
-        // A string literal is `&[uint8; N]` (HORIZON0 C3): a reference to a fixed
-        // byte array, `N` the *decoded* byte count (escapes expanded, NUL
-        // excluded). This reuses the array machine (`len`, indexing, OOB) and
-        // gives FFI a real pointer; codegen backs it with a NUL-terminated static
-        // of the same decoded bytes, so `N` here and the static agree.
-        Literal::String(s) => {
-            let uint8 = types.intern(TypeKind::Path(SmolStr::new_static("uint8")));
-            let arr = types.intern(TypeKind::Array {
-                elem: uint8,
-                len: crate::core::decode_string_literal(s).len() as u64,
-            });
-            types.intern(TypeKind::Ref(arr))
-        }
-        Literal::Bool(_) => types.intern(TypeKind::Path(SmolStr::new_static("bool"))),
-        Literal::Char(_) => types.intern(TypeKind::Path(SmolStr::new_static("char"))),
-    }
 }
 
 pub(super) fn lower_literal(lit: &ast::Literal) -> Literal {
@@ -234,8 +220,8 @@ pub(super) fn lower_literal(lit: &ast::Literal) -> Literal {
                 .strip_prefix('\'')
                 .and_then(|s| s.strip_suffix('\''))
                 .unwrap_or(text);
-            // Decode escapes (`'\n'`, `'\t'`, ...) so the stored char is the real
-            // byte, not the backslash; codegen re-escapes on the way to C.
+            // decode escapes (`'\n'`, `'\t'`, ...) so the stored char is the real
+            // byte, not the backslash; codegen re-escapes on the way to c.
             Literal::Char(crate::core::decode_char_literal(inner))
         }
         None => Literal::Int(0),

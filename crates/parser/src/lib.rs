@@ -1,19 +1,19 @@
-//! The parser event stream.
+//! the parser event stream.
 //!
-//! The parser never builds a tree. It emits a flat, append-only buffer of
-//! [`Event`]s - the rust-analyzer model. A second pass ([`build_tree`]) walks
+//! the parser never builds a tree. it emits a flat, append-only buffer of
+//! [`Event`]s - the rust-analyzer model. a second pass ([`build_tree`]) walks
 //! the events alongside the token stream and drives `rowan::GreenNodeBuilder`
 //! to produce a lossless concrete syntax tree.
 //!
-//! ## Allocation budget
+//! ## allocation budget
 //!
-//! The event stream is a single [`Vec<Event>`], preallocated with enough
+//! the event stream is a single [`Vec<Event>`], preallocated with enough
 //! headroom that typical input never reallocates; past that it grows only by
-//! amortized doubling. The real guarantee is per-item: [`Event`] is `Copy` POD
+//! amortized doubling. the real guarantee is per-item: [`Event`] is `Copy` POD
 //! - no `String`/`Box`/`Vec` inside any variant, so no event ever allocates.
-//!   Typed diagnostics live out-of-band in a sibling [`Sink<ParseError>`];
-//!   events carry only a [`DiagnosticIdx`]. [`Marker`] open, complete and
-//!   abandon all mutate the buffer in place.
+//! typed diagnostics live out-of-band in a sibling [`Sink<ParseError>`];
+//! events carry only a [`DiagnosticIdx`]. [`Marker`] open, complete and
+//! abandon all mutate the buffer in place.
 
 use std::cell::Cell;
 use std::num::NonZeroU32;
@@ -34,62 +34,62 @@ mod grammar;
 
 pub use errors::{GrammarError, ParseError, SyntaxError};
 
-/// Index into the sibling [`Sink<ParseError>`]. Keeps [`Event`] POD.
+/// index into the sibling [`Sink<ParseError>`]. keeps [`Event`] POD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiagnosticIdx(u32);
 
-/// A parse event. `Copy` and pointer-free so the whole stream is one flat
+/// a parse event. `Copy` and pointer-free so the whole stream is one flat
 /// buffer of POD slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Event {
-    /// Start an internal node. `fwd_parent`, when set, is the event index of
+    /// start an internal node. `fwd_parent`, when set, is the event index of
     /// a later `Open` that should become this node's parent - the retroactive
     /// wrap produced by [`CompletedMarker::precede`].
     Open {
         kind: SyntaxKind,
         fwd_parent: Option<NonZeroU32>,
     },
-    /// Finish the most recently started node.
+    /// finish the most recently started node.
     Close,
-    /// Consume one non-trivia token from the stream.
+    /// consume one non-trivia token from the stream.
     Advance,
-    /// A diagnostic was recorded; no effect on tree shape.
+    /// a diagnostic was recorded; no effect on tree shape.
     Diagnostic(DiagnosticIdx),
-    /// An abandoned `Open`, or an `Open` already consumed as a forward
-    /// parent. Skipped by [`build_tree`].
+    /// an abandoned `Open`, or an `Open` already consumed as a forward
+    /// parent. skipped by [`build_tree`].
     Tombstone,
 }
 
-/// The finished parse: a lossless CST plus every diagnostic.
+/// the finished parse: a lossless CST plus every diagnostic.
 pub struct Parse {
     pub green: SyntaxNode,
     pub diagnostics: Sink<ParseError>,
 }
 
-/// How many lookahead probes the parser may make without consuming a token
+/// how many lookahead probes the parser may make without consuming a token
 /// before [`Parser::nth`] panics - a guard against non-progressing grammar
 /// loops.
 const FUEL: u32 = 256;
 
 pub struct Parser<'t> {
-    /// The full lexer output, trivia included.
+    /// the full lexer output, trivia included.
     tokens: &'t [Token],
-    /// Raw index of the next non-trivia token (the parser's logical cursor).
+    /// raw index of the next non-trivia token (the parser's logical cursor).
     pos: usize,
     events: Vec<Event>,
     diagnostics: Sink<ParseError>,
-    /// Reset on every [`advance`](Parser::advance); decremented on every
-    /// lookahead. Hitting zero means the grammar is spinning.
+    /// reset on every [`advance`](parser::advance); decremented on every
+    /// lookahead. hitting zero means the grammar is spinning.
     fuel: Cell<u32>,
-    /// When true, the postfix `{ ... }` form does not start a struct literal.
-    /// Set inside `if`/`loop` conditions to disambiguate `if x { ... }` from
-    /// `if x_struct_lit_then_block`. Restored to its prior value on entry to
+    /// when true, the postfix `{ ... }` form does not start a struct literal.
+    /// set inside `if`/`loop` conditions to disambiguate `if x { ... }` from
+    /// `if x_struct_lit_then_block`. restored to its prior value on entry to
     /// any inner parenthesised context so `if foo(Bar { x }) { ... }` still
     /// parses the inner literal.
     no_struct_lit: bool,
-    /// The cached kind of the current (non-trivia) token under the cursor.
-    /// Updated on every [`advance`](Parser::advance) and initialised in
-    /// [`Parser::new`]. Avoids repeated `nth(0)` lookahead loops.
+    /// the cached kind of the current (non-trivia) token under the cursor.
+    /// updated on every [`advance`](parser::advance) and initialised in
+    /// [`Parser::new`]. avoids repeated `nth(0)` lookahead loops.
     current: SyntaxKind,
 }
 
@@ -99,7 +99,7 @@ impl<'t> Parser<'t> {
             tokens,
             pos: 0,
             // events run a small constant factor over the token count
-            // (Advance per token, Open + Close per node); 2x is generous
+            // (advance per token, open + close per node); 2x is generous
             // headroom so typical input fills without this reallocating
             events: Vec::with_capacity(tokens.len() * 2),
             diagnostics: Sink::new(),
@@ -112,14 +112,14 @@ impl<'t> Parser<'t> {
         p
     }
 
-    /// Kind of the non-trivia token at `self.pos`.
+    /// kind of the non-trivia token at `self.pos`.
     fn current_kind(&self) -> SyntaxKind {
         self.tokens
             .get(self.pos)
             .map_or(SyntaxKind::Eof, |t| t.kind.into())
     }
 
-    /// First non-trivia raw index at or after `idx`.
+    /// first non-trivia raw index at or after `idx`.
     fn skip_trivia(&self, mut idx: usize) -> usize {
         while idx < self.tokens.len() {
             let kind: SyntaxKind = self.tokens[idx].kind.into();
@@ -131,14 +131,14 @@ impl<'t> Parser<'t> {
         idx
     }
 
-    /// Kind of the token under the cursor.
+    /// kind of the token under the cursor.
     pub fn nth0(&self) -> SyntaxKind {
         self.current
     }
 
-    /// Kind of the `n`-th non-trivia token ahead of the cursor for `n > 0`.
-    /// Past the end of the stream this is always [`SyntaxKind::Eof`].
-    /// For `n == 0` use [`nth0`](Parser::nth0) - it is a cached field access.
+    /// kind of the `n`-th non-trivia token ahead of the cursor for `n > 0`.
+    /// past the end of the stream this is always [`SyntaxKind::Eof`].
+    /// for `n == 0` use [`nth0`](parser::nth0) - it is a cached field access.
     pub fn nth(&self, n: usize) -> SyntaxKind {
         debug_assert!(n > 0, "use nth0() for the current token");
         let fuel = self.fuel.get();
@@ -169,8 +169,8 @@ impl<'t> Parser<'t> {
         self.current == SyntaxKind::Eof
     }
 
-    /// Range of the token under the cursor - the anchor for diagnostics.
-    /// When the cursor is past the last real token (at Eof) the returned range
+    /// range of the token under the cursor - the anchor for diagnostics.
+    /// when the cursor is past the last real token (at eof) the returned range
     /// is extended to the last consumed token so diagnostics never have a
     /// zero-width anchor at end-of-file.
     fn cursor_range(&self) -> TextRange {
@@ -182,13 +182,13 @@ impl<'t> Parser<'t> {
         }
     }
 
-    /// Range of the most recently consumed non-trivia token. Panics when no
+    /// range of the most recently consumed non-trivia token. panics when no
     /// token has been consumed yet (`pos == 0`).
     fn last_consumed_range(&self) -> TextRange {
         self.tokens[self.pos - 1].range
     }
 
-    /// Consume the current non-trivia token.
+    /// consume the current non-trivia token.
     pub fn advance(&mut self) {
         debug_assert!(!self.at_eof(), "advance past Eof");
         self.events.push(Event::Advance);
@@ -197,7 +197,7 @@ impl<'t> Parser<'t> {
         self.current = self.current_kind();
     }
 
-    /// Consume the current token iff it is `kind`.
+    /// consume the current token iff it is `kind`.
     pub fn eat(&mut self, kind: SyntaxKind) -> bool {
         if self.at(kind) {
             self.advance();
@@ -207,15 +207,15 @@ impl<'t> Parser<'t> {
         }
     }
 
-    /// Consume `kind`, or record a diagnostic without consuming anything.
+    /// consume `kind`, or record a diagnostic without consuming anything.
     pub fn expect(&mut self, kind: SyntaxKind, err: impl Into<ParseError>) {
         if !self.eat(kind) {
             self.error(err);
         }
     }
 
-    /// Like [`expect`](Parser::expect) but anchors the diagnostic at the given
-    /// `start` range, spanning to the current cursor. Used when the expected
+    /// like [`expect`](parser::expect) but anchors the diagnostic at the given
+    /// `start` range, spanning to the current cursor. used when the expected
     /// token belongs to a construct beginning at `start` so the underline
     /// covers the full incomplete construct rather than just the next token.
     pub fn expect_after(&mut self, kind: SyntaxKind, start: TextRange, err: impl Into<ParseError>) {
@@ -225,13 +225,13 @@ impl<'t> Parser<'t> {
         }
     }
 
-    /// Record a diagnostic anchored at the cursor. Emits an [`Event::Diagnostic`]
+    /// record a diagnostic anchored at the cursor. emits an [`Event::Diagnostic`]
     /// but does not move the cursor.
     pub fn error(&mut self, err: impl Into<ParseError>) {
         self.error_at(self.cursor_range(), err);
     }
 
-    /// Record a diagnostic anchored at a specific range - used when the relevant
+    /// record a diagnostic anchored at a specific range - used when the relevant
     /// span is a node already consumed (e.g. an assignment in an `if`
     /// condition), not the current cursor.
     pub fn error_at(&mut self, range: TextRange, err: impl Into<ParseError>) {
@@ -240,9 +240,9 @@ impl<'t> Parser<'t> {
         self.events.push(Event::Diagnostic(idx));
     }
 
-    /// Recovery: wrap the unexpected current token in an `ErrorNode` and
-    /// record `err`. When already at EOF the error is recorded but no empty
-    /// `ErrorNode` is emitted — advancing would hit the `advance past Eof`
+    /// recovery: wrap the unexpected current token in an `ErrorNode` and
+    /// record `err`. when already at EOF the error is recorded but no empty
+    /// `ErrorNode` is emitted -- advancing would hit the `advance past Eof`
     /// assertion.
     pub fn error_and_advance(&mut self, err: impl Into<ParseError>) {
         let m = self.open();
@@ -253,10 +253,10 @@ impl<'t> Parser<'t> {
         m.complete(self, SyntaxKind::ErrorNode);
     }
 
-    /// Skip unexpected tokens until one of `sync_kinds` is found (or EOF).
-    /// Records `err` once at the starting position, then silently wraps each
-    /// subsequent token in an `ErrorNode` — no cascading per-token diagnostics.
-    /// The cursor ends on the sync token (which is not consumed).
+    /// skip unexpected tokens until one of `sync_kinds` is found (or EOF).
+    /// records `err` once at the starting position, then silently wraps each
+    /// subsequent token in an `ErrorNode` -- no cascading per-token diagnostics.
+    /// the cursor ends on the sync token (which is not consumed).
     pub fn sync(&mut self, sync_kinds: &[SyntaxKind], err: impl Into<ParseError>) {
         // one diagnostic for the whole skipped region
         self.error(err);
@@ -268,7 +268,7 @@ impl<'t> Parser<'t> {
         }
     }
 
-    /// Start a node. Returns a [`Marker`] that *must* be completed or
+    /// start a node. returns a [`Marker`] that *must* be completed or
     /// abandoned - its [`DropBomb`] enforces this.
     pub fn open(&mut self) -> Marker {
         let idx = self.events.len() as u32;
@@ -283,22 +283,22 @@ impl<'t> Parser<'t> {
         (self.events, self.diagnostics)
     }
 
-    /// Suppress (or re-enable) struct-literal recognition by the postfix loop.
-    /// Returns the previous value so the caller can restore it - use the RAII
+    /// suppress (or re-enable) struct-literal recognition by the postfix loop.
+    /// returns the previous value so the caller can restore it - use the RAII
     /// pattern `let prev = p.set_no_struct_lit(true); ...; p.set_no_struct_lit(prev);`.
     // A6: single boolean, not a stack. RAII save/restore works for current
-    // grammar but is fragile. A stack of booleans would be more robust.
+    // grammar but is fragile. a stack of booleans would be more robust.
     pub(crate) fn set_no_struct_lit(&mut self, v: bool) -> bool {
         std::mem::replace(&mut self.no_struct_lit, v)
     }
 
-    /// True if struct-literal postfix is currently suppressed.
+    /// true if struct-literal postfix is currently suppressed.
     pub(crate) fn no_struct_lit(&self) -> bool {
         self.no_struct_lit
     }
 }
 
-/// An open node. The [`DropBomb`] panics if the marker is dropped without
+/// an open node. the [`DropBomb`] panics if the marker is dropped without
 /// being completed or abandoned, catching unbalanced grammar code.
 #[must_use]
 pub struct Marker {
@@ -307,7 +307,7 @@ pub struct Marker {
 }
 
 impl Marker {
-    /// Turn the placeholder at `idx` into a real `Open` node and close it.
+    /// turn the placeholder at `idx` into a real `Open` node and close it.
     pub fn complete(self, p: &mut Parser, kind: SyntaxKind) -> CompletedMarker {
         let Marker { idx, mut bomb } = self;
         bomb.defuse();
@@ -319,7 +319,7 @@ impl Marker {
         CompletedMarker { idx, kind }
     }
 
-    /// Discard the node. Any events emitted since `open()` become children of
+    /// discard the node. any events emitted since `open()` become children of
     /// the surrounding node instead.
     pub fn abandon(self, p: &mut Parser) {
         let Marker { idx, mut bomb } = self;
@@ -332,7 +332,7 @@ impl Marker {
     }
 }
 
-/// A completed node, the handle [`precede`](CompletedMarker::precede) needs to
+/// a completed node, the handle [`precede`](completedmarker::precede) needs to
 /// retroactively wrap it in a parent.
 #[derive(Clone, Copy)]
 pub struct CompletedMarker {
@@ -341,13 +341,13 @@ pub struct CompletedMarker {
 }
 
 impl CompletedMarker {
-    /// The [`SyntaxKind`] this node was completed as.
+    /// the [`SyntaxKind`] this node was completed as.
     pub(crate) fn kind(self) -> SyntaxKind {
         self.kind
     }
 
-    /// Open a fresh node *before* this one and make this completed node its
-    /// first child. This is how postfix/precedence forms wrap a node already
+    /// open a fresh node *before* this one and make this completed node its
+    /// first child. this is how postfix/precedence forms wrap a node already
     /// emitted to the stream - without shifting the buffer.
     pub fn precede(self, p: &mut Parser) -> Marker {
         let m = p.open();
@@ -361,7 +361,7 @@ impl CompletedMarker {
     }
 }
 
-/// Parse a token stream into a lossless CST.
+/// parse a token stream into a lossless CST.
 pub fn parse(tokens: &[Token], source: &SourceText) -> Parse {
     let mut p = Parser::new(tokens);
     crate::grammar::source_file(&mut p);
@@ -376,8 +376,8 @@ pub fn parse(tokens: &[Token], source: &SourceText) -> Parse {
     Parse { green, diagnostics }
 }
 
-/// Walks the event stream and the raw token stream together, driving a
-/// `GreenNodeBuilder`. Trivia tokens are interleaved back in here so the tree
+/// walks the event stream and the raw token stream together, driving a
+/// `GreenNodeBuilder`. trivia tokens are interleaved back in here so the tree
 /// round-trips to the original source.
 fn build_tree(tokens: &[Token], mut events: Vec<Event>, source: &SourceText) -> SyntaxNode {
     let mut builder = GreenNodeBuilder::new();
@@ -449,14 +449,14 @@ mod tests {
     use diagnostics::Span;
     use lexer::{Lexer, SourceText};
 
-    /// Lex + parse `src` into a [`Parse`].
+    /// lex + parse `src` into a [`Parse`].
     fn parse_src(src: &str) -> Parse {
         let source = SourceText::new(src.to_string());
         let tokens = Lexer::new(&source).tokenize().tokens;
         parse(&tokens, &source)
     }
 
-    /// A program exercising every v0.1 node kind.
+    /// a program exercising every v0.1 node kind.
     const SAMPLE: &str = "\
 structure Point {
     int32 x,
@@ -474,6 +474,58 @@ main() {
     fn well_formed_input_has_no_diagnostics() {
         let parse = parse_src(SAMPLE);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+    }
+
+    #[test]
+    fn effect_annotations_parse_into_an_effect_list() {
+        // `io render(...)` - the effect annotation precedes the fn name; the
+        // name is the ident immediately before `(`. effects nest in an
+        // effectlist so `FnDef::name()` (first direct ident) stays the name.
+        let src = "io render(int32 n) {\n    println(\"{}\", n);\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        assert_eq!(parse.green.to_string(), src, "lossless round-trip");
+        let root = parse.green.clone();
+        let fn_def = root
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::FnDef)
+            .expect("a FnDef");
+        let effects = fn_def
+            .children()
+            .find(|n| n.kind() == SyntaxKind::EffectList)
+            .expect("an EffectList child");
+        let names: Vec<String> = effects
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .filter(|t| t.kind() == SyntaxKind::Ident)
+            .map(|t| t.text().to_string())
+            .collect();
+        assert_eq!(names, vec!["io"], "one effect annotation");
+        // the fn name is still the first *direct* ident token of the fndef
+        let name = fn_def
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| t.kind() == SyntaxKind::Ident);
+        assert_eq!(name.map(|t| t.text().to_string()), Some("render".to_owned()));
+    }
+
+    #[test]
+    fn multiple_effect_annotations_parse() {
+        let src = "io state mutate(int32 n) {\n    n\n}\n";
+        let parse = parse_src(src);
+        assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
+        let root = parse.green.clone();
+        let effects = root
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::EffectList)
+            .expect("an EffectList");
+        let names: Vec<String> = effects
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .filter(|t| t.kind() == SyntaxKind::Ident)
+            .map(|t| t.text().to_string())
+            .collect();
+        assert_eq!(names, vec!["io", "state"], "both effects, name excluded");
     }
 
     #[test]
@@ -544,7 +596,7 @@ main() {
     }
 
     /// F1: comparison operators are non-associative. `a < b < c` is rejected
-    /// (it would silently be `(a < b) < c` = `bool < c` in C). The tree still
+    /// (it would silently be `(a < b) < c` = `bool < c` in c). the tree still
     /// round-trips - the error is a diagnostic, not a parse bail.
     #[test]
     fn comparison_chaining_is_rejected() {
@@ -562,7 +614,7 @@ main() {
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// C seam: a variadic extern signature (`...` last) and an opaque extern
+    /// c seam: a variadic extern signature (`...` last) and an opaque extern
     /// type (`type Name;`) both parse clean and round-trip.
     #[test]
     fn extern_variadic_and_opaque_type_parse_clean() {
@@ -574,7 +626,7 @@ main() {
     }
 
     /// `...` in a defined (non-extern) fn signature is a grammar rejection:
-    /// Eye has no varargs access, the marker is C-ABI only. Round-trips.
+    /// eye has no varargs access, the marker is c-ABI only. round-trips.
     #[test]
     fn variadic_in_defined_fn_is_rejected() {
         let src = "log(string fmt, ...) {\n}\n";
@@ -619,7 +671,7 @@ main() {
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// A single comparison, and comparisons joined by `&&`, are fine.
+    /// a single comparison, and comparisons joined by `&&`, are fine.
     #[test]
     fn single_and_logically_joined_comparisons_are_clean() {
         let src = "main() {\n    let bool r = a < b && c < d;\n}\n";
@@ -627,8 +679,8 @@ main() {
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
     }
 
-    /// A struct pattern (`Ident { .. }`) is a `let`-destructure form only; in a
-    /// match arm it is a deliberate grammar rejection (S3, deferred). The whole
+    /// a struct pattern (`Ident { .. }`) is a `let`-destructure form only; in a
+    /// match arm it is a deliberate grammar rejection (S3, deferred). the whole
     /// pattern is consumed so the error spans it and recovery round-trips.
     #[test]
     fn struct_pattern_in_match_arm_is_rejected() {
@@ -647,7 +699,7 @@ main() {
     }
 
     /// `if x = y { }` is the `=`/`==` footgun: an assignment in a condition is
-    /// rejected as a grammar error. Recovery still round-trips the source.
+    /// rejected as a grammar error. recovery still round-trips the source.
     #[test]
     fn assignment_in_if_condition_is_rejected() {
         let src = "main() {\n    if x = y {\n    };\n}\n";
@@ -682,7 +734,7 @@ main() {
 
     #[test]
     fn nested_field_access_parses_clean_and_round_trips() {
-        // Chained `a.b.c` exercises the postfix loop in `lhs`, producing
+        // chained `a.b.c` exercises the postfix loop in `lhs`, producing
         // `FieldExpr(FieldExpr(a, b), c)` rather than two siblings.
         let src = "main() {\n    println(\"{}\", a.b.c);\n}\n";
         let parse = parse_src(src);
@@ -715,7 +767,7 @@ main() {
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
     }
 
-    /// Waterfall enum body: `enum Shape = | A | B | C ;`.
+    /// waterfall enum body: `enum Shape = | A | B | C ;`.
     #[test]
     fn enum_def_waterfall_form_parses_clean() {
         let src = "enum Shape =\n| Square\n| Circle\n| Triangle\n;\n";
@@ -743,7 +795,7 @@ main() {
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// Positional struct literal: `Point { 10, 20 }` has no field names.
+    /// positional struct literal: `Point { 10, 20 }` has no field names.
     #[test]
     fn positional_struct_lit_parses_clean() {
         let src = "main() {\n    mut pt = Point { 10, 20 };\n}\n";
@@ -752,8 +804,8 @@ main() {
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// Assignment to a name and to a field of a struct. Confirms the
-    /// AssignExpr kind dispatch in `expr_bp` triggers only on `=`.
+    /// assignment to a name and to a field of a struct. confirms the
+    /// assignexpr kind dispatch in `expr_bp` triggers only on `=`.
     #[test]
     fn assign_expr_to_name_and_field_parse_clean() {
         let src = "main() {\n    counter = counter + 1;\n    pt.x = 15;\n    pt_ref.y = 30;\n}\n";
@@ -773,8 +825,8 @@ main() {
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// Fixed-size array: typed `let` with an `[T; N]` annotation, an `[...]`
-    /// literal initializer, and a postfix index. Must round-trip byte-for-byte.
+    /// fixed-size array: typed `let` with an `[T; N]` annotation, an `[...]`
+    /// literal initializer, and a postfix index. must round-trip byte-for-byte.
     #[test]
     fn array_decl_literal_and_index_parse_clean() {
         let src = "main() {\n    let [int32; 3] xs = [1, 2, 3];\n    xs[0] = xs[1];\n}\n";
@@ -787,8 +839,8 @@ main() {
         assert!(s.contains("IndexExpr"), "expected IndexExpr in:\n{s}");
     }
 
-    /// `else if` chaining. The chained `if` is wrapped in a synthetic Block
-    /// (the `else { if ... }` desugar), so the else-branch stays a Block; the
+    /// `else if` chaining. the chained `if` is wrapped in a synthetic block
+    /// (the `else { if ... }` desugar), so the else-branch stays a block; the
     /// CST must still reproduce the source byte-for-byte and carry no diagnostics.
     #[test]
     fn else_if_chain_parses_clean() {
@@ -827,8 +879,8 @@ main() {
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// Assignment is right-associative and lowest precedence. `a = b + c`
-    /// must group as `a = (b + c)`, not `(a = b) + c`. Walks the CST so the
+    /// assignment is right-associative and lowest precedence. `a = b + c`
+    /// must group as `a = (b + c)`, not `(a = b) + c`. walks the CST so the
     /// check catches a swapped grouping rather than just a co-occurrence.
     #[test]
     fn assign_is_right_assoc_and_below_addition() {
@@ -836,7 +888,7 @@ main() {
         let parse = parse_src(src);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
 
-        // SourceFile > FnDef > Block > ExprStmt > AssignExpr > {NameRef, BinExpr}
+        // sourcefile > fndef > block > exprstmt > assignexpr > {nameref, binexpr}
         fn find_kind(node: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxNode> {
             if node.kind() == kind {
                 return Some(node.clone());
@@ -854,7 +906,7 @@ main() {
         );
     }
 
-    /// Struct literal inside a call argument inside an if-condition - the
+    /// struct literal inside a call argument inside an if-condition - the
     /// no_struct_lit gate must be cleared on entry to `arg_list`.
     #[test]
     fn struct_lit_inside_call_inside_if_condition() {
@@ -871,22 +923,22 @@ main() {
         let src = "main() {\n    if cond { ok }\n}\n";
         let parse = parse_src(src);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
-        // the if's body block must be an IfExpr > Block, not a StructLit
+        // the if's body block must be an ifexpr > block, not a structlit
         let s = format!("{:#?}", parse.green);
         assert!(s.contains("IfExpr"));
         assert!(!s.contains("StructLit"), "got StructLit in:\n{s}");
     }
 
-    /// A ref-to-ref type is spelled with a space: `& &Point`. The let-binding
+    /// a ref-to-ref type is spelled with a space: `& &Point`. the let-binding
     /// type heuristic sees the leading `&`, commits to a type, and `type_ref`
-    /// recurses to produce nested `RefType`s. Round-trips byte-for-byte.
+    /// recurses to produce nested `RefType`s. round-trips byte-for-byte.
     #[test]
     fn nested_ref_type_in_let_binding_parses_clean() {
         let src = "main() {\n    mut & &Point p = & &q;\n}\n";
         let parse = parse_src(src);
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
-        // the type annotation is a RefType wrapping another RefType
+        // the type annotation is a reftype wrapping another reftype
         let s = format!("{:#?}", parse.green);
         assert_eq!(
             s.matches("RefType").count(),
@@ -897,7 +949,7 @@ main() {
 
     /// `&&` lexes as a single logical-and token, so `&&Point` cannot denote a
     /// ref-to-ref type - the type-form heuristic sees `&&` (not `&`), reads no
-    /// type, and the binding fails. This pins the lexing boundary: ref-to-ref
+    /// type, and the binding fails. this pins the lexing boundary: ref-to-ref
     /// must be written `& &Point` (see `nested_ref_type_in_let_binding_parses_clean`).
     #[test]
     fn double_amp_is_logical_and_not_a_ref_to_ref_type() {
@@ -911,7 +963,7 @@ main() {
     // ---------- v0.3 match-expression coverage (M3) ----------
 
     /// `match` over an enum scrutinee with bare-ident, qualified, and
-    /// wildcard arms. Exercises every Pat variant the grammar ships in M3.
+    /// wildcard arms. exercises every pat variant the grammar ships in M3.
     #[test]
     fn match_expr_with_every_pattern_form_parses_clean() {
         let src = "\
@@ -920,7 +972,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         assert_eq!(parse.green.to_string(), src);
 
-        // verify Pat variants are all present in the CST
+        // verify pat variants are all present in the CST
         let dump = format!("{:#?}", parse.green);
         assert!(dump.contains("MatchExpr"));
         assert!(dump.contains("MatchArmList"));
@@ -930,8 +982,8 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert!(dump.contains("WildcardPat"));
     }
 
-    /// The scrutinee of `match scrut { ... }` must not be parsed as a struct
-    /// literal, mirroring the `if cond { ... }` rule. Otherwise the arm block
+    /// the scrutinee of `match scrut { ... }` must not be parsed as a struct
+    /// literal, mirroring the `if cond { ... }` rule. otherwise the arm block
     /// gets absorbed as a struct-lit body.
     #[test]
     fn match_scrutinee_does_not_eat_arm_list_as_struct_lit() {
@@ -940,8 +992,8 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
         let dump = format!("{:#?}", parse.green);
         assert!(dump.contains("MatchExpr"));
-        // the only StructLit-shaped node in the tree must be absent: the
-        // arm list body lives in MatchArmList, not in a StructLit.
+        // the only structlit-shaped node in the tree must be absent: the
+        // arm list body lives in matcharmlist, not in a structlit.
         assert!(
             !dump.contains("StructLit"),
             "scrutinee parsed as a struct literal:\n{dump}"
@@ -970,8 +1022,8 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// A union reuses the struct field-list grammar; only the keyword
-    /// differs. Parses clean and round-trips.
+    /// a union reuses the struct field-list grammar; only the keyword
+    /// differs. parses clean and round-trips.
     #[test]
     fn union_def_parses_clean() {
         let src = "union Bits {\n    int64 i,\n    float64 f,\n};\n";
@@ -980,8 +1032,8 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// An `extern` block of bodyless C signatures, with a `ptr` return and a
-    /// `ptr` parameter. Parses clean and round-trips.
+    /// an `extern` block of bodyless c signatures, with a `ptr` return and a
+    /// `ptr` parameter. parses clean and round-trips.
     #[test]
     fn extern_block_parses_clean() {
         let src = "extern {\n    malloc(uint64 size) -> ptr;\n    free(ptr p);\n}\n";
@@ -990,7 +1042,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// A postfix-pointer type in a `let` binding (`Point* p`) - the binding
+    /// a postfix-pointer type in a `let` binding (`Point* p`) - the binding
     /// heuristic must read `Ident *` as a type, not a bare name.
     #[test]
     fn let_binding_with_postfix_pointer_type_parses() {
@@ -1000,7 +1052,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// In statement position `match` is block-like - no trailing `;` is
+    /// in statement position `match` is block-like - no trailing `;` is
     /// required between it and the next statement.
     #[test]
     fn match_in_statement_position_needs_no_semicolon() {
@@ -1011,7 +1063,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// The trailing comma on the final arm is optional - both shapes parse.
+    /// the trailing comma on the final arm is optional - both shapes parse.
     #[test]
     fn match_trailing_comma_on_last_arm_is_optional() {
         let with_comma = "main() {\n    match x {\n        A -> 1,\n        B -> 2,\n    };\n}\n";
@@ -1027,8 +1079,8 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         }
     }
 
-    /// An empty arm list is structurally valid: the parser emits a
-    /// MatchExpr with an empty MatchArmList and no diagnostics. Exhaustiveness
+    /// an empty arm list is structurally valid: the parser emits a
+    /// matchexpr with an empty matcharmlist and no diagnostics. exhaustiveness
     /// (rejecting the empty form when the scrutinee has variants) is an HIR
     /// concern (M4), not a parse concern.
     #[test]
@@ -1045,7 +1097,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         );
     }
 
-    /// Arm body expressions can be any expression, including struct literals -
+    /// arm body expressions can be any expression, including struct literals -
     /// the suppression gate is cleared on entry to the arm list.
     #[test]
     fn match_arm_body_can_be_a_struct_literal() {
@@ -1056,7 +1108,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
     }
 
     /// `,` is mandatory between match arms; omitting it produces a
-    /// diagnostic. Recovery still parses subsequent arms.
+    /// diagnostic. recovery still parses subsequent arms.
     #[test]
     fn match_missing_comma_between_arms_is_diagnosed() {
         let src = "main() {\n    match x {\n        A -> 1\n        B -> 2,\n    };\n}\n";
@@ -1080,7 +1132,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// Missing `->` after a pattern is recovered: a diagnostic is recorded
+    /// missing `->` after a pattern is recovered: a diagnostic is recorded
     /// and the parser still produces a tree that round-trips to the source.
     #[test]
     fn match_arm_missing_arrow_is_recovered() {
@@ -1094,7 +1146,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), src);
     }
 
-    /// Assert that every diagnostic has a non-empty range (not pointing at EOF).
+    /// assert that every diagnostic has a non-empty range (not pointing at EOF).
     fn assert_non_empty_spans(diags: &[(Span, ParseError)]) {
         for (i, (span, _)) in diags.iter().enumerate() {
             match span {
@@ -1107,7 +1159,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         }
     }
 
-    /// Missing `}` at end of block should point to the opening `{` (or function name).
+    /// missing `}` at end of block should point to the opening `{` (or function name).
     #[test]
     fn missing_block_close_reports_error_at_opening_brace() {
         let parse = parse_src("main() {\n    let x = 5;\n");
@@ -1117,7 +1169,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), "main() {\n    let x = 5;\n");
     }
 
-    /// Missing `)` in function call arg_list should point to the opening `(`.
+    /// missing `)` in function call arg_list should point to the opening `(`.
     #[test]
     fn missing_arg_list_close_reports_error_at_open_paren() {
         let parse = parse_src("main() {\n    foo(bar\n}\n");
@@ -1127,7 +1179,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), "main() {\n    foo(bar\n}\n");
     }
 
-    /// Missing `{` after function definition should point to the function name.
+    /// missing `{` after function definition should point to the function name.
     #[test]
     fn missing_block_open_reports_error_at_fn_name() {
         let parse = parse_src("main()\n    let x = 5;\n}\n");
@@ -1137,7 +1189,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), "main()\n    let x = 5;\n}\n");
     }
 
-    /// Missing `{` after struct name should point to the struct name.
+    /// missing `{` after struct name should point to the struct name.
     #[test]
     fn missing_field_list_open_reports_error_at_struct_name() {
         let parse = parse_src("structure Point\n    int32 x,\n    int32 y,\n};\n");
@@ -1150,7 +1202,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         );
     }
 
-    /// Missing `{` after `if` condition should point to the `if` keyword.
+    /// missing `{` after `if` condition should point to the `if` keyword.
     #[test]
     fn missing_if_body_open_reports_error_at_if_keyword() {
         let parse = parse_src("main() {\n    if x\n        y = 5;\n}\n");
@@ -1163,7 +1215,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         );
     }
 
-    /// Missing `(` after function name should point to the function name.
+    /// missing `(` after function name should point to the function name.
     #[test]
     fn missing_param_list_open_reports_error_at_fn_name() {
         let parse = parse_src("main\n    int32 x,\n}\n");
@@ -1173,7 +1225,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), "main\n    int32 x,\n}\n");
     }
 
-    /// Missing `]` in array literal should point to the opening `[`.
+    /// missing `]` in array literal should point to the opening `[`.
     #[test]
     fn missing_array_lit_close_reports_error_at_open_bracket() {
         let parse = parse_src("main() {\n    let xs = [1, 2, 3\n}\n");
@@ -1187,7 +1239,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
     }
 
     /// `[v; N]` parses as an `ArrayRepeat`; the list form `[a, b, c]` stays an
-    /// `ArrayLit`. The `;` after the first element selects the repeat form.
+    /// `ArrayLit`. the `;` after the first element selects the repeat form.
     #[test]
     fn array_repeat_vs_list_literal() {
         let repeat = format!(
@@ -1214,7 +1266,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         );
     }
 
-    /// Missing `}` in match arm list should point to the opening `{`.
+    /// missing `}` in match arm list should point to the opening `{`.
     #[test]
     fn missing_match_arms_close_reports_error_at_open_brace() {
         let parse = parse_src("main() {\n    match x {\n        A -> 1,\n        B -> 2,\n");
@@ -1227,7 +1279,7 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         );
     }
 
-    /// Missing `)` in parenthesized expression should point to the opening `(`.
+    /// missing `)` in parenthesized expression should point to the opening `(`.
     #[test]
     fn missing_paren_expr_close_reports_error_at_open_paren() {
         let parse = parse_src("main() {\n    let r = (a + b\n}\n");
@@ -1237,8 +1289,8 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         assert_eq!(parse.green.to_string(), "main() {\n    let r = (a + b\n}\n");
     }
 
-    /// Full `eyesrc/programs/design.eye` parses with zero diagnostics and round-trips
-    /// byte-for-byte. This is the integration check the unit tests can miss.
+    /// full `eyesrc/programs/design.eye` parses with zero diagnostics and round-trips
+    /// byte-for-byte. this is the integration check the unit tests can miss.
     #[test]
     fn design_eye_parses_clean_and_round_trips() {
         let src = include_str!("../../../eyesrc/programs/design.eye");

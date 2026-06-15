@@ -1,9 +1,9 @@
-//! Unit tests for MIR lowering. Each test parses a small `.eye` program, lowers
+//! unit tests for MIR lowering. each test parses a small `.eye` program, lowers
 //! it through HIR into MIR, then asserts structural properties of the resulting
-//! `MirBody` — statement count, variant kinds, local types, control flow shape.
+//! `MirBody` -- statement count, variant kinds, local types, control flow shape.
 //!
-//! These tests complement the e2e tests by catching MIR-level regressions
-//! without needing a C compiler or binary execution.
+//! these tests complement the e2e tests by catching MIR-level regressions
+//! without needing a c compiler or binary execution.
 
 use crate::core::*;
 use crate::lower::lower_function;
@@ -12,21 +12,22 @@ use hir::core::*;
 use lexer::{Lexer, SourceText};
 
 // ---------------------------------------------------------------------------
-// Helpers
+// helpers
 // ---------------------------------------------------------------------------
 
-/// Parse `src`, lower to HIR, lower the first function's body to MIR.
+/// parse `src`, lower to HIR, lower the first function's body to MIR.
 fn lower_first_fn(src: &str) -> (HIR, FnId, MirBody) {
     let source = SourceText::new(src.to_string());
     let lexed = Lexer::new(&source).tokenize();
     let parse = parser::parse(&lexed.tokens, &source);
     let file = SourceFile::cast(parse.green).expect("root is SourceFile");
-    let hir = lower_source_file(file, &lexed.interner);
+    let mut hir = lower_source_file(file, &lexed.interner);
     assert!(
         hir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
         hir.diagnostics
     );
+    let typeck = typeck::check_file(&mut hir);
     let fn_id = *hir
         .items
         .functions
@@ -39,13 +40,14 @@ fn lower_first_fn(src: &str) -> (HIR, FnId, MirBody) {
         &hir,
         &hir.types,
         body,
+        &typeck[&fn_id],
         hir.functions[fn_id].params.len(),
         hir.functions[fn_id].ret,
     );
     (hir, fn_id, mir)
 }
 
-/// Count statements of a given kind in a flat stmt list (no recursion).
+/// count statements of a given kind in a flat stmt list (no recursion).
 fn count_kind(stmts: &[MirStmt], kind: &str) -> usize {
     stmts.iter().filter(|s| variant_name(s) == kind).count()
 }
@@ -65,7 +67,7 @@ fn variant_name(s: &MirStmt) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Straight-line lowering
+// straight-line lowering
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -101,7 +103,7 @@ add(int32 a, int32 b) -> int32 {
 }
 
 // ---------------------------------------------------------------------------
-// If / else
+// if / else
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -123,7 +125,7 @@ main() {
 }
 
 // ---------------------------------------------------------------------------
-// Loop / break / continue
+// loop / break / continue
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -144,7 +146,7 @@ main() {
 }
 
 // ---------------------------------------------------------------------------
-// Match → Switch
+// match → switch
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -163,14 +165,14 @@ main() {
 ",
     );
     let _switch_count = count_kind(&mir.body.stmts, "Switch");
-    // The match call might be lowered directly (no Switch if trivial) or
-    // through a temp. At minimum we can assert the program lowered without
+    // the match call might be lowered directly (no switch if trivial) or
+    // through a temp. at minimum we can assert the program lowered without
     // panicking and that the body has at least one stmt.
     assert!(!mir.body.stmts.is_empty(), "match body must produce stmts");
 }
 
 // ---------------------------------------------------------------------------
-// Short-circuit && and ||
+// short-circuit && and ||
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -183,7 +185,7 @@ main() {
 }
 ",
     );
-    // && must lower to control flow (If), not RValue::Binary.
+    // && must lower to control flow (if), not rvalue::binary.
     let if_count = count_kind(&mir.body.stmts, "If");
     assert!(
         if_count >= 1,
@@ -211,7 +213,7 @@ main() {
 }
 
 // ---------------------------------------------------------------------------
-// Struct field access
+// struct field access
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -226,14 +228,14 @@ main() {
 }
 ",
     );
-    // Field access lowers to Place::Field; check that lowering doesn't panic
+    // field access lowers to place::field; check that lowering doesn't panic
     // and produces reasonable MIR.
     assert!(mir.locals.len() >= 2, "p and v plus temps");
     assert_eq!(mir.params.len(), 0);
 }
 
 // ---------------------------------------------------------------------------
-// Return
+// return
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -253,7 +255,7 @@ main() {
 }
 
 // ---------------------------------------------------------------------------
-// Destructure (struct binding in let)
+// destructure (struct binding in let)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -269,7 +271,7 @@ main() {
 }
 ",
     );
-    // destructure expands to multiple Let stmts
+    // destructure expands to multiple let stmts
     let let_count = count_kind(&mir.body.stmts, "Let");
     assert!(
         let_count >= 2,
@@ -279,7 +281,7 @@ main() {
 }
 
 // ---------------------------------------------------------------------------
-// Invariants
+// invariants
 // ---------------------------------------------------------------------------
 
 #[test]

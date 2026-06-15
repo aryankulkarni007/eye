@@ -1,78 +1,78 @@
-//! The eye grammar - the full v0.7 surface: items (struct, union, enum,
+//! the eye grammar - the full v0.7 surface: items (struct, union, enum,
 //! `extern` FFI, fn), references / pointers / fixed arrays in the type system,
 //! the operator set (arithmetic, bitwise, comparison, logical, compound
-//! assignment), `match`, `as` casts, and array literals / indexing. Exercised
+//! assignment), `match`, `as` casts, and array literals / indexing. exercised
 //! end to end by `eyesrc/*.eye` (see `eyesrc/operators.eye` for the operator surface
 //! and `eyesrc/arrays.eye` for arrays).
 //!
 //! ```text
-//! source_file  := item*
-//! item         := const_def | struct_def | union_def | extern_block | enum_def | fn_def
-//! const_def    := 'const' type_ref Ident '=' expr ';'   // compile-time value
-//!                                                  // also valid as a stmt
-//! struct_def   := 'structure' Ident field_list ';'
-//! union_def    := 'union' Ident field_list ';'
+//! source_file := item*
+//! item := const_def | struct_def | union_def | extern_block | enum_def | fn_def
+//! const_def := 'const' type_ref ident '=' expr ';' // compile-time value
+//! // also valid as a stmt
+//! struct_def := 'structure' ident field_list ';'
+//! union_def := 'union' ident field_list ';'
 //! extern_block := 'extern' '{' (extern_fn | extern_type)* '}'
-//! extern_fn    := Ident param_list ('->' type_ref)? ';'
-//! extern_type  := 'type' Ident ';'                 // opaque FFI type
-//! enum_def     := 'enum' Ident '=' '|'? variant ('|' variant)* ';'
-//! variant      := Ident                // leading '|' before the first is optional
-//! fn_def       := Ident param_list ('->' type_ref)? block
-//! field_list   := '{' (field ',')* '}' // the ',' terminates every field
-//! field        := type_ref Ident
-//! param_list   := '(' (param (',' param)* ','?)? '...'? ')' // '...' extern-only, last
-//! param        := type_ref Ident
-//! type_ref     := array_type | ('&' type_ref) | (Ident postfix_ptr*)
-//! array_type   := '[' type_ref ';' expr ']'        // fixed-size array
-//! postfix_ptr  := '*'                              // wraps the base in a PtrType
+//! extern_fn := ident param_list ('->' type_ref)? ';'
+//! extern_type := 'type' ident ';' // opaque FFI type
+//! enum_def := 'enum' ident '=' '|'? variant ('|' variant)* ';'
+//! variant := ident // leading '|' before the first is optional
+//! fn_def := ident param_list ('->' type_ref)? block
+//! field_list := '{' (field ',')* '}' // the ',' terminates every field
+//! field := type_ref ident
+//! param_list := '(' (param (',' param)* ','?)? '...'? ')' // '...' extern-only, last
+//! param := type_ref ident
+//! type_ref := array_type | ('&' type_ref) | (ident postfix_ptr*)
+//! array_type := '[' type_ref ';' expr ']' // fixed-size array
+//! postfix_ptr := '*' // wraps the base in a ptrtype
 //!
-//! block        := '{' (stmt)* expr? '}'
-//! stmt         := let_stmt | const_def | expr_stmt
-//! let_stmt     := ('let' | 'mut') ((type_ref? Ident) | struct_pat) '=' expr ';'
-//! expr_stmt    := expr ';'                        // or block-like expr w/o ';'
-//! expr         := pratt
-//! pratt        := prefix (infix prefix)*
-//! prefix       := '-' prefix | '~' prefix | '!' prefix    // PrefixExpr
-//!               | '&' prefix | '*' prefix | postfix        // Ref/Deref expr
-//! postfix      := base (call | index | struct_body | '.' Ident | 'as' type_ref)*
-//! call         := '(' (expr (',' expr)* ','?)? ')'
-//! index        := '[' expr ']'
-//! base         := '(' expr ')' | atom            // parenthesized group or atom
-//! atom         := Int | Float | String | True | False | Char | NameRef
-//!               | if_expr | loop_expr | break_expr | continue_expr
-//!               | return_expr | match_expr | array_lit
-//! array_lit    := '[' (expr ((';' expr) | (',' expr)* ','?))? ']'  // list or `[v; N]` repeat
-//! if_expr      := 'if' expr_no_struct block ('else' (if_expr | block))?
-//! loop_expr    := 'loop' block
-//! break_expr   := 'break' expr?
+//! block := '{' (stmt)* expr? '}'
+//! stmt := let_stmt | const_def | expr_stmt
+//! let_stmt := ('let' | 'mut') ((type_ref? ident) | struct_pat) '=' expr ';'
+//! expr_stmt := expr ';' // or block-like expr w/o ';'
+//! expr := pratt
+//! pratt := prefix (infix prefix)*
+//! prefix := '-' prefix | '~' prefix | '!' prefix // prefixexpr
+//! | '&' prefix | '*' prefix | postfix // ref/deref expr
+//! postfix := base (call | index | struct_body | '.' ident | 'as' type_ref)*
+//! call := '(' (expr (',' expr)* ','?)? ')'
+//! index := '[' expr ']'
+//! base := '(' expr ')' | atom // parenthesized group or atom
+//! atom := int | float | string | true | false | char | nameref
+//! | if_expr | loop_expr | break_expr | continue_expr
+//! | return_expr | match_expr | array_lit
+//! array_lit := '[' (expr ((';' expr) | (',' expr)* ','?))? ']' // list or `[v; N]` repeat
+//! if_expr := 'if' expr_no_struct block ('else' (if_expr | block))?
+//! loop_expr := 'loop' block
+//! break_expr := 'break' expr?
 //! continue_expr:= 'continue'
-//! return_expr  := 'return' expr?
-//! match_expr   := 'match' expr_no_struct '{' match_arm* '}'
-//! match_arm    := pat ('if' expr)? '->' expr ','?  // ',' optional on last arm
-//! pat          := '_' | (NameRef '.' NameRef) | Literal | NameRef
-//! // precedence is Rust-style (no-footgun): every bitwise op binds tighter
+//! return_expr := 'return' expr?
+//! match_expr := 'match' expr_no_struct '{' match_arm* '}'
+//! match_arm := pat ('if' expr)? '->' expr ','? // ',' optional on last arm
+//! pat := '_' | (nameref '.' nameref) | literal | nameref
+//! // precedence is rust-style (no-footgun): every bitwise op binds tighter
 //! // than comparison, and comparison is non-associative (no chaining). '=' and
 //! // the compound forms are right-associative and lowest; 'as' / call / index /
 //! // field bind tightest, above every prefix unary.
-//! infix        := '=' | '+=' | '-=' | '||' | '&&' | comparison
-//!               | '|' | '^' | '&' | '<<' | '>>' | '+' | '-' | '*' | '/' | '%'
-//! comparison   := '==' | '!=' | '<' | '>' | '<=' | '>='
-//! struct_body  := '{' (struct_lit_field (',' struct_lit_field)* ','?)? '}'
-//! struct_lit_field := Ident (':' expr)? | expr           // last is positional
+//! infix := '=' | '+=' | '-=' | '||' | '&&' | comparison
+//! | '|' | '^' | '&' | '<<' | '>>' | '+' | '-' | '*' | '/' | '%'
+//! comparison := '==' | '!=' | '<' | '>' | '<=' | '>='
+//! struct_body := '{' (struct_lit_field (',' struct_lit_field)* ','?)? '}'
+//! struct_lit_field := ident (':' expr)? | expr // last is positional
 //! ```
 //!
-//! Every function opens a [`Marker`], parses, and completes it with a node
-//! kind. Parsing is resilient: an unexpected token is wrapped in an
+//! every function opens a [`Marker`], parses, and completes it with a node
+//! kind. parsing is resilient: an unexpected token is wrapped in an
 //! `ErrorNode` and skipped - the parser never bails, so a tree always comes
 //! out.
 //!
-//! [`Marker`]: crate::Marker
+//! [`Marker`]: crate::marker
 
 use crate::{CompletedMarker, Parser};
 use syntax::{SyntaxKind, T};
 use text_size::TextRange;
 
-/// True if `p` is positioned at a token that can begin an expression - an
+/// true if `p` is positioned at a token that can begin an expression - an
 /// atom, a prefix operator, or a block-like expression keyword.
 fn at_expr_start(p: &Parser) -> bool {
     matches!(
@@ -138,8 +138,8 @@ pub(crate) fn source_file(p: &mut Parser) {
 
 // `const TYPE Ident = expr;` - a compile-time constant value, at the top level
 // or as a statement inside a block (same node either way; HIR scopes the local
-// form lexically). The type is always explicit (no inference at the floor); the
-// initializer is a const-expr folded in HIR. A const is a value, not storage -
+// form lexically). the type is always explicit (no inference at the floor); the
+// initializer is a const-expr folded in HIR. a const is a value, not storage -
 // it has no guaranteed address (`&const` is illegal, enforced in HIR).
 fn const_def(p: &mut Parser) {
     let m = p.open();
@@ -167,9 +167,9 @@ fn const_def(p: &mut Parser) {
 }
 
 // `let TYPE Ident = expr;` / `mut TYPE Ident = expr;` at the top level - a
-// global: addressable static storage. The type is explicit at the floor (no
+// global: addressable static storage. the type is explicit at the floor (no
 // inference); the initializer must be const-evaluable (HIR folds it). `let` is
-// read-only, `mut` is mutable. Distinct from a const (a value with no address).
+// read-only, `mut` is mutable. distinct from a const (a value with no address).
 fn global_def(p: &mut Parser) {
     let m = p.open();
     let def_start = p.cursor_range(); // 'let' or 'mut' - anchor for diagnostics
@@ -213,7 +213,7 @@ fn struct_def(p: &mut Parser) {
     m.complete(p, SyntaxKind::StructDef);
 }
 
-// A union reuses the struct field-list verbatim; only the keyword and the
+// a union reuses the struct field-list verbatim; only the keyword and the
 // emitted node kind differ (overlapping storage instead of a product type).
 fn union_def(p: &mut Parser) {
     let m = p.open();
@@ -230,8 +230,8 @@ fn union_def(p: &mut Parser) {
     m.complete(p, SyntaxKind::UnionDef);
 }
 
-// `extern { sig; sig; }` - a batch of C function signatures with no bodies.
-// Each name enters the top-level namespace and resolves at link time.
+// `extern { sig; sig; }` - a batch of c function signatures with no bodies.
+// each name enters the top-level namespace and resolves at link time.
 fn extern_block(p: &mut Parser) {
     let m = p.open();
     let ctx = p.cursor_range(); // 'extern' keyword - context for missing '{'
@@ -264,7 +264,7 @@ fn extern_block(p: &mut Parser) {
     m.complete(p, SyntaxKind::ExternBlock);
 }
 
-// A bodyless fn signature: `name(Type arg, ...) -> Ret;`. Mirrors `fn_def`
+// a bodyless fn signature: `name(Type arg, ...) -> Ret;`. mirrors `fn_def`
 // but terminates on `;` where a fn would open its block.
 fn extern_fn(p: &mut Parser) {
     let m = p.open();
@@ -283,7 +283,7 @@ fn extern_fn(p: &mut Parser) {
     m.complete(p, SyntaxKind::ExternFn);
 }
 
-// `type Name;` inside an extern block: an opaque FFI type. Eye never sees its
+// `type Name;` inside an extern block: an opaque FFI type. eye never sees its
 // layout, so it is legal only behind a pointer/reference; codegen emits a
 // forward typedef and no definition.
 fn extern_type(p: &mut Parser) {
@@ -311,16 +311,24 @@ fn field_list(p: &mut Parser, ctx: TextRange) {
         p.error_at(ctx, crate::SyntaxError::ExpectedFieldListOpen);
     }
     while !p.at(T!['}']) && !p.at_eof() {
-        // A field type starts with an ident, `&` (ref), `[` (array), or `(`
+        // a field type starts with an ident, `&` (ref), `[` (array), or `(`
         // (function pointer).
         if p.at(SyntaxKind::Ident) || p.at(T![&]) || p.at(T!['[']) || p.at(T!['(']) {
             field(p);
-            // the separating ',' is a child of FieldList, not of Field
+            // the separating ',' is a child of fieldlist, not of field
             p.expect(T![,], crate::SyntaxError::ExpectedCommaAfterField);
         } else {
-            p.sync(&[T![,], T!['}']], crate::SyntaxError::ExpectedField);
-            if !p.at(T!['}']) {
-                p.expect(T![,], crate::SyntaxError::ExpectedCommaAfterField);
+            // item keywords are sync points so an unclosed field-list `{`
+            // cannot consume subsequent items as error nodes. after sync
+            // the loop bails when no `,` follows -- either `}` (normal exit)
+            // or an item keyword (the field list is unclosed).
+            // EXPERIMENTAL - vamous
+            p.sync(
+                &[T![,], T!['}'], T![structure], T![union], T![enum], T![extern]],
+                crate::SyntaxError::ExpectedField,
+            );
+            if !p.eat(T![,]) {
+                break;
             }
         }
     }
@@ -358,7 +366,7 @@ fn enum_def(p: &mut Parser) {
     );
     let had_eq = p.eat(T![=]);
 
-    // First variant. At least one variant required. Leading `|` is always
+    // first variant. at least one variant required. leading `|` is always
     // optional - stylistic only, accepted inline or multi-line.
     let v_m = p.open();
     if p.at(T![|]) {
@@ -372,7 +380,7 @@ fn enum_def(p: &mut Parser) {
         v_m.abandon(p);
     }
 
-    // Subsequent variants: '|' mandatory as a separator.
+    // subsequent variants: '|' mandatory as a separator.
     let mut had_any_variant = had_first_variant;
     while p.at(T![|]) {
         let v_m = p.open();
@@ -405,9 +413,9 @@ fn enum_def(p: &mut Parser) {
 }
 
 fn type_ref(p: &mut Parser) {
-    // parse the base type (either &ref, [T; N] array, or ident)
+    // parse the base type (either &ref, [t; n] array, or ident)
     let mut m = if p.at(T!['[']) {
-        // `[T; N]` fixed-size array. N is an expression in the grammar but
+        // `[T; N]` fixed-size array. n is an expression in the grammar but
         // restricted to an integer literal in lowering (no const-expr yet).
         let m = p.open();
         let open_bracket = p.cursor_range();
@@ -426,8 +434,8 @@ fn type_ref(p: &mut Parser) {
         type_ref(p);
         m.complete(p, SyntaxKind::RefType)
     } else if p.at(T!['(']) {
-        // function type `(T, T) -> R`. A `(` in type position can only begin a
-        // function type: Eye has no tuple or parenthesized-group types. The
+        // function type `(T, T) -> R`. a `(` in type position can only begin a
+        // function type: eye has no tuple or parenthesized-group types. the
         // return arrow is optional (omitted = returns nothing), mirroring a
         // function declaration.
         let m = p.open();
@@ -466,6 +474,18 @@ fn type_ref(p: &mut Parser) {
 
 fn fn_def(p: &mut Parser) {
     let m = p.open();
+    // contextual effect annotations precede the fn name: `io render(...)`.
+    // the keyword-less fn grammar makes `IDENT+ IDENT (` unambiguous - every
+    // ident before the name (the one immediately followed by `(`) is an effect.
+    // effect names are contextual: not reserved, validated downstream against
+    // the atom set (EFFECT.md), so the parser accepts any ident sequence here.
+    if p.at(SyntaxKind::Ident) && p.nth(1) == SyntaxKind::Ident {
+        let em = p.open();
+        while p.at(SyntaxKind::Ident) && p.nth(1) == SyntaxKind::Ident {
+            p.advance(); // one effect annotation
+        }
+        em.complete(p, SyntaxKind::EffectList);
+    }
     let ctx = p.cursor_range(); // function name - context for missing '('
     p.advance(); // function name
     param_list(p, ctx, false);
@@ -477,11 +497,11 @@ fn fn_def(p: &mut Parser) {
     m.complete(p, SyntaxKind::FnDef);
 }
 
-/// `variadic_ok` is true only for an `extern` signature: `...` is a C-ABI
-/// marker with no Eye-side varargs access, so a defined fn cannot take it.
+/// `variadic_ok` is true only for an `extern` signature: `...` is a c-ABI
+/// marker with no eye-side varargs access, so a defined fn cannot take it.
 fn param_list(p: &mut Parser, ctx: TextRange, variadic_ok: bool) {
     let m = p.open();
-    // `(` and `)` are separate tokens; an empty `()` is just a ParamList
+    // `(` and `)` are separate tokens; an empty `()` is just a paramlist
     // with no params - unit is inferred from the absence of content
     let open_paren = p.cursor_range();
     let had_open = p.eat(T!['(']);
@@ -490,6 +510,14 @@ fn param_list(p: &mut Parser, ctx: TextRange, variadic_ok: bool) {
     }
     let mut named_params = 0usize;
     while !p.at(T![')']) && !p.at_eof() {
+        // when '(' is missing, item-level keywords are never valid params.
+        // bail immediately so subsequent items aren't consumed as params.
+        // EXPERIMENTAL - vamous
+        if !had_open
+            && matches!(p.nth0(), T![structure] | T![union] | T![enum] | T![extern])
+        {
+            break;
+        }
         if p.at(T![...]) {
             let dots = p.cursor_range();
             let var_m = p.open();
@@ -498,7 +526,7 @@ fn param_list(p: &mut Parser, ctx: TextRange, variadic_ok: bool) {
             if !variadic_ok {
                 p.error_at(dots, crate::GrammarError::VariadicOutsideExtern);
             } else if named_params == 0 {
-                // the C calling convention needs a named parameter before
+                // the c calling convention needs a named parameter before
                 // `...` (C99); the floor keeps that rule
                 p.error_at(dots, crate::GrammarError::VariadicNeedsNamedParam);
             }
@@ -544,18 +572,18 @@ fn block(p: &mut Parser, ctx: TextRange) {
         if p.at(T![let]) || p.at(T![mut]) {
             let_stmt(p);
         } else if p.at(T![const]) {
-            // Block-scope `const TYPE Ident = expr;` - the same ConstDef node
+            // block-scope `const TYPE Ident = expr;` - the same constdef node
             // as the top-level form; HIR gives it lexical scope.
             const_def(p);
         } else if at_expr_start(p) {
-            // A block-like expression (`if`, `loop`, raw block) does not need
+            // a block-like expression (`if`, `loop`, raw block) does not need
             // a trailing `;` when followed by another stmt; everything else
-            // does. Either way, if it sits in tail position before `}` the
-            // ExprStmt marker is abandoned so the bare expr falls out as the
+            // does. either way, if it sits in tail position before `}` the
+            // exprstmt marker is abandoned so the bare expr falls out as the
             // block's tail.
             let m_stmt = p.open();
             // a leading `if`/`loop`/`match` makes this expression block-like,
-            // so it can stand as a statement without a trailing `;`. A bare
+            // so it can stand as a statement without a trailing `;`. a bare
             // `{` is not accepted by `lhs` as an expression start today;
             // reserve the arm for a future block-as-expression form.
             let is_block_like = matches!(p.nth0(), T![if] | T![loop] | T![match]);
@@ -571,13 +599,29 @@ fn block(p: &mut Parser, ctx: TextRange) {
                 // `if { ... } counter = ...;` - the if is a statement here,
                 // no `;` required between block-like and the next stmt.
                 m_stmt.complete(p, SyntaxKind::ExprStmt);
+            } else if p.at_eof() {
+                // at EOF without `}` -- the block is unclosed. don't emit
+                // "expected ;" because adding `}` would make this expression a
+                // valid tail expression. `ExpectedBlockClose` is the root
+                // cause. EXPERIMENTAL - vamous
+                m_stmt.complete(p, SyntaxKind::ExprStmt);
             } else {
                 p.error_at(expr_start, crate::SyntaxError::ExpectedSemiAfterExpr);
                 m_stmt.complete(p, SyntaxKind::ExprStmt);
             }
         } else {
-            p.sync(&[T![;], T!['}']], crate::SyntaxError::ExpectedStatement);
-            p.eat(T![;]);
+            // item keywords are sync points so an unclosed block cannot
+            // consume subsequent items as error nodes. after sync the
+            // block bails when no `;` follows -- either `}` (normal exit)
+            // or an item keyword (the block is unclosed; expectedblockclose
+            // fires below). EXPERIMENTAL - vamous
+            p.sync(
+                &[T![;], T!['}'], T![structure], T![union], T![enum], T![extern]],
+                crate::SyntaxError::ExpectedStatement,
+            );
+            if !p.eat(T![;]) {
+                break;
+            }
         }
     }
     if !p.eat(T!['}']) {
@@ -607,28 +651,28 @@ fn stmt(p: &mut Parser) {
 /// `let_stmt` accepts these shapes, distinguished by a fixed two-token
 /// lookahead after the `let`/`mut` keyword:
 ///
-/// - inferred:     `let x = expr;`                (Ident then `=` -> no type)
-/// - explicit:     `mut Point p = expr;`          (Ident then Ident)
-/// - pointer:      `mut Point* p = expr;`         (Ident then `*`)
-/// - explicit ref: `mut &Point r = expr;`         (leading `&`)
-/// - explicit arr: `let [int32; 3] xs = expr;`    (leading `[`)
+/// - inferred: `let x = expr;` (ident then `=` -> no type)
+/// - explicit: `mut Point p = expr;` (ident then ident)
+/// - pointer: `mut Point* p = expr;` (ident then `*`)
+/// - explicit ref: `mut &Point r = expr;` (leading `&`)
+/// - explicit arr: `let [int32; 3] xs = expr;` (leading `[`)
 ///
-/// Nested refs are written with a space (`& &Point`); the `&&` spelling lexes
+/// nested refs are written with a space (`& &Point`); the `&&` spelling lexes
 /// as a single logical-and token, so it cannot denote a ref-to-ref type.
 fn let_stmt(p: &mut Parser) {
     let m = p.open();
     let stmt_start = p.cursor_range(); // 'let' or 'mut' - anchor for diagnostics
     p.advance(); // 'let' or 'mut'
-    // Struct destructure: `let Point { x, y } = p`. The target is a struct
-    // pattern (`Ident '{'`), not a `type name` binding. Exhaustive field binding;
+    // struct destructure: `let Point { x, y } = p`. the target is a struct
+    // pattern (`Ident '{'`), not a `type name` binding. exhaustive field binding;
     // no `..`/ignore yet.
     if p.at(SyntaxKind::Ident) && p.nth(1) == T!['{'] {
         struct_pat(p);
     } else {
-        // A leading type is present when the tokens after `let`/`mut` read as
-        // `type name` rather than `name =`. A leading `&` begins a ref type, `[`
+        // a leading type is present when the tokens after `let`/`mut` read as
+        // `type name` rather than `name =`. a leading `&` begins a ref type, `[`
         // an array type, and `(` a function type (a binding name never starts
-        // with any of these). An `Ident` is a type if the next token is another
+        // with any of these). an `Ident` is a type if the next token is another
         // `Ident` (`Point p`) or a postfix `*` (`Point* p`).
         let has_type = matches!(p.nth0(), T![&] | T!['['] | T!['('])
             || matches!(
@@ -666,18 +710,18 @@ fn expr_stmt(p: &mut Parser) {
     m.complete(p, SyntaxKind::ExprStmt);
 }
 
-/// An expression. Precedence is resolved by the Pratt loop in [`expr_bp`];
+/// an expression. precedence is resolved by the pratt loop in [`expr_bp`];
 /// [`lhs`] parses a prefix-unary form or an atom with its postfix forms.
 fn expr(p: &mut Parser) {
     expr_bp(p, 0);
 }
 
-/// Left/right binding power of an infix operator, or `None` if `kind` is not
-/// one. Most operators are left-associative (`l_bp < r_bp`). Assignment is
+/// left/right binding power of an infix operator, or `None` if `kind` is not
+/// one. most operators are left-associative (`l_bp < r_bp`). assignment is
 /// right-associative (`l_bp > r_bp`) and has the lowest precedence.
 fn infix_binding_power(kind: SyntaxKind) -> Option<(u8, u8)> {
     Some(match kind {
-        // Assignment (plain `=` and every compound form) is right-associative
+        // assignment (plain `=` and every compound form) is right-associative
         // and lowest.
         T![=]
         | T![+=]
@@ -692,12 +736,12 @@ fn infix_binding_power(kind: SyntaxKind) -> Option<(u8, u8)> {
         | T![>>=] => (2, 1),
         T![||] => (3, 4),
         T![&&] => (5, 6),
-        // Comparison is its own tier; F1 makes it non-associative (see
-        // `expr_bp`) so `a < b < c` is a hard error, not C's silent chain.
+        // comparison is its own tier; f1 makes it non-associative (see
+        // `expr_bp`) so `a < b < c` is a hard error, not c's silent chain.
         T![==] | T![!=] | T![<] | T![>] | T![<=] | T![>=] => (7, 8),
-        // No-footgun precedence (Rust-style, not C-style): every bitwise op
+        // no-footgun precedence (rust-style, not c-style): every bitwise op
         // binds TIGHTER than comparison, so `a & b == c` is `(a & b) == c`,
-        // never C's `a & (b == c)`. Each bitwise op gets its own tier.
+        // never c's `a & (b == c)`. each bitwise op gets its own tier.
         T![|] => (9, 10),
         T![^] => (11, 12),
         T![&] => (13, 14),
@@ -708,26 +752,26 @@ fn infix_binding_power(kind: SyntaxKind) -> Option<(u8, u8)> {
     })
 }
 
-/// True if `kind` is a comparison/equality operator. These form one tier and
-/// are non-associative (F1): chaining two of them at the same level is an
+/// true if `kind` is a comparison/equality operator. these form one tier and
+/// are non-associative (f1): chaining two of them at the same level is an
 /// error, so `a < b < c` must be parenthesized.
 fn is_comparison(kind: SyntaxKind) -> bool {
     matches!(kind, T![==] | T![!=] | T![<] | T![>] | T![<=] | T![>=])
 }
 
-/// Right binding power of any prefix unary - above every infix operator, so
+/// right binding power of any prefix unary - above every infix operator, so
 /// `-a * b` parses as `(-a) * b`.
 const PREFIX_BP: u8 = 21;
 
-/// Pratt loop: parse a left-hand side, then fold in infix operators while
-/// their left binding power is at least `min_bp`. Each operator wraps the
+/// pratt loop: parse a left-hand side, then fold in infix operators while
+/// their left binding power is at least `min_bp`. each operator wraps the
 /// already-parsed LHS via [`CompletedMarker::precede`], so the event buffer
 /// stays append-only.
 fn expr_bp(p: &mut Parser, min_bp: u8) -> Option<CompletedMarker> {
     let mut lhs = lhs(p)?;
-    // Tracks whether the operator folded last at *this* level was a comparison.
-    // Two comparisons in a row at the same level is a non-associativity error
-    // (F1). A same-tier comparison never appears in an operator's right operand
+    // tracks whether the operator folded last at *this* level was a comparison.
+    // two comparisons in a row at the same level is a non-associativity error
+    // (f1). a same-tier comparison never appears in an operator's right operand
     // (r_bp > l_bp breaks it out), so a chain only ever shows up here.
     let mut prev_was_cmp = false;
     while let Some((l_bp, r_bp)) = infix_binding_power(p.nth0()) {
@@ -766,11 +810,11 @@ fn expr_bp(p: &mut Parser, min_bp: u8) -> Option<CompletedMarker> {
     Some(lhs)
 }
 
-/// A prefix-unary form, or an atom followed by any run of postfix forms. Each
+/// a prefix-unary form, or an atom followed by any run of postfix forms. each
 /// postfix form uses [`CompletedMarker::precede`] to wrap its operand.
 fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
-    // Prefix-unary: `-` negate, `~` bitwise-complement, `!` logical-not. The
-    // operand binds at PREFIX_BP (above every infix op) so `-a * b` is `(-a) * b`.
+    // prefix-unary: `-` negate, `~` bitwise-complement, `!` logical-not. the
+    // operand binds at prefix_bp (above every infix op) so `-a * b` is `(-a) * b`.
     if p.at(T![-]) || p.at(T![~]) || p.at(T![!]) {
         let m = p.open();
         p.advance(); // the prefix operator
@@ -811,7 +855,7 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
         return Some(array_lit(p));
     }
 
-    // The base of the postfix chain: a parenthesized group or an atom. A
+    // the base of the postfix chain: a parenthesized group or an atom. a
     // leading `(` is unambiguously a group here (a postfix `(` - a call - only
     // appears after a base is already parsed, handled in the loop below).
     let mut lhs = if p.at(T!['(']) {
@@ -852,7 +896,7 @@ fn lhs(p: &mut Parser) -> Option<CompletedMarker> {
             name_m.complete(p, SyntaxKind::NameRef);
             lhs = field_expr.complete(p, SyntaxKind::FieldExpr);
         } else if p.at(T![as]) {
-            // `expr as Type` - a postfix cast. Binds as tightly as call/field,
+            // `expr as Type` - a postfix cast. binds as tightly as call/field,
             // so `a + b as T` parses as `a + (b as T)`.
             let cast = lhs.precede(p);
             p.advance(); // 'as'
@@ -870,8 +914,8 @@ fn if_expr(p: &mut Parser) -> CompletedMarker {
     let if_start = p.cursor_range(); // 'if' keyword - anchor for condition span
     p.advance(); // 'if'
     let prev = p.set_no_struct_lit(true);
-    // Reject `if x = y { ... }`: an assignment in a condition is the classic
-    // `=`/`==` footgun. Anchored at the condition's first token, not the cursor.
+    // reject `if x = y { ... }`: an assignment in a condition is the classic
+    // `=`/`==` footgun. anchored at the condition's first token, not the cursor.
     let cond_start = p.cursor_range();
     let cond = expr_bp(p, 0);
     p.set_no_struct_lit(prev);
@@ -886,9 +930,9 @@ fn if_expr(p: &mut Parser) -> CompletedMarker {
         p.advance(); // 'else'
         if p.at(T![if]) {
             // `else if` desugars to `else { if ... }`: wrap the chained if in a
-            // synthetic Block so the else-branch stays a Block end-to-end
-            // (AST/HIR/codegen are unchanged). Codegen flattens the trivial
-            // `else { if }` back to `else if` so the C output does not nest.
+            // synthetic block so the else-branch stays a block end-to-end
+            // (AST/HIR/codegen are unchanged). codegen flattens the trivial
+            // `else { if }` back to `else if` so the c output does not nest.
             let blk = p.open();
             if_expr(p);
             blk.complete(p, SyntaxKind::Block);
@@ -933,9 +977,9 @@ fn return_expr(p: &mut Parser) -> CompletedMarker {
     m.complete(p, SyntaxKind::ReturnExpr)
 }
 
-/// `match scrut { arm, arm, ... }`. Mirrors `if_expr` for the scrutinee: the
+/// `match scrut { arm, arm, ... }`. mirrors `if_expr` for the scrutinee: the
 /// `no_struct_lit` gate is set so `match sh { Circle -> 1 }` does not parse
-/// `sh { Circle -> 1 }` as a struct literal. The gate is cleared inside the
+/// `sh { Circle -> 1 }` as a struct literal. the gate is cleared inside the
 /// arm block - arm body expressions are unrestricted.
 fn match_expr(p: &mut Parser) -> CompletedMarker {
     let m = p.open();
@@ -967,7 +1011,7 @@ fn match_arm_list(p: &mut Parser, ctx: TextRange) {
             break;
         }
         let had_comma = match_arm(p);
-        // `,` is the arm separator. It is mandatory between arms; only the
+        // `,` is the arm separator. it is mandatory between arms; only the
         // final arm before `}` may omit it.
         if !had_comma && !p.at(T!['}']) && !p.at_eof() {
             p.error(crate::SyntaxError::ExpectedCommaBetweenMatchArms);
@@ -985,17 +1029,17 @@ fn match_arm_list(p: &mut Parser, ctx: TextRange) {
     m.complete(p, SyntaxKind::MatchArmList);
 }
 
-/// Parse one arm. Returns `true` if a trailing `,` was consumed - the arm
+/// parse one arm. returns `true` if a trailing `,` was consumed - the arm
 /// list uses that to enforce the "comma required between arms" rule.
 ///
-/// An optional `if guard_expr` between the pattern and
+/// an optional `if guard_expr` between the pattern and
 /// the `->` arrow makes the arm conditional: the body runs only when both the
 /// pattern matches and the guard evaluates to true.
 fn match_arm(p: &mut Parser) -> bool {
     let m = p.open();
     let arm_start = p.cursor_range(); // pattern start - anchor for diagnostics
     pat(p);
-    // Match arm guard: `pat if expr -> body`
+    // match arm guard: `pat if expr -> body`
     if p.at(T![if]) {
         let gm = p.open();
         p.advance(); // 'if'
@@ -1014,7 +1058,7 @@ fn match_arm(p: &mut Parser) -> bool {
     had_comma
 }
 
-/// True if `p` is at a token that can begin a pattern.
+/// true if `p` is at a token that can begin a pattern.
 fn at_pat_start(p: &Parser) -> bool {
     matches!(
         p.nth0(),
@@ -1027,13 +1071,13 @@ fn at_pat_start(p: &Parser) -> bool {
     )
 }
 
-/// Patterns:
-///   - `_`                         -> `WildcardPat`
-///   - int / char / bool literal   -> `LiteralPat`
-///   - `Enum '.' Variant`          -> `PathPat` (qualified)
-///   - `Ident`                     -> `BareIdentPat`
+/// patterns:
+/// - `_` -> `WildcardPat`
+/// - int / char / bool literal -> `LiteralPat`
+/// - `Enum '.' Variant` -> `PathPat` (qualified)
+/// - `Ident` -> `BareIdentPat`
 ///
-/// Float and string literals are intentionally not patterns: float equality is a
+/// float and string literals are intentionally not patterns: float equality is a
 /// footgun and a string is an array, not a kernel discriminant domain.
 fn pat(p: &mut Parser) {
     if p.at(T![_]) {
@@ -1047,7 +1091,7 @@ fn pat(p: &mut Parser) {
         SyntaxKind::Int | SyntaxKind::Char | SyntaxKind::True | SyntaxKind::False
     ) {
         let m = p.open();
-        // Wrap the token in a `Literal` node so HIR reuses `lower_literal`.
+        // wrap the token in a `Literal` node so HIR reuses `lower_literal`.
         let lit = p.open();
         p.advance(); // the literal token
         lit.complete(p, SyntaxKind::Literal);
@@ -1055,8 +1099,8 @@ fn pat(p: &mut Parser) {
         return;
     }
     if p.at(SyntaxKind::Ident) {
-        // `Ident '{'` is a struct pattern. The grammar permits these only in a
-        // `let` destructure, not a match arm (S3, deferred). Parse the shape so
+        // `Ident '{'` is a struct pattern. the grammar permits these only in a
+        // `let` destructure, not a match arm (s3, deferred). parse the shape so
         // the error spans the whole pattern and recovery lands on `->`; the
         // resulting `StructPat` is not an `ast::Pat`, so HIR reads the arm
         // pattern as missing rather than miscompiling.
@@ -1096,9 +1140,9 @@ fn pat(p: &mut Parser) {
     p.error_and_advance(crate::SyntaxError::ExpectedPattern);
 }
 
-/// `Type { field, field: binding, ... }` - an irrefutable struct pattern. The
-/// caller detects the opening `Ident '{'`. Used by `let` destructure today; match
-/// arms gain it (with guards) later. Field binding is exhaustive - no `..`/ignore.
+/// `Type { field, field: binding, ... }` - an irrefutable struct pattern. the
+/// caller detects the opening `Ident '{'`. used by `let` destructure today; match
+/// arms gain it (with guards) later. field binding is exhaustive - no `..`/ignore.
 fn struct_pat(p: &mut Parser) {
     let m = p.open();
     let ctx = p.cursor_range(); // struct type - context for missing '{'
@@ -1183,9 +1227,9 @@ fn atom(p: &mut Parser) -> Option<CompletedMarker> {
     Some(m.complete(p, kind))
 }
 
-/// `[a, b, c]` array literal. Its own struct-lit context: a suppressed flag
+/// `[a, b, c]` array literal. its own struct-lit context: a suppressed flag
 /// from an enclosing if/loop condition does not apply inside the elements.
-/// Trailing comma is allowed.
+/// trailing comma is allowed.
 fn array_lit(p: &mut Parser) -> CompletedMarker {
     let m = p.open();
     let open_bracket = p.cursor_range();
@@ -1195,7 +1239,7 @@ fn array_lit(p: &mut Parser) -> CompletedMarker {
     while !p.at(T![']']) && !p.at_eof() {
         if at_expr_start(p) {
             expr(p);
-            // A `;` after the first element selects the repeat form
+            // a `;` after the first element selects the repeat form
             // `[value; count]`, distinct from the list form `[a, b, c]`.
             if first && p.at(T![;]) {
                 p.advance(); // ';'
@@ -1231,8 +1275,8 @@ fn array_lit(p: &mut Parser) -> CompletedMarker {
     m.complete(p, SyntaxKind::ArrayLit)
 }
 
-/// `( expr )` - a parenthesized group. Purely a precedence override; HIR
-/// lowers it to its inner expression, so it leaves no trace past the AST. A
+/// `( expr )` - a parenthesized group. purely a precedence override; HIR
+/// lowers it to its inner expression, so it leaves no trace past the AST. a
 /// group is its own struct-lit context, like an arg list or array element.
 fn paren_expr(p: &mut Parser) -> CompletedMarker {
     let m = p.open();
@@ -1251,7 +1295,9 @@ fn paren_expr(p: &mut Parser) -> CompletedMarker {
 fn arg_list(p: &mut Parser) {
     let m = p.open();
     let open_paren = p.cursor_range();
-    p.expect(T!['('], crate::SyntaxError::ExpectedOpenParen);
+    // span the full call expression when `(` is missing, not just the next
+    // token. EXPERIMENTAL - vamous
+    p.expect_after(T!['('], open_paren, crate::SyntaxError::ExpectedOpenParen);
     // an arg list is its own struct-lit context: a suppressed flag from an
     // enclosing if/loop condition does not apply inside the arguments.
     let prev = p.set_no_struct_lit(false);
@@ -1301,14 +1347,14 @@ fn struct_body(p: &mut Parser) {
     m.complete(p, SyntaxKind::StructLitFieldList);
 }
 
-/// A field initializer in a struct literal. Three forms:
+/// a field initializer in a struct literal. three forms:
 ///
-/// - `Ident` followed by `,` or `}`  - shorthand:   `Point { x, y }`
-/// - `Ident ':' expr`                - explicit:    `Point { x: 0 }`
-/// - any other expression            - positional:  `Point { 10, 20 }`
+/// - `Ident` followed by `,` or `}` - shorthand: `Point { x, y }`
+/// - `Ident ':' expr` - explicit: `Point { x: 0 }`
+/// - any other expression - positional: `Point { 10, 20 }`
 ///
-/// One node kind serves all three; the presence of a direct Ident token vs.
-/// an Expr child distinguishes them in the typed AST.
+/// one node kind serves all three; the presence of a direct ident token vs.
+/// an expr child distinguishes them in the typed AST.
 fn struct_lit_field(p: &mut Parser) {
     let m = p.open();
     let named = p.at(SyntaxKind::Ident) && matches!(p.nth(1), T![,] | T!['}'] | T![:]);
