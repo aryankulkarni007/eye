@@ -6,31 +6,27 @@ use rustc_hash::FxHashMap;
 use syntax::{StringTable, SyntaxNodePtr};
 
 use super::LoweringCtx;
-use crate::core::{Body, ConstValue, FnId, HIR, HirError, Text, TypeInterner};
+use crate::core::{Body, ConstValue, FnId, HIR, HirError, Text};
 
-/// one lowered function body, independent of any `HIR` arena, plus the
-/// working interner it grew (handed back to the caller: restored into
-/// `HIR::types` by the wrapper, packaged into `LoweredBody` by the query
-/// path).
+/// one lowered function body, independent of any `HIR` arena. its `TypeRef`
+/// handles resolve through the shared scope interner (`scope.types`) lowering
+/// interned into - no per-body interner is carried (S6).
 pub(super) struct FnLowerOut {
     pub body: Body,
     pub diagnostics: Sink<HirError>,
-    pub types: TypeInterner,
 }
 
-/// lower one function body against an immutable item scope. `types` is the
-/// working interner for this body, owned: the whole-file wrapper seeds it
-/// with the scope's interner (taken and restored around the call), the per-fn
-/// query path seeds it with a clone of the frozen scope interner.
+/// lower one function body against an immutable item scope, interning any
+/// body-local types into the scope's shared interner (`scope.types`, `&self`
+/// interning - no clone, no take/restore).
 pub(super) fn lower_fn_with(
     scope: &HIR,
     fn_id: FnId,
     fn_ast: &ast::FnDef,
     const_values: &FxHashMap<Text, ConstValue>,
     interner: &dyn StringTable,
-    types: TypeInterner,
 ) -> FnLowerOut {
-    let mut ctx = LoweringCtx::new(scope, types, const_values, interner);
+    let mut ctx = LoweringCtx::new(scope, &scope.types, const_values, interner);
 
     // return type for checking explicit `return` statements. `main` is an
     // ordinary function here: the c entry point (`int main` + `return 0`) is a
@@ -75,10 +71,6 @@ pub(super) fn lower_fn_with(
     // coerces the implicit-return tail against the declared return type
     // (decay/array-literal/integer-literal) and enforces the return-type
     // diagnostics (`enforce_return_type` / `check_explicit_return`).
-    let (body, diagnostics, types) = ctx.finish();
-    FnLowerOut {
-        body,
-        diagnostics,
-        types,
-    }
+    let (body, diagnostics) = ctx.finish();
+    FnLowerOut { body, diagnostics }
 }

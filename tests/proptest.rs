@@ -167,11 +167,11 @@ proptest! {
             return Ok(());
         };
 
-        let mut hir = lower_source_file(file_ast, &lexed.interner);
+        let hir = lower_source_file(file_ast, &lexed.interner);
         if !hir.diagnostics.is_empty() {
             return Ok(());
         }
-        let typeck = typeck::check_file(&mut hir);
+        let typeck = typeck::check_file(&hir);
         if typeck.values().any(|r| !r.diagnostics.is_empty()) {
             return Ok(());
         }

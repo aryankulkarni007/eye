@@ -25,7 +25,7 @@ fn lower_recorded_type(
     consts: &dyn ConstEnv,
     typed_decls: &mut Vec<(Span, TypeRef)>,
 ) -> TypeRef {
-    let ty = lower_type_ref(t, &mut hir.diagnostics, consts, &mut hir.types);
+    let ty = lower_type_ref(t, &mut hir.diagnostics, consts, &hir.types);
     typed_decls.push((Span::from(SyntaxNodePtr::new(t.syntax())), ty));
     ty
 }

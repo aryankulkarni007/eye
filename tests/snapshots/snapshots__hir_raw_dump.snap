@@ -1,6 +1,5 @@
 ---
 source: tests/snapshots.rs
-assertion_line: 78
 expression: hir
 ---
 HIR {
@@ -328,196 +327,114 @@ HIR {
     diagnostics: Sink {
         entries: [],
     },
-    types: TypeInterner {
-        arena: [
-            Error,
-            Path(
-                "int8",
-            ),
-            Path(
-                "int16",
-            ),
-            Path(
-                "int32",
-            ),
-            Path(
-                "int64",
-            ),
-            Path(
-                "uint8",
-            ),
-            Path(
-                "uint16",
-            ),
-            Path(
-                "uint32",
-            ),
-            Path(
-                "uint64",
-            ),
-            Path(
-                "float32",
-            ),
-            Path(
-                "float64",
-            ),
-            Path(
-                "bool",
-            ),
-            Path(
-                "char",
-            ),
-            Path(
-                "string",
-            ),
-            Path(
-                "usize",
-            ),
-            Path(
-                "isize",
-            ),
-            Path(
-                "void",
-            ),
-            RawPtr,
-            Fn {
-                params: [],
-                ret: None,
-                variadic: false,
-            },
-            Array {
-                elem: TypeRef(
-                    5,
-                ),
-                len: 2,
-            },
-            Ref(
-                TypeRef(
-                    19,
-                ),
-            ),
-        ],
-        map: {
-            RawPtr: TypeRef(
-                17,
-            ),
-            Path(
-                "int64",
-            ): TypeRef(
-                4,
-            ),
-            Path(
-                "int32",
-            ): TypeRef(
-                3,
-            ),
-            Error: TypeRef(
-                0,
-            ),
-            Path(
-                "int8",
-            ): TypeRef(
-                1,
-            ),
-            Path(
-                "int16",
-            ): TypeRef(
-                2,
-            ),
-            Path(
-                "float64",
-            ): TypeRef(
-                10,
-            ),
-            Path(
-                "bool",
-            ): TypeRef(
-                11,
-            ),
-            Path(
-                "isize",
-            ): TypeRef(
-                15,
-            ),
-            Path(
-                "uint16",
-            ): TypeRef(
-                6,
-            ),
-            Path(
-                "string",
-            ): TypeRef(
-                13,
-            ),
-            Path(
-                "uint64",
-            ): TypeRef(
-                8,
-            ),
-            Path(
-                "usize",
-            ): TypeRef(
-                14,
-            ),
-            Fn {
-                params: [],
-                ret: None,
-                variadic: false,
-            }: TypeRef(
-                18,
-            ),
-            Ref(
-                TypeRef(
-                    19,
-                ),
-            ): TypeRef(
-                20,
-            ),
-            Path(
-                "void",
-            ): TypeRef(
-                16,
-            ),
-            Array {
-                elem: TypeRef(
-                    5,
-                ),
-                len: 2,
-            }: TypeRef(
-                19,
-            ),
-            Path(
-                "float32",
-            ): TypeRef(
-                9,
-            ),
-            Path(
-                "uint8",
-            ): TypeRef(
+    types: {
+        TypeRef(
+            0,
+        ): Error,
+        TypeRef(
+            1,
+        ): Path(
+            "int8",
+        ),
+        TypeRef(
+            2,
+        ): Path(
+            "int16",
+        ),
+        TypeRef(
+            3,
+        ): Path(
+            "int32",
+        ),
+        TypeRef(
+            4,
+        ): Path(
+            "int64",
+        ),
+        TypeRef(
+            5,
+        ): Path(
+            "uint8",
+        ),
+        TypeRef(
+            6,
+        ): Path(
+            "uint16",
+        ),
+        TypeRef(
+            7,
+        ): Path(
+            "uint32",
+        ),
+        TypeRef(
+            8,
+        ): Path(
+            "uint64",
+        ),
+        TypeRef(
+            9,
+        ): Path(
+            "float32",
+        ),
+        TypeRef(
+            10,
+        ): Path(
+            "float64",
+        ),
+        TypeRef(
+            11,
+        ): Path(
+            "bool",
+        ),
+        TypeRef(
+            12,
+        ): Path(
+            "char",
+        ),
+        TypeRef(
+            13,
+        ): Path(
+            "string",
+        ),
+        TypeRef(
+            14,
+        ): Path(
+            "usize",
+        ),
+        TypeRef(
+            15,
+        ): Path(
+            "isize",
+        ),
+        TypeRef(
+            16,
+        ): Path(
+            "void",
+        ),
+        TypeRef(
+            17,
+        ): RawPtr,
+        TypeRef(
+            18,
+        ): Fn {
+            params: [],
+            ret: None,
+            variadic: false,
+        },
+        TypeRef(
+            19,
+        ): Array {
+            elem: TypeRef(
                 5,
             ),
-            Path(
-                "uint32",
-            ): TypeRef(
-                7,
-            ),
-            Path(
-                "char",
-            ): TypeRef(
-                12,
-            ),
+            len: 2,
         },
-        error_ty: TypeRef(
-            0,
-        ),
-        int32_ty: TypeRef(
-            3,
-        ),
-        uint8_ty: TypeRef(
-            5,
-        ),
-        usize_ty: TypeRef(
-            14,
+        TypeRef(
+            20,
+        ): Ref(
+            TypeRef(
+                19,
+            ),
         ),
     },
 }

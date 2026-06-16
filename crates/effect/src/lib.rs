@@ -265,7 +265,7 @@ pub fn infer_body_effects(
     scope: &HIR,
     body: &Body,
     fn_ret: Option<TypeRef>,
-    types: &mut TypeInterner,
+    types: &TypeInterner,
 ) -> EffectResult {
     let mut judge = EffectJudge::default();
     typeck::check_body_with(scope, body, fn_ret, types, &mut judge);
@@ -295,27 +295,39 @@ impl EffectMap {
 
 /// walk every defined body **once**, fused, producing both the per-fn type side
 /// tables and the per-fn local effect results - the dual-inference whole-file
-/// driver (EFFECT.md "fused per-body walk"). mirrors `typeck::check_file`'s
-/// take/restore of the interner so every type handle resolves through
-/// `hir.types`. a bodyless fn (an extern signature) has no body to walk and
-/// synthesizes its verdict: calling it is `ffi`.
-fn collect_results(hir: &mut HIR) -> (FxHashMap<FnId, TypeckResults>, Vec<(FnId, EffectResult)>) {
-    let mut types = std::mem::take(&mut hir.types);
-    let mut typeck = FxHashMap::default();
-    let mut effects: Vec<(FnId, EffectResult)> = Vec::new();
-    for (fid, function) in hir.functions.iter() {
-        match function.body {
+/// driver (EFFECT.md "fused per-body walk"). every body interns into the shared
+/// `hir.types` (`&self` interning - no take/restore), so every type handle
+/// resolves through it. a bodyless fn (an extern signature) has no body to walk
+/// and synthesizes its verdict: calling it is `ffi`.
+fn collect_results(hir: &HIR) -> (FxHashMap<FnId, TypeckResults>, Vec<(FnId, EffectResult)>) {
+    use rayon::prelude::*;
+
+    // wave 1 (S6): one task per body, the fused type+effect walk, fanned out
+    // across rayon. each task owns its `EffectJudge` and interns into the one
+    // shared lock-free interner (`&self`), so there is no shared mutable state
+    // and no interner clone. `&HIR` is `Send + Sync`.
+    //
+    // determinism law #1: results are collected in arena order (an indexed
+    // parallel `collect` preserves input order), never completion order, so the
+    // serial and parallel runs produce byte-identical diagnostics and effect
+    // maps. (law #2 - no observable dependence on `TypeRef` numeric values - is
+    // a codegen-ordering contract checked by the corpus-diff-twice gate.)
+    let per_fn: Vec<(FnId, Option<TypeckResults>, EffectResult)> = hir
+        .functions
+        .iter()
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|(fid, function)| match function.body {
             Some(body_id) => {
                 let mut judge = EffectJudge::default();
                 let results = typeck::check_body_with(
                     hir,
                     &hir.bodies[body_id],
                     function.ret,
-                    &mut types,
+                    &hir.types,
                     &mut judge,
                 );
-                typeck.insert(fid, results);
-                effects.push((fid, judge.into_result()));
+                (fid, Some(results), judge.into_result())
             }
             None => {
                 let mut s = EffectSet::pure();
@@ -326,26 +338,32 @@ fn collect_results(hir: &mut HIR) -> (FxHashMap<FnId, TypeckResults>, Vec<(FnId,
                     // recursing into it lands here).
                     local_witness[1] = Some(WitnessKind::Extern(function.name.clone()));
                 }
-                effects.push((
-                    fid,
-                    EffectResult {
-                        set: s,
-                        callees: Vec::new(),
-                        indirect: false,
-                        local_witness,
-                    },
-                ));
+                let result = EffectResult {
+                    set: s,
+                    callees: Vec::new(),
+                    indirect: false,
+                    local_witness,
+                };
+                (fid, None, result)
             }
+        })
+        .collect();
+
+    let mut typeck = FxHashMap::default();
+    let mut effects: Vec<(FnId, EffectResult)> = Vec::with_capacity(per_fn.len());
+    for (fid, results, effect) in per_fn {
+        if let Some(results) = results {
+            typeck.insert(fid, results);
         }
+        effects.push((fid, effect));
     }
-    hir.types = types;
     (typeck, effects)
 }
 
 /// the whole-program effect map alone (the type results are discarded). runs the
 /// full per-body walk; prefer [`infer_file`] when the type results are also
 /// needed (the pipeline path), so the walk runs once.
-pub fn infer_effects(hir: &mut HIR) -> EffectMap {
+pub fn infer_effects(hir: &HIR) -> EffectMap {
     let (_typeck, effects) = collect_results(hir);
     run_fixpoint(&effects)
 }
@@ -357,7 +375,7 @@ pub fn infer_effects(hir: &mut HIR) -> EffectMap {
 /// are memoized together (EFFECT.md "salsa wiring"). the returned `Sink` carries
 /// the effect-contract diagnostics (unknown effect names, declared/inferred
 /// mismatches).
-pub fn infer_file(hir: &mut HIR) -> (FxHashMap<FnId, TypeckResults>, EffectMap, Sink<HirError>) {
+pub fn infer_file(hir: &HIR) -> (FxHashMap<FnId, TypeckResults>, EffectMap, Sink<HirError>) {
     let (typeck, results) = collect_results(hir);
     let map = run_fixpoint(&results);
     let diagnostics = check_contracts(hir, &results, &map);
@@ -703,14 +721,11 @@ mod tests {
         let lexed = Lexer::new(&source).tokenize();
         let parse = parser::parse(&lexed.tokens, &source);
         let file = SourceFile::cast(parse.green).expect("root is SourceFile");
-        let mut hir = hir::core::lower_source_file(file, &lexed.interner);
+        let hir = hir::core::lower_source_file(file, &lexed.interner);
         let fn_id = *hir.items.functions.get(name).expect("fn exists");
         let body_id = hir.functions[fn_id].body.expect("fn has a body");
         let ret = hir.functions[fn_id].ret;
-        let mut types = std::mem::take(&mut hir.types);
-        let result = infer_body_effects(&hir, &hir.bodies[body_id], ret, &mut types);
-        hir.types = types;
-        result
+        infer_body_effects(&hir, &hir.bodies[body_id], ret, &hir.types)
     }
 
     #[test]
@@ -770,8 +785,8 @@ mod tests {
         let lexed = Lexer::new(&source).tokenize();
         let parse = parser::parse(&lexed.tokens, &source);
         let file = SourceFile::cast(parse.green).expect("root is SourceFile");
-        let mut hir = hir::core::lower_source_file(file, &lexed.interner);
-        let map = infer_effects(&mut hir);
+        let hir = hir::core::lower_source_file(file, &lexed.interner);
+        let map = infer_effects(&hir);
         (hir, map)
     }
 
@@ -853,8 +868,8 @@ mod tests {
         let lexed = Lexer::new(&source).tokenize();
         let parse = parser::parse(&lexed.tokens, &source);
         let file = SourceFile::cast(parse.green).expect("root is SourceFile");
-        let mut hir = hir::core::lower_source_file(file, &lexed.interner);
-        let (_typeck, _map, sink) = infer_file(&mut hir);
+        let hir = hir::core::lower_source_file(file, &lexed.interner);
+        let (_typeck, _map, sink) = infer_file(&hir);
         sink.into_iter()
             .map(|(_span, e)| match e {
                 HirError::Effect(ee) => ee,

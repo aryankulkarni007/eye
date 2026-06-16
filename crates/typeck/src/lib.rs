@@ -134,28 +134,25 @@ pub fn check_body(
     scope: &HIR,
     body: &Body,
     fn_ret: Option<TypeRef>,
-    types: &mut TypeInterner,
+    types: &TypeInterner,
 ) -> TypeckResults {
     check_body_with(scope, body, fn_ret, types, &mut ())
 }
 
-/// check every defined function in a lowered file, growing the file's own
-/// interner (taken and restored around the walk, the same pattern body
-/// lowering uses), so every handle in the results resolves through
-/// `hir.types` and MIR/codegen can consume them directly. this is the
-/// whole-file pipeline driver; the per-fn query path arrives with the
-/// `typeck_fn` salsa query.
-pub fn check_file(hir: &mut HIR) -> rustc_hash::FxHashMap<hir::core::FnId, TypeckResults> {
-    let mut types = std::mem::take(&mut hir.types);
+/// check every defined function in a lowered file, interning any new types
+/// into the file's shared interner (`hir.types`, `&self` interning - no take/
+/// restore), so every handle in the results resolves through `hir.types` and
+/// MIR/codegen can consume them directly. this is the whole-file pipeline
+/// driver; the per-fn query path arrives with the `typeck_fn` salsa query.
+pub fn check_file(hir: &HIR) -> rustc_hash::FxHashMap<hir::core::FnId, TypeckResults> {
     let mut out = rustc_hash::FxHashMap::default();
     for (fn_id, function) in hir.functions.iter() {
         let Some(body_id) = function.body else {
             continue;
         };
-        let results = check_body(hir, &hir.bodies[body_id], function.ret, &mut types);
+        let results = check_body(hir, &hir.bodies[body_id], function.ret, &hir.types);
         out.insert(fn_id, results);
     }
-    hir.types = types;
     out
 }
 
@@ -164,7 +161,7 @@ pub fn check_body_with<O: InferObserver>(
     scope: &HIR,
     body: &Body,
     fn_ret: Option<TypeRef>,
-    types: &mut TypeInterner,
+    types: &TypeInterner,
     obs: &mut O,
 ) -> TypeckResults {
     infer::InferCtx::new(scope, body, fn_ret, types, obs).run()

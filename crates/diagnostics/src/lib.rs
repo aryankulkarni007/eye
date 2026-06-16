@@ -185,7 +185,7 @@ impl<K> Sink<K> {
         &self.entries
     }
 
-    /// drain another sink of the same kind into this one.
+    /// drain another sink of the same kind into this one (by value, move).
     pub fn extend(&mut self, other: Sink<K>) {
         self.entries.extend(other.entries);
     }

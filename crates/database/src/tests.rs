@@ -245,3 +245,128 @@ fn signature_edit_reruns_every_body() {
         "a signature/const edit must re-run every body's typeck (no stale skip)"
     );
 }
+
+// --------------------------------------------------------------------------
+// S6 validation spike: parallel per-fn inference on salsa 0.27.
+//
+// Proves the version-sensitive parallel API shape before the segment's bigger
+// pieces (the lock-free interner, the whole-file fan-out). The model salsa
+// 0.27 gives: `Database: Send` (not `Sync`), so each worker owns a *clone* of
+// the database (a cheap `Storage` handle bump onto the shared, internally
+// synchronized memo tables) moved into the task; interned ids and inputs are
+// valid across clones of the same storage. The per-fn `typeck_fn` query is
+// already seal-isolated (its own interner clone), so this path parallelizes
+// with no interner change at all - and is trivially deterministic, since no
+// shared whole-file interner means no handle-order dependence (determinism
+// law #2 is vacuous here; law #1 is enforced by the order-preserving collect).
+// --------------------------------------------------------------------------
+
+const FOUR_FNS: &str = "\
+add(int32 a, int32 b) -> int32 { a + b }
+
+sub(int32 a, int32 b) -> int32 { a - b }
+
+mul(int32 a, int32 b) -> int32 { a * b }
+
+neg(int32 x) -> int32 { 0 - x }
+
+main() -> int32 { add(mul(2, 3), sub(neg(1), 4)) }
+";
+
+#[test]
+fn parallel_per_fn_typeck_matches_serial() {
+    use rayon::prelude::*;
+
+    let db = Database::default();
+    let input = file(&db, FOUR_FNS);
+    let ptrs: Vec<SyntaxNodePtr> =
+        item_scope(&db, input).fns.iter().map(|&(_, p)| p).collect();
+    assert!(ptrs.len() >= 4, "spike needs several bodies to be meaningful");
+
+    // serial: per-fn typeck in collection order. diagnostics carry baked-in
+    // display strings + type *names* (not raw `TypeRef` handles), so their
+    // debug form is handle-independent and safe to compare across runs.
+    let serial: Vec<String> = ptrs
+        .iter()
+        .map(|&ptr| {
+            let id = StableFnId::new(&db, input, ptr);
+            format!("{:?}", typeck_fn(&db, id).diagnostics.entries())
+        })
+        .collect();
+
+    // parallel: one owned db clone per body, moved into a rayon task via
+    // `into_par_iter` (needs only `Database: Send`). order-preserving collect
+    // keeps determinism law #1 (collection order, never completion order).
+    let clones: Vec<(Database, SyntaxNodePtr)> =
+        ptrs.iter().map(|&p| (db.clone(), p)).collect();
+    let parallel: Vec<String> = clones
+        .into_par_iter()
+        .map(|(db2, ptr)| {
+            let id = StableFnId::new(&db2, input, ptr);
+            format!("{:?}", typeck_fn(&db2, id).diagnostics.entries())
+        })
+        .collect();
+
+    assert_eq!(
+        serial, parallel,
+        "parallel per-fn typeck diverged from the serial order"
+    );
+}
+
+// the whole-file fused walk (`effect::infer_file` -> `collect_results`) fans its
+// per-body type+effect inference out across rayon, each body interning into the
+// one shared lock-free interner. body-local types (string literals, array
+// wrappers) are therefore interned in a nondeterministic order across runs, so
+// their `TypeRef` handle *values* vary. this program has several bodies with
+// such types; compiling it in independent fresh databases must still yield
+// byte-identical C - the regression guard for determinism law #2 (no observable
+// output may depend on handle numeric order; codegen emits typedefs in
+// program-discovery order, never by handle).
+const PARALLEL_DET_PROGRAM: &str = "\
+structure Point { int32 x, int32 y, };
+
+sum(int32 a, int32 b) -> int32 {
+    let [int32; 3] xs = [a, b, 7];
+    xs[0] + xs[1] + xs[2]
+}
+
+origin() -> int32 {
+    let Point p = Point { x: 1, y: 2 };
+    p.x + p.y
+}
+
+tag() -> int32 {
+    let [int32; 2] ys = [9, 8];
+    ys[0] - ys[1]
+}
+
+main() -> int32 {
+    sum(1, 2) + origin() + tag()
+}
+";
+
+#[test]
+fn parallel_inference_is_deterministic() {
+    // each fresh database builds its own interner under the parallel per-body
+    // walk; equal C across them proves codegen never depends on handle values.
+    let outputs: Vec<String> = (0..6)
+        .map(|_| {
+            let db = Database::default();
+            let input = file(&db, PARALLEL_DET_PROGRAM);
+            c_code(&db, input).to_string()
+        })
+        .collect();
+    assert!(
+        outputs[0].contains("int32_t sum") && outputs[0].len() > 200,
+        "the determinism program must actually generate C (else the test is \
+         vacuous); got {} bytes",
+        outputs[0].len()
+    );
+    for (i, out) in outputs.iter().enumerate() {
+        assert_eq!(
+            out, &outputs[0],
+            "C output of run {i} diverged - codegen depends on TypeRef handle \
+             order (determinism law #2 violated under parallel interning)"
+        );
+    }
+}

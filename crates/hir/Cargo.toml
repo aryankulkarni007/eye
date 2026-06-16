@@ -15,6 +15,8 @@ smol_str.workspace = true
 rustc-hash.workspace = true
 smallvec.workspace = true
 thin-vec.workspace = true
+boxcar = "0.2.14"
+papaya = "0.2.4"
 
 [dev-dependencies]
 lexer.workspace = true

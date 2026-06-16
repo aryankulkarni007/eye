@@ -117,8 +117,8 @@ fn typeck(c: &mut Criterion) {
             let lexed = Lexer::new(&source).tokenize();
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
-            let mut hir = lower_source_file(file, &lexed.interner);
-            let _ = typeck::check_file(&mut hir);
+            let hir = lower_source_file(file, &lexed.interner);
+            let _ = typeck::check_file(&hir);
         });
     });
 
@@ -128,8 +128,8 @@ fn typeck(c: &mut Criterion) {
             let lexed = Lexer::new(&source).tokenize();
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
-            let mut hir = lower_source_file(file, &lexed.interner);
-            let _ = typeck::check_file(&mut hir);
+            let hir = lower_source_file(file, &lexed.interner);
+            let _ = typeck::check_file(&hir);
         });
     });
 
@@ -150,8 +150,8 @@ fn effect(c: &mut Criterion) {
             let lexed = Lexer::new(&source).tokenize();
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
-            let mut hir = lower_source_file(file, &lexed.interner);
-            let _ = effect::infer_file(&mut hir);
+            let hir = lower_source_file(file, &lexed.interner);
+            let _ = effect::infer_file(&hir);
         });
     });
 
@@ -161,8 +161,8 @@ fn effect(c: &mut Criterion) {
             let lexed = Lexer::new(&source).tokenize();
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
-            let mut hir = lower_source_file(file, &lexed.interner);
-            let _ = effect::infer_file(&mut hir);
+            let hir = lower_source_file(file, &lexed.interner);
+            let _ = effect::infer_file(&hir);
         });
     });
 
@@ -178,8 +178,8 @@ fn mir_lower(c: &mut Criterion) {
         let lexed = Lexer::new(&source).tokenize();
         let parse = parser::parse(&lexed.tokens, &source);
         let file = ast::SourceFile::cast(parse.green).unwrap();
-        let mut hir = lower_source_file(file, &lexed.interner);
-        let typeck = typeck::check_file(&mut hir);
+        let hir = lower_source_file(file, &lexed.interner);
+        let typeck = typeck::check_file(&hir);
         (hir, typeck)
     };
 
@@ -218,8 +218,8 @@ fn codegen(c: &mut Criterion) {
         let lexed = Lexer::new(&source).tokenize();
         let parse = parser::parse(&lexed.tokens, &source);
         let file = ast::SourceFile::cast(parse.green).unwrap();
-        let mut hir = lower_source_file(file, &lexed.interner);
-        let typeck = typeck::check_file(&mut hir);
+        let hir = lower_source_file(file, &lexed.interner);
+        let typeck = typeck::check_file(&hir);
         let seed = typeck::expr_type_seed(&typeck);
         let mirs = mir::lower_all(&hir, &typeck);
         (hir, mirs, seed)
@@ -250,8 +250,8 @@ fn full_pipeline(c: &mut Criterion) {
             let lexed = Lexer::new(&source).tokenize();
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
-            let mut hir = lower_source_file(file, &lexed.interner);
-            let (typeck, _effects, _diags) = effect::infer_file(&mut hir);
+            let hir = lower_source_file(file, &lexed.interner);
+            let (typeck, _effects, _diags) = effect::infer_file(&hir);
             let seed = typeck::expr_type_seed(&typeck);
             let _ = codegen::core::gen_mir(&hir, &mir::lower_all(&hir, &typeck), &seed);
         });
@@ -263,8 +263,8 @@ fn full_pipeline(c: &mut Criterion) {
             let lexed = Lexer::new(&source).tokenize();
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
-            let mut hir = lower_source_file(file, &lexed.interner);
-            let (typeck, _effects, _diags) = effect::infer_file(&mut hir);
+            let hir = lower_source_file(file, &lexed.interner);
+            let (typeck, _effects, _diags) = effect::infer_file(&hir);
             let seed = typeck::expr_type_seed(&typeck);
             let _ = codegen::core::gen_mir(&hir, &mir::lower_all(&hir, &typeck), &seed);
         });

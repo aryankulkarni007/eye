@@ -19,7 +19,7 @@ use crate::{Adjustment, InferObserver, ObserverCx, TypeckResults};
 pub(crate) struct InferCtx<'a, O> {
     scope: &'a HIR,
     body: &'a Body,
-    types: &'a mut TypeInterner,
+    types: &'a TypeInterner,
     fn_ret: Option<TypeRef>,
     results: TypeckResults,
     obs: &'a mut O,
@@ -30,7 +30,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         scope: &'a HIR,
         body: &'a Body,
         fn_ret: Option<TypeRef>,
-        types: &'a mut TypeInterner,
+        types: &'a TypeInterner,
         obs: &'a mut O,
     ) -> Self {
         Self {

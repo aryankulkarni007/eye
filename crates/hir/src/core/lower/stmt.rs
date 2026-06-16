@@ -58,7 +58,7 @@ impl<'a> LoweringCtx<'a> {
                         local_consts: &self.body.local_consts,
                         globals: self.const_values,
                     };
-                    lower_type_ref(&t, &mut self.diagnostics, &consts, &mut self.types)
+                    lower_type_ref(&t, &mut self.diagnostics, &consts, self.types)
                 });
                 // type inference is on hiatus, so a binding needs an explicit
                 // type. without one it would reach codegen as an `Error` type
@@ -118,7 +118,7 @@ impl<'a> LoweringCtx<'a> {
                     // the parser; fall back to poison without re-reporting.
                     let ty = match c.ty() {
                         Some(t) => {
-                            lower_type_ref(&t, &mut self.diagnostics, &consts, &mut self.types)
+                            lower_type_ref(&t, &mut self.diagnostics, &consts, self.types)
                         }
                         None => self.types.error_type(),
                     };

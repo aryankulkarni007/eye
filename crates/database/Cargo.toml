@@ -20,6 +20,7 @@ effect.workspace = true
 mir.workspace = true
 codegen.workspace = true
 rustc-hash.workspace = true
+rayon.workspace = true
 smol_str.workspace = true
 text-size.workspace = true
 rowan.workspace = true

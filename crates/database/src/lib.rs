@@ -380,12 +380,18 @@ pub fn typeck_fn<'db>(db: &'db dyn salsa::Database, fn_id: StableFnId<'db>) -> M
         .expect("StableFnId ptr is a collected function");
     let fn_ret = scope.scope.functions[arena_id].ret;
 
-    let mut types = lowered.lowered.types.clone();
+    // no interner clone (S6): `lower_fn` interned this body's types into the
+    // shared `item_scope` interner, and `typeck_fn` reads/interns through the
+    // same one. consistency holds because `lower_fn` and `typeck_fn` re-run
+    // together for an edited body (a body edit shifts the `FnDef` range -> new
+    // `StableFnId` -> both queries are fresh against the current item scope);
+    // a clean sibling's cached result is consumed only as diagnostics, which
+    // carry baked-in strings + type names, never raw handles.
     Memo::new(typeck::check_body(
         &scope.scope,
         &lowered.lowered.body,
         fn_ret,
-        &mut types,
+        &scope.scope.types,
     ))
 }
 
@@ -443,8 +449,8 @@ pub struct CheckedFile {
 pub fn lowered_file(db: &dyn salsa::Database, file: SourceFileInput) -> Memo<CheckedFile> {
     let lexed = lex(db, file);
     let parse = parse(db, file);
-    let mut hir = hir::core::lower_source_file(parse.ast(), &lexed.interner);
-    let (typeck, effects, effect_diagnostics) = effect::infer_file(&mut hir);
+    let hir = hir::core::lower_source_file(parse.ast(), &lexed.interner);
+    let (typeck, effects, effect_diagnostics) = effect::infer_file(&hir);
     Memo::new(CheckedFile {
         hir,
         typeck,

@@ -1,11 +1,13 @@
 # TYPECK: sealed-body type inference
 
 Status: BUILD IN PROGRESS. Ratified 2026-06-12. S0-S2 built (cutover C1-C5
-complete), S3 complete 2026-06-16 (judgments; only M2b strict-width deferred,
-ratified). S4 effects built. S5 firewall + S6 parallel wave + S7 row-poly
-effects designed, not built. This document is the engineering design and the
-ratified inference strategy; status sigils track what exists in the working
-tree. The cast lattice ruling lives in [CAST.md](CAST.md). [EFFECT.md](EFFECT.md) designs the second
+complete - lowering no longer types any expression, typeck is the sole type
+source), S3 complete 2026-06-16 (judgments; only M2b strict-width deferred,
+ratified), S4 effects built, S5 firewall built 2026-06-16. Remaining: the
+Tier-2 expectation spine (downward propagation, below), S6 parallel wave, S7
+row-poly effects - designed, not built. This document is the engineering design
+and the ratified inference strategy; status sigils track what exists in the
+working tree. The cast lattice ruling lives in [CAST.md](CAST.md). [EFFECT.md](EFFECT.md) designs the second
 lattice on the same machine. [PARALLEL.md](../design/PARALLEL.md) records the
 parallelism substrate this strategy is built for.
 
@@ -16,12 +18,12 @@ builds the HIR, resolves names, stamps types into `Body::expr_types`, and runs
 the type judgments - and at coercion sites (`coerce.rs`) it *mutates* the tree
 (injects decay casts, retypes literals and array elements). The split:
 
-+ `crates/typeck` crate exists and checks frozen HIR
-+ `TypeckResults` side table defined: `expr_types`, `diagnostics`, `visited`
-- `adjustments` and `local_types` maps not yet populated (S2 step C)
-- lowering's stamping still active; shadow harness validates parity (S1)
-- `coerce.rs` not yet deleted (S2 step C)
-+ `InferObserver` trait defined and wired (seam for effects, S4)
++ `crates/typeck` is the sole type source for the frozen HIR (cutover done)
++ `TypeckResults` side table populated: `expr_types`, `adjustments`,
+  `local_types`, `diagnostics`, `visited`
++ lowering no longer types any expression - `Body::expr_types` deleted at C5,
+  `coerce.rs` deleted, the shadow harness deleted
++ `InferObserver` trait wired; `crates/effect` implements it (S4 dual inference)
 
 ## The strategy: sealed-body inference
 
@@ -50,9 +52,13 @@ retrofit.
 
 ### Tier 1 - the bidirectional spine (always on)
 
-+ built: `infer_expr` walks every `Expr` variant in `typeck/src/infer.rs`
-- not yet: expectations (`Expectation` enum) threaded through `infer_expr`
-  (currently walker is type-only, no downward-propagation of expected types)
++ built: `infer_expr` walks every `Expr` variant in `typeck/src/infer.rs`;
+  bottom-up synthesis is complete and is the sole type source for MIR
+~ partial: expectations flow down only at the scattered coercion *sites*
+  (`site_coerce`: int/float-literal width adoption, array elements, decay,
+  divergent adoption). The unified `infer_expr(id, expected)` + single `expect`
+  funnel (below) is NOT threaded - this is the remaining Tier-1/Tier-2 work,
+  the only piece of in-kernel inference still outstanding
 
 ```rust
 fn infer_expr(&mut self, id: ExprId, expected: Expectation) -> TypeRef
@@ -87,8 +93,9 @@ against the adopted type.
 ### Tier 2 - provenance-carrying expectations (built day one)
 
 + `Cause` and `Expectation` enums defined in `crates/typeck/src/lib.rs`
-- not yet threaded through `infer_expr` — the walker does not receive or
-  propagate expectations (S3 work)
+- not yet threaded through `infer_expr` - the walker does not receive or
+  propagate expectations. This is the headline remaining inference work (the
+  full-inference build), not part of any shipped segment
 
 An expectation carries *why* it exists:
 
@@ -142,13 +149,13 @@ discipline.
 
 ## TypeckResults (the side table)
 
-+ built in `crates/typeck/src/lib.rs`:
-  + `expr_types: ArenaMap<Idx<Expr>, TypeRef>` — populated during walk
-  + `diagnostics: Sink<HirError>` — judgment errors collected
-  + `visited: FxHashSet<ExprId>` — reachable expressions tracked
-- not yet built (S2 step C):
-  - `adjustments: ArenaMap<Idx<Expr>, Adjustment>` — defined but never stored
-  - `local_types: ArenaMap<Idx<Local>, TypeRef>` — not even defined in code
++ built and populated in `crates/typeck/src/lib.rs`:
+  + `expr_types: ArenaMap<Idx<Expr>, TypeRef>` - populated during walk
+  + `adjustments: ArenaMap<Idx<Expr>, Adjustment>` - decay recorded (C4)
+  + `local_types: ArenaMap<Idx<Local>, TypeRef>` - unannotated let + match
+    bindings bound from scrutinee/init (C2)
+  + `diagnostics: Sink<HirError>` - judgment errors collected
+  + `visited: FxHashSet<ExprId>` - reachable expressions tracked
 
 ```rust
 pub struct TypeckResults {
@@ -156,16 +163,17 @@ pub struct TypeckResults {
     /// `Error` (with a diagnostic already emitted).
     pub expr_types: ArenaMap<Idx<Expr>, TypeRef>,
     /// Context-directed adjustments MIR applies when reading an expression.
-    /// Replaces coerce's HIR mutation; initially one kind (decay).
-    /// NOT YET POPULATED (S2 step C).
+    /// Replaces coerce's HIR mutation; one kind today (decay). Populated (C4).
     pub adjustments: ArenaMap<Idx<Expr>, Adjustment>,
-    /// Every local's resolved type. NOT YET DEFINED (S2 step C).
+    /// Every local's resolved type. Populated (C2): unannotated `let` and
+    /// match bindings, bound from initializer / scrutinee.
     pub local_types: ArenaMap<Idx<Local>, TypeRef>,
     pub diagnostics: Sink<HirError>,
 }
 ```
 
-+ `Adjustment` enum defined (single variant `Decay(TypeRef)`) but unpopulated
++ `Adjustment` enum (single variant `Decay(TypeRef)`); recorded at decay sites,
+  read by MIR's adjustment-aware `lower_operand`/`lower_rvalue` wrappers
 
 Precedent: rustc `TypeckResults`, rust-analyzer `InferenceResult` (which
 stores `expr_adjustments` the same way). The pass never mutates the HIR; the
@@ -176,45 +184,47 @@ pure. Side table over typed-HIR because one HIR serves many result sets and
 Entry point:
 
 ```rust
-// S1-S5 (current single-threaded interner model):
-pub fn check_body(scope: &HIR, body: &Body, types: &mut TypeInterner) -> TypeckResults
-// S6 (lock-free interner): `types: &TypeInterner`
+// S6 (lock-free interner): `intern(&self)`, so `check_body` borrows shared.
+pub fn check_body(scope: &HIR, body: &Body, types: &TypeInterner) -> TypeckResults
 ```
 
-+ current reality (S1-S5): single-threaded `TypeInterner`, `check_body` takes
-  `&mut TypeInterner`. `Database` owns one interner; `check_file` take-restore
-  dance (`mem::take(&mut hir.types)`, restore after) keeps handles comparable.
-  No `boxcar`, `papaya`, or `dashmap` in dependencies.
-- design (S6): one global `TypeInterner` in the `Database`, lock-free
-  internals — `boxcar::Vec` arena (lock-free append, stable addresses, atomic
-  indexed reads) plus `papaya::HashMap` for dedup (lock-free reads). `intern`
-  takes `&self`; a lost insert race leaves a dead arena slot nothing references
-  (tolerated, no reservation protocol). This kills the per-fn interner clone,
-  the whole-file take-and-restore dance, and the incomparable-handles split
-  between the two query paths. Fallback if `papaya` disappoints: `dashmap`
-  (sharded locks, drop-in, no longer lock-free).
++ BUILT (S6): the `TypeInterner` is lock-free - a `boxcar::Vec` arena (lock-free
+  append, stable addresses, so `lookup` hands out `&TypeKind` with no guard) plus
+  a `papaya::HashMap` for dedup. `intern` takes `&self`; a lost insert race
+  leaves a dead arena slot nothing references (tolerated - `get_or_insert` elects
+  one canonical index, so structural equality stays a handle compare). This
+  killed the per-fn interner clone, the whole-file take-and-restore dance, and
+  the `&mut TypeInterner` signatures across hir-lowering / typeck / effect (all
+  now `&TypeInterner`). Fallback if `papaya` disappoints: `dashmap`.
+~ divergence from the original plan: the interner stays homed in the `HIR`
+  (`item_scope`'s `HIR::types`, shared per file), not lifted into the `Database`.
+  The HIR home is enough for sharing - both query paths read the one `item_scope`
+  interner, the per-fn path consumes its results only as (handle-independent)
+  diagnostics - and avoids threading a custom `EyeDatabase` trait through every
+  query. A `Database`-homed interner (process-monotonic handles across revisions)
+  is a later refinement if LSP hover ever needs cross-revision handle stability.
 
 ## Judgments
 
-+ migrated to typeck (S2 step B, in `crates/typeck/src/infer.rs`):
++ all type-directed judgments now live in typeck (`crates/typeck/src/infer.rs`
+  + `check_matches`); the cutover (C5) deleted lowering's type computation:
   + `check_int_literal_ranges` (M1)
-  + `binary_judgments` — array ops, ptr arithmetic, enum arithmetic, float modulo
-  + `index_judgments` — ptr index, OOB, negative index
-  + `site_coerce` — coercion mirror for array literals and int literal adoption
-+ still in lowering (not yet migrated):
-  + return/tail checks
-  + match-arm consistency
-  + let-init type checks
-  + enum opacity (T035)
-  + ref-of-non-place (T036)
-  + struct-literal field exhaustiveness
-  + assign-in-condition (F2)
+  + `binary_judgments` - array ops, ptr arithmetic, enum arithmetic, float modulo
+  + `index_judgments` - ptr index, OOB, negative index
+  + `site_coerce` - coercion at array literals, int/float literal adoption, decay
+  + return/tail checks, value-position match-arm and `if`-branch consistency
+  + let-init type + array-init length
+  + enum opacity (T035), `LenNotArray`/`LenFieldOnArray`/`PrintCannotFormat`
+  + struct-literal field value types (T38), call argument types (T37)
+  + the S3 judgments (M2, cast lattice, F1/F2/F3, L4, assignment-non-value)
++ stays in lowering (structural, place/storage - not type judgments):
+  + mutability / immutable-by-default, ref-of-non-place (T036), ref-of-const
+  + arity, struct-literal field-set exhaustiveness, destructure shape
+  + `println` arity (structural)
+  + U2/U4 const range + cast checks (const-eval, layered below inference)
 
-Everything lowering checks today moves over (explicit-init type, array-init
-length, value-position match-arm consistency, return/tail checks, enum
-opacity T035, ref-of-non-place T036, literal ranges), plus the deferred
-judgments (S3). The deferred list, with the rulings that close their design
-questions (ratified 2026-06-12):
+The deferred S3 list below is now built except M2b; it is kept for the rulings
+that closed each design question (ratified 2026-06-12):
 
 - **M2 operand rule: strict same-type.** Binary arithmetic, bitwise, and
   comparison operands must have equal types after literal adoption; a
@@ -266,10 +276,10 @@ old and new code paths need them:
 When the pass cannot determine an expression's type it emits a T-class
 diagnostic and records `Error` - it never leaves a hole. Consequences:
 
-- MIR's `mir_type_of` `int32` fallback (ledger A3, the silent amplifier)
-  becomes an ICE: after typeck, a missing type is a compiler bug.
-+ NOT YET live: A3 fallback still `int32` in `mir_type_of` (S2 step C).
-  Shadow harness prevents regressions until cutover.
++ MIR's `mir_type_of` `int32` fallback (ledger A3, the silent amplifier) is now
+  an ICE: after typeck, a missing type is a compiler bug. Proven never-fires by
+  `corpus_generates_no_error_type` (codegen only runs on a diagnostic-free
+  program where the walker is total).
 + Codegen keeps its existing contract (never sees a diagnosed program).
 
 ## Boundary rulings (design-space audit, 2026-06-12)
@@ -283,40 +293,44 @@ diagnostic and records `Error` - it never leaves a hole. Consequences:
 + **The void rule.** A call to a fn with no return type produces no value;
   using it where a value is expected is a T-class error carrying the call's
   cause. `VoidValueInValuePosition` (T024) exists and fires.
-~ **Pattern judgments split.** Type-dependent pattern checks (literal
-  pattern domain vs scrutinee type, variant-belongs-to-enum) move to
-  typeck; purely structural ones (duplicate binding, exhaustive destructure
-  shape) stay in lowering. Not yet migrated — judgments still in lowering.
++ **Pattern judgments split.** Built (C2, rust-analyzer name-based model):
+  typeck's `check_matches` owns domain/coverage/exhaustiveness/dup/unreachable
+  + variant-belongs (`PatternEnumMismatch`) and binds `local_types`; structural
+  pattern classification (bare ident = variant iff name in `ItemScope::variants`
+  else binding) stays in lowering, type-free.
 + **Mutability checking stays in lowering.** Immutable-by-default
   enforcement is a place/storage judgment over resolution, not a type
   judgment; it works pre-typeck and gains nothing from moving. Already
   in lowering, not duplicated in typeck.
-- **LSP consumers.** `typeck_fn` results feed type-on-hover and inlay
-  hints. NOT YET built: no per-fn query exists (S2 step D), LSP hover
-  still reads from lowering's `expr_types`.
+~ **LSP consumers.** The per-fn `typeck_fn(StableFnId)` query is BUILT (S2
+  step D) and feeds `hir_diagnostics` per fn. NOT YET built: the LSP hover
+  handler reading `TypeckResults.expr_types` (deferred, user: "LSP integration
+  last"); no hover/inlay surface exists yet.
 
 ## Salsa wiring and the signature firewall
 
-+ `database::lowered_file` runs `typeck::check_file(&mut hir)` and stores
-  `CheckedFile { hir, typeck: FxHashMap<FnId, TypeckResults> }`
++ `database::lowered_file` runs the fused `effect::infer_file(&mut hir)` (one
+  walk = types + effects) and stores `CheckedFile { hir, typeck, effects, ... }`
 + `mir_map` reads `typeck` from `CheckedFile` for every `lower_function` call
-+ `hir_diagnostics` merges typeck diagnostics into the HIR sink
-+ `c_code` gates on typeck diagnostics (same as lowering diagnostics)
-- per-fn `typeck_fn(StableFnId) -> Memo<TypeckResults>` query NOT BUILT
-  (S2 step D). Currently runs whole-file path for all bodies.
++ per-fn `typeck_fn(StableFnId) -> Memo<TypeckResults>` BUILT (S2 step D):
+  sealed-body check over one `lower_fn` body on its own interner clone, keyed by
+  `StableFnId` so a body edit re-runs only that query
++ `hir_diagnostics` sources type diags per-fn from `typeck_fn`, plus the
+  whole-file effect diags (E-class), merged into the HIR sink
++ `c_code` gates on typeck + effect diagnostics (same as lowering diagnostics)
 
 ```text
 SourceFileInput
-  └─ lex ─ parse ─┬─ item_scope ─ lower_fn ─ typeck_fn   (per StableFnId; NOT BUILT)
-                  └─ lowered_file ─ [typeck::check_file] ─ mir_map ─ c_code
-                                  └─ effect_map (whole-file fixpoint, NOT BUILT)
+  └─ lex ─ parse ─┬─ item_scope ─ lower_fn ─ typeck_fn   (per StableFnId; BUILT)
+                  └─ lowered_file ─ [effect::infer_file] ─ mir_map ─ c_code
+                                  └─ effect_map (whole-file fixpoint; BUILT)
 ```
 
-`typeck_fn(StableFnId) -> Memo<TypeckResults>` depends on `lower_fn`; editing
-one body re-runs one body's check. The whole-file path runs `check_body` per
-body with the shared interner (same reasoning as `lowered_file`). `c_code`
-and the driver gate on typeck diagnostics exactly as they gate on lowering
-diagnostics today. `hir_diagnostics` grows the typeck sink.
+`typeck_fn(StableFnId)` depends on `lower_fn`; editing one body re-runs one
+body's check (and, with the S5 firewall below, only that one). The whole-file
+`lowered_file` path runs the fused walk per body with the shared interner
+(codegen needs comparable handles across bodies). `c_code` and the driver gate
+on typeck + effect diagnostics exactly as they gate on lowering diagnostics.
 
 **The firewall**: before it, `Memo`'s `Arc::ptr_eq` meant no query ever
 backdated, so any edit re-ran everything downstream of `item_scope`. For
@@ -343,9 +357,16 @@ whole-file effect map derive `Eq`, so they backdate exactly (EFFECT.md).
 
 ## The parallel wave (segment S6)
 
-**STATUS: NOT BUILT.** No `rayon`, `boxcar`, `papaya`, or `dashmap`
-dependency exists in the workspace. Type interner is single-threaded
-(`&mut self` on `intern`). All query work is single-threaded.
+**STATUS: BUILT 2026-06-16.** The lock-free interner, the whole-file fused
+per-body fan-out, and the determinism gate are in the working tree. The type
+interner is `boxcar::Vec` + `papaya::HashMap` with `&self` interning; the
+whole-file driver (`effect::infer_file` -> `collect_results`) runs the fused
+type+effect walk one task per body across `rayon`, interning into the one shared
+interner with no clone. Built but deliberately scoped out (below): the per-fn
+`hir_diagnostics` fan-out (the S5 firewall already makes that path
+one-body-incremental, so parallelizing mostly-cache-hits is low value) and
+Wave 0 parallel *lowering* (`lower_source_file` stays serial - body allocation
+into the HIR arena needs `&mut`, and lowering is cheap next to the walk).
 
 Threads, not async/await: inference is CPU-bound, so concurrency is
 structured parallelism over salsa snapshots (cheap read-shared handles onto
@@ -395,10 +416,18 @@ LSP main loop (owns the DB; an edit = a revision bump)
    Tie-breaks in codegen ordering must use names/structure, not handles.
    Gate: run the corpus twice under the wave, diff the C byte-for-byte.
 
-Validation spike first: salsa's parallel-snapshot API is version-sensitive,
-so S6 opens by proving snapshot + cancellation + rayon against the pinned
-version; the fallback is running the pure check fns over pre-collected
-inputs inside one query (D3 makes this trivial).
++ **Validation spike DONE (2026-06-16).** salsa's parallel-snapshot API is
+version-sensitive, so S6 opened by proving it against the pinned 0.27. Result:
+`Database: Send` (not `Sync`), so the model is owned db *clones* (cheap
+`Storage` handle bumps onto the shared, internally synchronized memo tables)
+moved into workers via `into_par_iter`; interned ids and inputs are valid
+across clones of the same storage. The per-fn `typeck_fn` query is already
+seal-isolated, so it parallelizes with zero interner change and is trivially
+deterministic (no shared whole-file interner = no handle-order dependence;
+law #2 vacuous, law #1 held by the order-preserving collect). Proven by
+`database::tests::parallel_per_fn_typeck_matches_serial` (parallel per-fn
+diagnostics == serial, in collection order). The fallback (pure check fns over
+pre-collected inputs inside one query) was not needed.
 
 Multifile readiness (later milestone, designed for now): one
 `SourceFileInput` per file, an import-graph query, per-file item scopes, and
@@ -419,41 +448,54 @@ database); on-disk persistence stays deferred.
   (335 workspace tests + corpus regression, all green). `InferObserver` trait
   + no-op impl built (seam for S4). `Cause`/`Expectation` enums defined but
   not yet threaded through `infer_expr`.
-~ **S2 - cutover (IN PROGRESS).** step A (MIR reads TypeckResults) BUILT:
-  `lower_function` takes `&TypeckResults`, `mir_type_of` reads from it,
-  `database::lowered_file` runs `typeck::check_file`. step B (diagnostics
-  infrastructure) PARTIAL: int-literal ranges, binary/array/enum/ptr
-  judgments migrated to `typeck/src/infer.rs` with 286-line test suite in
-  `typeck/tests/judgments.rs`; remaining judgments (return/tail/match/let)
-  still in lowering. step C (delete coerce + stamping + shadow harness) NOT
-  YET: `TypeckResults::adjustments` and `local_types` not populated; A3
-  `int32` fallback still live; shadow harness still required. step D (per-fn
-  `typeck_fn` query) NOT YET - described in design but not implemented.
-- **S3 - new judgments (NOT BUILT).** The deferred ledger list: M2 operand
-  unification, assignment non-value, cast lattice, struct-field value types,
-  call argument types, const declared-type value check, tail-expression
-  enforcement in value-position blocks, L4 cross-element judgment,
-  `types_compatible` integer-leniency deletion.
-- **S4 - effects (NOT BUILT).** [EFFECT.md](EFFECT.md): no `crates/effect/`
-  exists. `InferObserver` seam is ready (S1). `EffectSet`, contextual
-  annotation surface, fixpoint (Tarjan on call graph), witness-edge
-  diagnostics, E-class - all design only.
-- **S5 - the firewall (NOT BUILT).** Structural signature backdating.
-  `Memo<T>` still `Arc::ptr_eq`; no structural equality on `FileScope` or
-  any query result.
-- **S6 - the parallel wave (NOT BUILT).** No `boxcar`, `papaya`, `dashmap`,
-  or `rayon` dependencies in the workspace. Type interner is plain
-  `Vec<TypeKind>` + `FxHashMap` with `&mut self` for intern. Single-threaded
-  only.
++ **S2 - cutover (BUILT, C1-C5 complete).** step A: MIR reads `TypeckResults`
+  (`lower_function` takes it, `mir_type_of` reads it). step B: all judgments
+  migrated to `typeck/src/infer.rs` + `check_matches` (tests in
+  `typeck/tests/judgments.rs`). step C (irreversible): `coerce.rs` deleted,
+  lowering's `Body::expr_types` deleted, `adjustments`/`local_types` populated,
+  A3 fallback is an ICE, shadow harness deleted. step D: per-fn
+  `typeck_fn(StableFnId)` query built; `hir_diagnostics` sources type diags
+  per-fn.
++ **S3 - new judgments (BUILT, only M2b deferred).** M2 literal-width operand
+  adoption, assignment non-value (T39), cast lattice (T43, [CAST.md](CAST.md)),
+  struct-field value types (T38), call argument types (T37), const declared-type
+  value check (U2/C13) + cast truncation (U4), F1 if-branch consistency (T41),
+  F2 negation-on-unsigned (T40), F3 float-literal adoption, L4 cross-element
+  (T42), `types_compatible` integer-leniency removed for literals. Open: M2b
+  (two distinct concrete widths) + tail-expression enforcement in value blocks.
++ **S4 - effects (BUILT).** [EFFECT.md](EFFECT.md): `crates/effect` implements
+  the `InferObserver` seam. `EffectSet` bitset (io/ffi/state), contextual
+  annotation surface, Tarjan-SCC condensation fixpoint, witness-trail
+  diagnostics, E-class (9th). Fused with the type walk (one traversal).
++ **S5 - the firewall (BUILT 2026-06-16).** Structural signature backdating via
+  a content digest. `Memo<T>`'s `PartialEq` delegates to a `MemoEq` trait
+  (default conservative-false); `FileScope.sig_digest` (bodies excluded) and
+  `LoweredFn.digest` (body text ^ sig_digest) override it, so a body-only edit
+  backdates `item_scope` and unedited bodies' `typeck_fn` cache-hit. See "The
+  firewall" above. Open: lex/parse/whole-file backdating + per-item
+  `fn_signature` queries (multifile).
++ **S6 - the parallel wave (BUILT 2026-06-16).** Lock-free interner
+  (`boxcar`+`papaya`, `&self` intern); the whole-file fused per-body walk fans
+  out across `rayon` (`collect_results`), each body interning into the one
+  shared interner with no clone; the determinism gate passes (corpus C
+  byte-identical across 8 separate-process runs/file, plus the
+  `parallel_inference_is_deterministic` regression test over fresh databases).
+  Scoped out (documented above): the per-fn `hir_diagnostics` fan-out (firewall
+  makes it low value) and Wave 0 parallel lowering.
 - **S7 - row-polymorphic effects (NOT BUILT).** Effect variables on fn types
   for precise higher-order effect tracking. Requires S6 lock-free
   infrastructure. See EFFECT.md "Path forward".
 
+  Note: the **Tier-2 expectation spine** (downward `Expectation` propagation,
+  the unified `expect` funnel) is the remaining in-kernel inference work and is
+  not numbered as a segment - it is orthogonal to S6/S7 and is the "full type
+  inference" build discussed separately.
+
 ## Open at build time
 
-~ Pointer-operand arithmetic judgment (noted under M2) — design settled,
-  implementation pending S3. Currently all ptr arithmetic is rejected
-  (`ArithmeticOnPtr`, T029).
+~ Pointer-operand arithmetic judgment (noted under M2) - design settled, still
+  deferred (no corpus program needs it). All ptr arithmetic stays rejected
+  (`ArithmeticOnPtr`, T029); relax when a real program needs pointer math.
 - Shard count and shard-key choice for the global interner (S6).
 - Whether `TypeckResults` itself gets structural backdating (cheap to add
   once diagnostics derive `Eq`; decide on measurement).

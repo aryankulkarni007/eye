@@ -9,28 +9,30 @@ design; the rest of this document is the original plan, kept for rationale.
 
 ## Divergences from this plan (as built)
 
-1. **The interner does not freeze at collect time.** The plan assumed all types
-   are known after item collection, but body lowering interns new types (a
-   string literal's `&[uint8; N]`, body-local arrays/refs). Instead:
-   `HIR.types` is a plain `TypeInterner` (no `RefCell` anywhere - the dynamic
-   borrow flags also cost on every intern/lookup in the hot path);
-   `LoweringCtx` *owns* a working interner, seeded by `mem::take`/restore in
-   the whole-file wrapper or by cloning the frozen scope interner in the
-   per-fn path. A per-fn `LoweredBody` carries its own interner: scope handles
-   are bit-identical in it (the clone preserves them), body-local handles are
-   valid only through it.
+1. **The interner does not freeze at collect time, and is lock-free (S6).** The
+   plan assumed all types are known after item collection, but body lowering and
+   typeck intern new types (a string literal's `&[uint8; N]`, body-local
+   arrays/refs, decay results). Instead `HIR.types` is a **lock-free**
+   `TypeInterner` (`boxcar::Vec` arena + `papaya::HashMap` dedup, `intern(&self)`
+   - no `RefCell`, no `&mut`). Every body of a file interns into the one shared
+   `item_scope` interner concurrently; there is no per-body clone and no
+   `mem::take`/restore. `LoweredBody` no longer carries an interner. (Before S6:
+   `LoweringCtx` owned a working interner seeded by clone/take-restore - that is
+   gone.)
 
-2. **Two lowering paths, not one.** Per-body interners mean `TypeRef` handles
-   from two bodies are not mutually comparable, and codegen compares handles
-   across bodies (type-declaration topo order, array-wrapper typedef dedup in
-   `typegraph::collect_type_nodes`). So:
+2. **Two lowering paths, not one.** Both paths now share the file's one
+   interner, so `TypeRef` handles *are* comparable across bodies. The split
+   stays for incrementality, not handle identity:
    - `item_scope` + `lower_fn(StableFnId)` is the **per-fn** path - used for
-     diagnostics (`hir_diagnostics`), where cross-body identity is never
-     needed. Editing one body re-runs one query.
-   - `lowered_file` (the `lower_source_file` wrapper, one shared interner) is
-     the **whole-file** path - feeds `mir_map` and `c_code`. The C output is a
-     function of the whole file, so whole-file is the honest cache key; finer
-     C-level incrementality would need stable cross-body type identity first.
+     diagnostics (`hir_diagnostics`); editing one body re-runs one query (S5
+     firewall). Its results are consumed only as diagnostics.
+   - `lowered_file` (the `lower_source_file` wrapper) is the **whole-file** path
+     - it runs the fused type+effect walk *in parallel across bodies* (rayon,
+     S6) into the shared interner, then feeds `mir_map` and `c_code`. The C
+     output is a function of the whole file, so whole-file is the honest cache
+     key. Determinism: codegen orders typedefs by program discovery, never by
+     handle value, so parallel interning order does not leak (gate: corpus C
+     byte-identical across runs).
 
 3. **`mir_map` replaces `MirCache`.** A tracked `mir_map(file)` query lowers
    every defined fn once; `--dump-mir`, `--dump-mir-raw`, and `c_code` all

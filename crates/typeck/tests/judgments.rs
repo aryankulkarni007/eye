@@ -14,7 +14,7 @@ fn lower(src: &str) -> HIR {
     let parse = parser::parse(&lexed.tokens, &source);
     let file = SourceFile::cast(parse.green).expect("root is SourceFile");
     let mut hir = hir::core::lower_source_file(file, &lexed.interner);
-    let typeck = typeck::check_file(&mut hir);
+    let typeck = typeck::check_file(&hir);
     let mut fn_ids: Vec<_> = typeck.keys().copied().collect();
     fn_ids.sort_by_key(|id| id.raw_idx().into_u32());
     for fn_id in fn_ids {
@@ -1242,8 +1242,8 @@ f(usize size) -> usize {
     let lexed = Lexer::new(&source).tokenize();
     let parse = parser::parse(&lexed.tokens, &source);
     let file = SourceFile::cast(parse.green).expect("root is SourceFile");
-    let mut hir = hir::core::lower_source_file(file, &lexed.interner);
-    let typeck = typeck::check_file(&mut hir);
+    let hir = hir::core::lower_source_file(file, &lexed.interner);
+    let typeck = typeck::check_file(&hir);
 
     let (fn_id, function) = hir
         .functions

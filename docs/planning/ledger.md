@@ -240,10 +240,11 @@ features, not freeze blockers:
       (mir/lower.rs), `string_index` (codegen), `fn_names` (dump) are hash
       maps keyed by dense newtype ids; direct indexing is O(1) with no
       hashing and better locality. Pairs with typed arenas.
-- [ ] PARALLEL.md sharing: the type interner and global symbol table will
-      need a concurrent structure (sharded map / per-thread-collect-merge)
-      when parallel inference lands; map-structure decision, not a hasher
-      swap.
+- [x] PARALLEL.md sharing: the type interner needs a concurrent structure -
+      DONE 2026-06-16 (S6). `TypeInterner` is now lock-free (`boxcar::Vec` +
+      `papaya::HashMap`, `&self` intern), so the whole-file per-body walk fans
+      out across rayon with no clone. The global *symbol* table (cross-file)
+      still wants the same treatment at the multifile milestone (`lasso`).
 - [ ] `TypeKind::Fn { params, ret }` stores full `Vec<TypeRef>` copies
       while `Function::fn_type` already holds the interned handle;
       consider storing only the handle.
@@ -288,6 +289,73 @@ Every in-source issue marker, so none float free of the ledger:
 ---
 
 ## Completed
+
+### 2026-06-16: S6 parallel wave - lock-free interner + whole-file fan-out
+
+The "parallelised" half of dual inference. Built on the validation spike below.
+
+- **Lock-free interner.** `TypeInterner` internals: `Vec`+`FxHashMap`/`&mut self`
+  -> `boxcar::Vec` (lock-free append, stable addresses) + `papaya::HashMap`
+  (lock-free dedup), `intern(&self)`. Stable arena addresses keep
+  `lookup(&self) -> &TypeKind` (a `Mutex`/`RwLock` interner could not). Tolerated
+  race: concurrent same-kind interns elect one canonical index via
+  `get_or_insert`; the loser's slot is dead, never a second handle for one type.
+  Deterministic `Debug` (arena in handle order; the dedup map's lock-free
+  iteration order is excluded - non-deterministic).
+- **Clone elimination.** The two per-body interner clones are gone
+  (`lower_fn_body`'s `scope.types.clone()`, `typeck_fn`'s
+  `lowered.lowered.types.clone()`); bodies intern into the one shared scope
+  interner via `&self`. `LoweredBody.types` / `FnLowerOut.types` deleted; the
+  whole-file take/restore dance deleted (`check_file`, `collect_results`,
+  `infer_file` take `&HIR`). `&mut TypeInterner` -> `&TypeInterner` across
+  hir-lowering / typeck / effect. Interner stays homed in `HIR` (not lifted to
+  the `Database` - a documented divergence; HIR-home suffices for sharing).
+- **Whole-file fan-out (Wave 1).** `collect_results` runs the fused type+effect
+  walk one task per body across `rayon` (`into_par_iter`), interning into the
+  shared interner with no shared mutable state. Order-preserving collect keeps
+  determinism law #1.
+- **Determinism gate (law #2).** Corpus C is byte-identical across 8
+  separate-process runs each for histogram/calculator/design/floodfill/raytracer
+  (codegen emits typedefs in program-discovery order, never by handle value).
+  Regression test `parallel_inference_is_deterministic` (6 fresh databases,
+  equal C).
+- **Scoped out (documented):** the per-fn `hir_diagnostics` fan-out (the S5
+  firewall already makes that path one-body-incremental - parallelizing
+  mostly-cache-hits is low value for high `&dyn Database` churn) and Wave 0
+  parallel lowering (`lower_source_file` stays serial; body arena alloc needs
+  `&mut`, and lowering is cheap next to the walk).
+
+Verified: workspace 375/0 + the new determinism test, clippy clean, snapshot
+re-accepted (cleaner handle-ordered interner dump). `rayon`+`boxcar`+`papaya`
+added.
+
+### 2026-06-16: S6 checkpoint 1 - parallel validation spike
+
+The version-sensitive question (does salsa 0.27's parallel-snapshot API support
+the per-body fan-out the wave needs?) answered empirically before any interner
+rewrite. Result: `salsa::Database: Send` (not `Sync`), so the model is owned
+database *clones* - cheap `Storage` handle bumps onto the shared, internally
+synchronized memo tables - moved into workers via rayon `into_par_iter`;
+interned ids and salsa inputs are valid across clones of the same storage. The
+per-fn `typeck_fn` query is already seal-isolated (its own interner clone), so
+it parallelizes with **zero** interner change and is trivially deterministic
+(no shared whole-file interner = no `TypeRef`-handle-order dependence).
+
+- `rayon` added as a workspace + `eye-database` dependency.
+- `database::tests::parallel_per_fn_typeck_matches_serial`: clones the db per
+  body, fans `typeck_fn` out across rayon, asserts the parallel diagnostics
+  (in collection order) equal the serial loop's - determinism law #1.
+- Diagnostics are safe to compare across runs because they carry baked-in
+  display strings + type *names*, not raw `TypeRef` handles.
+
+Verified: `cargo test -p eye-database` 11/0 (+1 spike), clippy clean. No
+production path changed yet - the spike is test-only.
+
+REMAINING S6 checkpoints (not built): lock-free interner (`boxcar`+`papaya`,
+`&self` intern, kills the per-fn clone + the whole-file take/restore), the
+production per-fn fan-out (needs the concrete `Database` threaded or a fork on
+the `&dyn` path), the whole-file fused fan-out (blocked on the lock-free
+interner - shared `&mut hir.types`), and the corpus-diff-twice determinism gate.
 
 ### 2026-06-16: S5 signature firewall - structural backdating
 

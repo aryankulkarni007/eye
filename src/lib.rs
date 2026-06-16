@@ -39,11 +39,11 @@ pub fn compile_file(input_path: &Path) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Root node is not a valid SourceFile"))?;
 
     // hir lowering + typeck
-    let mut hir = lower_source_file(file_ast, &lexed.interner);
+    let hir = lower_source_file(file_ast, &lexed.interner);
     if !hir.diagnostics.is_empty() {
         return Err(anyhow::anyhow!("HIR errors in {}", input_path.display()));
     }
-    let typeck = typeck::check_file(&mut hir);
+    let typeck = typeck::check_file(&hir);
     if typeck.values().any(|r| !r.diagnostics.is_empty()) {
         return Err(anyhow::anyhow!("type errors in {}", input_path.display()));
     }

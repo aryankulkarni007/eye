@@ -15,7 +15,7 @@ use crate::core::{
 impl<'a> LoweringCtx<'a> {
     pub fn new(
         hir: &'a HIR,
-        types: crate::core::TypeInterner,
+        types: &'a crate::core::TypeInterner,
         const_values: &'a FxHashMap<Text, ConstValue>,
         interner: &'a dyn StringTable,
     ) -> Self {
@@ -123,8 +123,8 @@ impl<'a> LoweringCtx<'a> {
         id
     }
 
-    pub(super) fn finish(self) -> (Body, Sink<HirError>, crate::core::TypeInterner) {
-        (self.body, self.diagnostics, self.types)
+    pub(super) fn finish(self) -> (Body, Sink<HirError>) {
+        (self.body, self.diagnostics)
     }
 
     /// R012 for body-position type annotations (`let` types, cast targets,

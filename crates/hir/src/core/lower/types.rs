@@ -71,7 +71,7 @@ pub(super) fn lower_type_ref(
     ty: &ast::TypeRef,
     diagnostics: &mut Sink<HirError>,
     consts: &dyn ConstEnv,
-    types: &mut TypeInterner,
+    types: &TypeInterner,
 ) -> TypeRef {
     match ty {
         ast::TypeRef::IdentType(it) => match it.name() {

@@ -12,7 +12,7 @@
 use std::fmt;
 use std::ops::Index;
 
-use rustc_hash::{FxBuildHasher, FxHashMap};
+use rustc_hash::FxBuildHasher;
 
 use super::*;
 
@@ -60,13 +60,27 @@ pub enum TypeKind {
 ///
 /// all well-known primitive types (`int32`, `bool`, ...) are pre-injected at
 /// construction.
-#[derive(Debug, Clone)]
+/// the canonical type store. lock-free by design (S6): `intern` takes `&self`,
+/// so every body in a file can intern into one shared interner concurrently
+/// without the per-body clone the old `&mut self` model forced.
+///
+/// - `arena` is a [`boxcar::Vec`]: a lock-free append-only vector with *stable*
+///   element addresses, so [`lookup`](Self::lookup) hands out `&TypeKind`
+///   directly (no guard, no clone) - the property a `Mutex`/`RwLock` interner
+///   cannot give.
+/// - `map` is a [`papaya::HashMap`]: a lock-free dedup index from structural
+///   `TypeKind` to its canonical arena slot.
+///
+/// the one tolerated race: two threads interning the *same* new `TypeKind`
+/// concurrently may each append a slot, but `get_or_insert` elects a single
+/// canonical index and both return it - the losing slot is dead (referenced by
+/// nothing), never a second handle for one type. structural equality stays a
+/// handle compare.
+#[derive(Clone)]
 pub struct TypeInterner {
-    arena: Vec<TypeKind>,
-    map: FxHashMap<TypeKind, TypeRef>,
+    arena: boxcar::Vec<TypeKind>,
+    map: papaya::HashMap<TypeKind, u32, FxBuildHasher>,
     /// pre-cached read-only handles for the most-requested builtin types.
-    /// avoids needing `&mut self` just to look up `int32`, `uint8`, `usize`,
-    /// or the error sentinel.
     error_ty: TypeRef,
     int32_ty: TypeRef,
     uint8_ty: TypeRef,
@@ -76,33 +90,35 @@ pub struct TypeInterner {
 impl TypeInterner {
     /// create a new interner with all primitive types pre-injected.
     pub fn new() -> Self {
-        let mut this = TypeInterner {
-            arena: Vec::new(),
-            map: FxHashMap::with_capacity_and_hasher(32, FxBuildHasher),
+        let this = TypeInterner {
+            arena: boxcar::Vec::new(),
+            map: papaya::HashMap::with_hasher(FxBuildHasher),
             error_ty: TypeRef(0),
             int32_ty: TypeRef(0),
             uint8_ty: TypeRef(0),
             usize_ty: TypeRef(0),
         };
-        this.inject_builtins();
-        this
-    }
-
-    fn inject_builtins(&mut self) {
-        self.error_ty = self.intern(TypeKind::Error);
+        // `&self` interning lets this run on the freshly built (not-yet-shared)
+        // interner; the cached handles are captured before it is handed out.
+        let error_ty = this.intern(TypeKind::Error);
         for name in &[
             "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32",
             "float64", "bool", "char", "string", "usize", "isize", "void",
         ] {
-            self.intern(TypeKind::Path(Text::from(*name)));
+            this.intern(TypeKind::Path(Text::from(*name)));
         }
         // `ptr` is structural (`TypeKind::RawPtr`), not a named path.
-        self.intern(TypeKind::RawPtr);
-        // pre-cached handles for the most-requested builtins (read-only
-        // lookups that avoid needing `&mut self`).
-        self.int32_ty = self.intern(TypeKind::Path(Text::from("int32")));
-        self.uint8_ty = self.intern(TypeKind::Path(Text::from("uint8")));
-        self.usize_ty = self.intern(TypeKind::Path(Text::from("usize")));
+        this.intern(TypeKind::RawPtr);
+        let int32_ty = this.intern(TypeKind::Path(Text::from("int32")));
+        let uint8_ty = this.intern(TypeKind::Path(Text::from("uint8")));
+        let usize_ty = this.intern(TypeKind::Path(Text::from("usize")));
+        TypeInterner {
+            error_ty,
+            int32_ty,
+            uint8_ty,
+            usize_ty,
+            ..this
+        }
     }
 
     /// convenience: retrieve the canonical error sentinel type (read-only).
@@ -126,21 +142,26 @@ impl TypeInterner {
     }
 
     /// intern a [`TypeKind`], returning its canonical [`TypeRef`] handle.
+    /// `&self` (not `&mut self`): the lock-free arena and dedup map let many
+    /// bodies intern into one shared interner at once (S6).
     ///
     /// recursive child handles in `kind` must already be interned (i.e.
     /// obtained from this interner) so that structural equality is correctly
     /// detected.
-    pub fn intern(&mut self, kind: TypeKind) -> TypeRef {
-        if let Some(&id) = self.map.get(&kind) {
-            return id;
+    pub fn intern(&self, kind: TypeKind) -> TypeRef {
+        let map = self.map.pin();
+        if let Some(&id) = map.get(&kind) {
+            return TypeRef(id);
         }
-        let id = TypeRef(self.arena.len() as u32);
-        self.arena.push(kind.clone());
-        self.map.insert(kind, id);
-        id
+        // append first to reserve a slot, then elect the canonical index. if a
+        // racing thread interned the same kind, `get_or_insert` returns its
+        // index and this thread's freshly appended slot is left dead.
+        let idx = self.arena.push(kind.clone()) as u32;
+        TypeRef(*map.get_or_insert(kind, idx))
     }
 
-    /// look up the [`TypeKind`] for a [`TypeRef`] handle.
+    /// look up the [`TypeKind`] for a [`TypeRef`] handle. the arena's stable
+    /// addresses let this borrow directly out of `&self`.
     pub fn lookup(&self, id: TypeRef) -> &TypeKind {
         &self.arena[id.0 as usize]
     }
@@ -149,6 +170,19 @@ impl TypeInterner {
 impl Default for TypeInterner {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl fmt::Debug for TypeInterner {
+    /// the canonical arena in handle order. the dedup `map` is a derived index
+    /// whose iteration order is non-deterministic (lock-free hashing), so it is
+    /// deliberately not part of the debug surface - this keeps dumps stable.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut m = f.debug_map();
+        for (i, kind) in self.arena.iter() {
+            m.entry(&TypeRef(i as u32), kind);
+        }
+        m.finish()
     }
 }
 

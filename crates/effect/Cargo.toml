@@ -11,6 +11,7 @@ hir.workspace = true
 typeck.workspace = true
 diagnostics.workspace = true
 rustc-hash.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 lexer.workspace = true

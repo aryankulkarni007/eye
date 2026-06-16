@@ -527,7 +527,7 @@ impl<'a> LoweringCtx<'a> {
                     globals: self.const_values,
                 };
                 let ty = match c.ty() {
-                    Some(t) => lower_type_ref(&t, &mut self.diagnostics, &consts, &mut self.types),
+                    Some(t) => lower_type_ref(&t, &mut self.diagnostics, &consts, self.types),
                     None => self.types.error_type(),
                 };
                 // R012: the cast target's type names must be declared. a

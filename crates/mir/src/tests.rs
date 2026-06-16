@@ -21,13 +21,13 @@ fn lower_first_fn(src: &str) -> (HIR, FnId, MirBody) {
     let lexed = Lexer::new(&source).tokenize();
     let parse = parser::parse(&lexed.tokens, &source);
     let file = SourceFile::cast(parse.green).expect("root is SourceFile");
-    let mut hir = lower_source_file(file, &lexed.interner);
+    let hir = lower_source_file(file, &lexed.interner);
     assert!(
         hir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
         hir.diagnostics
     );
-    let typeck = typeck::check_file(&mut hir);
+    let typeck = typeck::check_file(&hir);
     let fn_id = *hir
         .items
         .functions

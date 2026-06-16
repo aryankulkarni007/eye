@@ -48,13 +48,11 @@ pub use scopes::Scopes;
 
 pub struct LoweringCtx<'a> {
     pub(super) hir: &'a HIR,
-    /// the working type interner for this body, owned (no `RefCell`: dynamic
-    /// borrow flags cost on every intern/lookup in this hot path, and salsa
-    /// query results must be `Send + Sync`). the whole-file wrapper seeds it
-    /// by taking `HIR::types` and restores it from [`fn_body::FnLowerOut`]
-    /// after each body; the per-fn query path seeds it with a clone of the
-    /// frozen scope interner.
-    pub(super) types: TypeInterner,
+    /// the shared type interner, borrowed (S6). interning is `&self`
+    /// (lock-free), so every body in a file interns into the one scope interner
+    /// (`HIR::types`) with no per-body clone and no take/restore dance - the
+    /// clone the old `&mut self` model forced is gone.
+    pub(super) types: &'a TypeInterner,
     pub(super) body: Body,
     pub(super) scopes: Scopes,
     pub(super) diagnostics: Sink<HirError>,
@@ -94,15 +92,11 @@ pub struct CollectedFile {
 }
 
 /// one independently lowered function body (the per-fn query result half).
+/// the body's `TypeRef` handles resolve through the shared scope interner
+/// (`item_scope`'s `HIR::types`) that lowering interned them into (S6): no
+/// per-body interner is carried, so siblings share one set of handles.
 pub struct LoweredBody {
     pub body: Body,
-    /// the working interner this body's `TypeRef` handles resolve through: a
-    /// clone of the frozen scope interner plus any types interned while
-    /// lowering this body (e.g. a string literal's `&[uint8; N]`). handles
-    /// that exist in the scope interner are bit-identical here, so
-    /// signature-vs-body comparisons stay valid; body-local handles are valid
-    /// only through this interner.
-    pub types: TypeInterner,
     pub diagnostics: Sink<HirError>,
 }
 
@@ -170,17 +164,9 @@ pub fn lower_fn_body(
     const_values: &FxHashMap<Text, ConstValue>,
     interner: &dyn StringTable,
 ) -> LoweredBody {
-    let out = fn_body::lower_fn_with(
-        scope,
-        fn_id,
-        fn_ast,
-        const_values,
-        interner,
-        scope.types.clone(),
-    );
+    let out = fn_body::lower_fn_with(scope, fn_id, fn_ast, const_values, interner);
     LoweredBody {
         body: out.body,
-        types: out.types,
         diagnostics: out.diagnostics,
     }
 }
@@ -202,11 +188,11 @@ pub fn lower_source_file(file: ast::SourceFile, interner: &dyn StringTable) -> H
         fn_asts,
     } = collect_file_scope(&file, interner);
 
-    // pass 3: lower each fn body, threading the single shared interner.
+    // pass 3: lower each fn body. all bodies intern into the one shared scope
+    // interner (`hir.types`, `&self` interning), so no take/restore is needed -
+    // the `&hir` borrow for lowering ends before each body is allocated.
     for (fn_id, fn_ast) in fn_asts {
-        let types = std::mem::take(&mut hir.types);
-        let out = fn_body::lower_fn_with(&hir, fn_id, &fn_ast, &const_values, interner, types);
-        hir.types = out.types;
+        let out = fn_body::lower_fn_with(&hir, fn_id, &fn_ast, &const_values, interner);
         hir.diagnostics.extend(out.diagnostics);
         let body_id = hir.bodies.alloc(out.body);
         hir.functions[fn_id].body = Some(body_id);
