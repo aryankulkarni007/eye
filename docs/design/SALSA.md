@@ -47,10 +47,18 @@ design; the rest of this document is the original plan, kept for rationale.
    identically.
 
 5. **`Memo<T>` instead of `salsa::Update` impls.** Query results wrap in
-   `Memo<T>(Arc<T>)` whose `PartialEq` is `Arc::ptr_eq`: a re-executed query
-   counts as changed, dependents re-run - conservative, never stale.
-   Structural backdating (e.g. token-stream equality letting a comment edit
-   stop at `lex`) is a later, per-type opt-in.
+   `Memo<T>(Arc<T>)`. `PartialEq` delegates to a `MemoEq` trait whose default
+   is conservative (a re-executed query counts as changed, dependents re-run -
+   never stale). Per-type structural backdating is an opt-in override:
+   - **landed (S5, 2026-06-16):** `FileScope` and `LoweredFn` override
+     `memo_eq` with a content digest (signature digest / body digest) so a
+     body-only edit backdates `item_scope` and the unedited bodies' `typeck_fn`
+     cache-hit - the signature firewall (TYPECK.md). digest, not deep
+     `PartialEq`: correct-by-construction (deterministic lowering + owned
+     `Text`), and cheap.
+   - **still conservative:** `lex`/`parse`/`lowered_file`/`mir_map`/`c_code`
+     (e.g. token-stream equality letting a comment edit stop at `lex` is a
+     future per-type opt-in).
 
 6. **No `Scope` struct; `StableFnId` is not stored.** The scope result reuses
    `HIR` (bodies empty) inside `database::FileScope`, and stable ids are

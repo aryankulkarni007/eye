@@ -37,19 +37,27 @@ limitations of the frozen kernel and become the typeck pass's scope.
       widths (neither a literal, e.g. `int8 + int64`) still keep the LHS type;
       tracked as M2b below.
 
-- [ ] **L4 residue - cross-element array-literal types unchecked** [typeck].
-      `let [int32; 3] xs = [1, true, "x"]`: the string element errors in
-      clang, the bool converts silently. The literal-typing/decay half was
-      closed 2026-06-11 by `coerce`; the type *judgment* against the element
-      type remains. (CLEAK L4 PARTIAL.)
+- [x] **L4 residue - cross-element array-literal types unchecked** [typeck] -
+      CLOSED 2026-06-16 (S3). Each array-literal element is now checked against
+      the declared element type in `coerce_array_literal` (after the per-element
+      coercion, the same `site_assignable` the arg/field judgments use):
+      `ArrayElementTypeMismatch`/T42. Regression:
+      `array_element_type_mismatch_is_rejected`. (Was: CLEAK L4 PARTIAL.)
 
-- [ ] **U2 - const-eval `apply_int` wraps unchecked** [typeck]. `const int8
-      X = 200` evaluates to 200, not an error (and not -56); no
-      value-in-range check against the declared type.
+- [x] **U2 - const-eval value unchecked against declared type** [typeck] -
+      CLOSED 2026-06-16 (S3). `const int8 X = 200` (and a global initializer)
+      now range-checks the folded integer against the declared type:
+      `ConstError::ConstValueOutOfRange`/C13, in `const_eval::check_const_range`.
+      Composes with U4: an explicit `as` to the type is the blessed truncation
+      (in range), a bare out-of-range value is rejected. Regression:
+      `const_value_out_of_range_is_rejected`.
 
-- [ ] **U4 - const-eval `apply_cast` silently truncates** [typeck].
-      int->float can hit inf, float->int truncates, char/bool->int ignores
-      signedness.
+- [x] **U4 - const-eval `apply_cast` silently truncates** [typeck] - CLOSED
+      2026-06-16 (S3). `apply_cast` now reproduces the C cast: an integer target
+      truncates to its width (`200 as int8` folds to `-56`, two's-complement,
+      via `wrap_int`), so a folded const equals its runtime value. int->float
+      widens to f64. Paired with U2 so the truncation is the explicit-cast
+      escape, not a silent loss.
 
 - [ ] **M2b - distinct concrete integer widths keep LHS** [typeck]. M2 closed
       the literal case; a binary of two *non-literal* operands with different
@@ -57,7 +65,18 @@ limitations of the frozen kernel and become the typeck pass's scope.
       can narrow. The no-footgun ruling (Rust model) is to reject this as a
       mixed-width type error rather than silently widen/narrow; deferred because
       no corpus program exercises it (the literal case was the live miscompile).
-      Decide reject-vs-widen when a real program needs it.
+      Decide reject-vs-widen when a real program needs it. **The one remaining
+      S3 item, ratified-deferred** (the rest of S3 closed 2026-06-16).
+
+- [ ] **string literal -> `char*` decay** [typeck, discovered by L4 2026-06-16].
+      `let [char*; N] = ["a", ...]` is rejected per element: a string literal is
+      `&[uint8; N]` and `array_ref_decays_to` accepts the `string`/exact-element
+      decay but not the uint8/char pun, so `char*` slots reject (the array
+      analogue of the existing scalar string->char* limitation, lang.eye). The
+      no-footgun answer is to let string literals decay to `char*` too (char and
+      uint8 are both byte types); deferred as a string/char duality change
+      (touches the shared decay helper + codegen acceptance, needs corpus
+      review), not a cast-lattice item. See CAST.md "not covered".
 
 - [x] **A3 - `mir_type_of` fallback** [typeck] - CLOSED 2026-06-15 at S2C C5.
       `mir_type_of` now reads typeck's `expr_types` (the sole type source) and
@@ -80,51 +99,62 @@ docs/features/TYPECK.md (strategy, judgments, migration segments S0-S6) +
 docs/features/EFFECT.md (the second lattice); see the completed entry for
 the rulings.
 
-- Struct-literal field **value** types unchecked: `P { x: "hello" }` with
-  `int32 x` reaches clang. (Missing *fields* ARE caught.)
-- Call argument **types** unchecked (arity is checked, T026): swapped args
-  accepted. Source marker: `eyesrc/programs/lang.eye` (FIXME at the
-  `generate_lang` call).
-- `as` casts unrestricted any-to-any; the cast lattice (what converts, what
-  needs explicit blessing) is a design item.
-- `const` declared type vs folded value unchecked (`const bool B = 5`;
-  also a DEFER row). lang.eye re-hit: `const ptr NULL = 0 as ptr` folds to
-  a bare `0`, nothing checks `ptr` against it.
+- [x] Struct-literal field **value** types unchecked - CLOSED 2026-06-16 (S3
+  first judgments, `StructFieldTypeMismatch`/T38). `P { x: "hello" }` with
+  `int32 x` is now rejected at the typeck `StructLit` arm via `site_assignable`.
+- [x] Call argument **types** unchecked - CLOSED 2026-06-16 (S3 first judgments,
+  `ArgTypeMismatch`/T37). Swapped/wrong-type args are rejected at `infer_call`'s
+  defined-fn arm (arity stays T026). Int-family + pointer-into-`ptr` stay lenient
+  (defers M2b; FFI escape). Source FIXME at `generate_lang` updated.
+- [x] `as` casts unrestricted any-to-any - CLOSED 2026-06-16 (S3). The cast
+  lattice (CAST.md) is built: scalar<->scalar, pointer<->pointer,
+  pointer<->integer convert; an aggregate (array/struct/union) on either side
+  is rejected (`CastNotAllowed`/T43). `cast_allowed`/`cast_class` in the
+  walker's `Cast` arm.
+- [x] `const` declared type vs folded value unchecked - CLOSED 2026-06-16 (U2,
+  open-bug row above). Integer consts/globals range-check; `const bool B = 5`
+  and `const ptr NULL = 0 as ptr` are non-integer declared types (the range
+  check is integer-only) - a bool/ptr value-vs-type check is a follow-up if a
+  program needs it, but the headline integer case is closed.
 - M2 operand unification (open-bug row above).
 - Integer-literal typing: the `int32` default replaced by expected-type
   propagation (the T030 range sweep already guards the values).
 - A3 `mir_type_of` fallback flipped to a hard error (open-bug row above).
 - `types_compatible` integer-family leniency (any int matches any int)
   removed with the literal default.
-- Assignment expressions type as their RHS, not the target.
+- [x] Assignment is non-value - CLOSED 2026-06-16 (S3, `AssignInValuePosition`
+  T39). A value-position `x = y` / `x += y` (let init, argument, condition,
+  operand, value-producing branch tail) is rejected; statement position and
+  discarded (void) tails stay legal.
 - `ptr` duality: magic `Path("ptr")` vs `Ptr(inner)` appears at every type
   dispatch; give `ptr` a real representation.
 - Fn-type variadic flag: `TypeKind::Fn` carries none, so indirect calls
   through a fn-pointer value skip the arity check (L3 residue).
-- U2/U4 const-eval range and cast checks (open-bug rows above).
-- L4 cross-element judgment (open-bug row above).
+- [x] U2/U4 const-eval range and cast checks - CLOSED 2026-06-16 (open-bug rows
+  above).
+- [x] L4 cross-element judgment - CLOSED 2026-06-16 (open-bug row above).
 - Tail-expression type enforcement in value-position blocks: a tail whose
   type does not match the required type is accepted (`malloc(...)` tail in
   an `int32*`-typed `if` arm). Source marker: `eyesrc/programs/lang.eye`
   (FIXME at the `onset_head` init).
-- **F1 - value-`if` branch types unchecked** (found in the 2026-06-15 typeck
-  audit). `match` arms are consistency-checked (`check_match_arm_consistency`)
-  but a value-position `if` is not: `let int32 x = if c { 1 } else { true }`
-  types as the `then` branch and the `else` (`bool`) converts silently in C.
-  Asymmetric with `match`; both should run one branch-consistency judgment.
-  The fix adds an `if`-arm check beside the match one - a NEW rejection, so it
-  lands post-cutover (S3) with corpus review, not before (it would change which
-  programs compile).
-- **F2 - unary `-`/`~` on an unsigned type unchecked** (2026-06-15 audit).
-  `-(uint32)` types as the operand and silently wraps in C; Rust rejects it.
-  Minor footgun; same post-cutover/S3 placement as F1.
-- **F3 - float literals do not adopt the expected float width** (2026-06-15
-  audit). `let float32 f = 1.5` types the literal `float64`; the slot is
-  `float32`, so the expr type disagrees with the binding. Harmless today (C
-  narrows the literal at the assignment) but the type mismatch is latent - the
-  int-literal `adopt_int_literal` path has no float analogue. Low priority;
-  fold into the expected-type-propagation work that replaces the literal
-  defaults.
+- [x] **F1 - value-`if` branch types unchecked** - CLOSED 2026-06-16 (S3).
+  `check_if_branch_consistency` runs the match-arm consistency judgment for a
+  value-position `if`: `let int32 x = if c { 1 } else { true }` is rejected
+  (`IfBranchTypeMismatch`/T41). Value position is the shared `discarded_set`
+  (a statement-position or discarded `if` runs its branches for effect and
+  stays legal). Regressions: `value_position_if_branch_mismatch_is_rejected`,
+  `if_branch_consistency_clean_cases`.
+- [x] **F2 - unary `-` on an unsigned type unchecked** - CLOSED 2026-06-16 (S3).
+  `-u` on an unsigned value is rejected (`NegationOnUnsigned`/T40); a negated
+  literal (a signed constant the range sweep bounds) is exempt. `~` (BitNot)
+  stays legal - it is well-defined on unsigned (Rust parity), so the original
+  `-`/`~` grouping was too broad; only `-` rejects. Regression:
+  `negation_on_unsigned_is_rejected`.
+- [x] **F3 - float literals do not adopt the expected float width** - CLOSED
+  2026-06-16 (S3). `adopt_float_literal` (the float analogue of
+  `adopt_int_literal`) retypes a float literal to a `float32` expectation at
+  the coercion site, so `let float32 f = 1.5` and `[float32; N]` literals type
+  consistently. Regression: `float_literal_adopts_expected_width`.
 
 Acceptance corpus for the pass: lang.eye plus the CLEAK reproducers.
 
@@ -147,17 +177,18 @@ features, not freeze blockers:
 
 ## Architecture / infrastructure backlog
 
-- [ ] **Salsa structural backdating** (SALSA.md divergence 5). `Memo<T>`
-      equality is `Arc::ptr_eq`, so every re-executed query counts as
-      changed and dependents re-run - conservative, never stale. Per-type
-      structural equality opt-in (e.g. token-stream equality letting a
-      comment edit stop at `lex`) is the unlock for real incrementality;
-      matters first for LSP latency. Pairs with the two rows below.
-      **Promoted 2026-06-12**: the signature-firewall half (structural
-      equality on signature data, so a body edit backdates `item_scope` and
-      other bodies' checks cache-hit) is segment S5 of the typeck build
-      (TYPECK.md), no longer backlog. Token-stream/other backdating stays
-      here.
+- [~] **Salsa structural backdating** (SALSA.md divergence 5). `Memo<T>`
+      equality WAS `Arc::ptr_eq` (every re-executed query counts as changed).
+      **Signature-firewall half BUILT 2026-06-16 (S5):** `Memo`'s `PartialEq`
+      now delegates to a `MemoEq` trait (default conservative); `FileScope` and
+      `LoweredFn` override it with a content digest (signature digest / body
+      digest), so a body-only edit backdates `item_scope` and the unedited
+      bodies' `typeck_fn` cache-hit - keystroke cost flat in project size.
+      Verified both directions (`body_edit_backdates_the_sibling_typeck`,
+      `signature_edit_reruns_every_body`). REMAINING (stays here, conservative):
+      token-stream/`lex`/`parse`/whole-file backdating (a comment edit stopping
+      at `lex`); and the end-state per-item signature queries
+      (`fn_signature(StableFnId)`, with the multifile milestone).
 - [ ] **A9 - LSP full-document sync, no incremental parsing.** Every
       keystroke re-runs the pipeline on the whole file. Debounce threshold
       plus incremental update when practical; salsa now memoizes between
@@ -251,13 +282,161 @@ Every in-source issue marker, so none float free of the ledger:
 | location | ledger row |
 |----------|------------|
 | `eyesrc/programs/lang.eye` top-of-file FIXME | readable-C mode (design questions) |
-| `eyesrc/programs/lang.eye` `off off` FIXME | typeck split scope (value/arg types) |
+| `eyesrc/programs/lang.eye` `off off` FIXME | typeck scope: field/arg value types + cast lattice CLOSED 2026-06-16 (T37/T38/T43); tail-expr open |
 | `eyesrc/programs/lang.eye` `onset_head` FIXME | typeck scope: tail-expression type enforcement |
-| `eyesrc/programs/lang.eye` `generate_lang` FIXME | typeck scope: call argument types |
 
 ---
 
 ## Completed
+
+### 2026-06-16: S5 signature firewall - structural backdating
+
+The incremental half of dual inference: a body edit no longer re-checks sibling
+bodies. `Memo`'s blanket `Arc::ptr_eq` `PartialEq` became a `MemoEq` trait
+(default `false`, the old conservative behavior), overridden for the two
+firewall results by a **content digest** rather than a deep `PartialEq` -
+correct-by-construction because lowering is deterministic and `Text` is an owned
+`SmolStr` (no interner-id drift across edits), and cheap.
+
+- `database/lib.rs`: `MemoEq` trait + `impl<T: MemoEq> PartialEq for Memo<T>`.
+  `FileScope` gains `sig_digest` (hash of every item with fn bodies excluded -
+  stable across a body-only edit); `lower_fn` now returns a `LoweredFn { lowered,
+  digest }` whose `digest` = this body's text combined with `sig_digest`.
+  `signature_digest`/`body_digest`/`hash_text_range` hash text *content* (not
+  byte offsets, so an edit shifting later items leaves their digest unchanged).
+- Effect: edit one body -> `item_scope` backdates (signatures equal) -> the
+  unedited bodies' `lower_fn` re-runs but backdates -> their `typeck_fn`
+  cache-hits. Keystroke cost = reparse one file + recheck one body + effect
+  fixpoint, flat in project size (was O(functions)).
+- `database/tests.rs`: `body_edit_backdates_the_sibling_typeck` (alpha's
+  `typeck_fn` returns the same `Arc` when only beta's body changed) +
+  `signature_edit_reruns_every_body` (a const-initializer edit busts every
+  body's cache - the staleness guard). `database_eq` switched to `Arc::ptr_eq`
+  for the within-revision identity checks (Memo's `==` is now a digest test).
+
+Scope: the *signature-firewall* half of salsa structural backdating. Still
+conservative (open, ledgered): token-stream/`lex`/`parse`/whole-file backdating,
+and the end-state per-item `fn_signature` queries (multifile milestone).
+
+Verified: `cargo test -p eye-database` 10/0 (+2 firewall, both directions);
+full workspace green (e2e 71, hir 74, all suites 0-fail), corpus `--check` sweep
+44/2-XFAIL (0 new rejections through the changed `hir_diagnostics` path),
+strict-C 42/42, clippy clean. The firewall changes only *when* queries re-run,
+not their values, so codegen output is unchanged (e2e confirms).
+
+### 2026-06-16: S3 complete - F1/F2/F3, L4, cast lattice, U2/U4
+
+The remaining S3 judgments, closing the segment (only M2b stays open, ratified
+as deferred until a corpus program needs the strict-width ruling). New error
+codes T40-T43 and C13; CAST.md added for the lattice ruling.
+
+- **F2** `NegationOnUnsigned`/T40 - unary `-` on an unsigned value (wraps in C)
+  rejected; `~` stays legal (Rust parity); negated literals exempt. Unary arm.
+- **F3** float-literal width adoption - `adopt_float_literal` in `site_coerce`,
+  the float analogue of `adopt_int_literal`. No new rejection (a stamp); tested
+  observably through L4 not false-flagging a `[float32; N]` literal.
+- **F1** `IfBranchTypeMismatch`/T41 - value-position `if` branch consistency,
+  the `if` analogue of `check_match_arm_consistency`. `discarded_set` factored
+  out of the assignment check and shared (statement/discarded `if` stays legal).
+- **L4** `ArrayElementTypeMismatch`/T42 - per-element value judgment in
+  `coerce_array_literal`, the same `site_assignable` as arg/field. Surfaced the
+  string->char* decay gap (lang.eye `[char*; 24]`); recorded as a follow-up.
+- **cast lattice** `CastNotAllowed`/T43 - `as` no longer any-to-any
+  (`cast_allowed`/`cast_class`, CAST.md), built to the ratified directional
+  ruling: numeric<->numeric, pointer<->pointer, integer<->pointer, and the
+  tagged scalars (`char`/`bool`/`enum`) widen OUT to an integer only. `_ -> bool`
+  / `_ -> char` / `int -> enum` / float<->pointer / aggregate / fn reject;
+  `Unknown` stays lenient. Corpus uses none of the rejected pairs (the two
+  `as char` are `as char*`).
+- **U2** `ConstValueOutOfRange`/C13 - const/global folded integer range-checked
+  against the declared type (`const_eval::check_const_range`).
+- **U4** `apply_cast` reproduces the C cast (`wrap_int`): an integer target
+  truncates to its width, so a folded const equals its runtime value and
+  composes with U2 (explicit `as` = blessed truncation).
+
+Verified: `cargo test -p eye-typeck` 64/0 (8 new); corpus `--check` sweep 44
+programs, 2 rejects (lang.eye + linkedlist.eye, the pre-existing XFAILs) - zero
+new program rejections. Full workspace gate (U4 changes folded const values, so
+codegen-affecting): workspace green (e2e 71, hir 74, judgments 64, all suites
+0-fail), strict-C 42/42, clippy clean. The cast lattice was first built
+symmetric, then tightened to the ratified directional ruling after confirming
+the corpus uses none of the now-rejected pairs (re-verified: e2e still 71/0).
+
+### 2026-06-16: S3 first judgments - call-argument + struct-field type checks
+
+The S3 judgment pass's first two customers, unblocked by the C5 shadow-oracle
+retirement (the oracle required walker types to mirror lowering's; with it gone,
+the walker can reject). Both were headline typeck-scope holes: swapped/wrong-type
+call arguments reached clang (only arity, T026, was checked) and `P { x: "hi" }`
+with `int32 x` converted silently (only missing/unknown fields were caught).
+**Verified: workspace 362/0, strict-C 42/42, grammar parity green; zero new
+corpus rejections (driver `--check` over all 44 `.eye`: only lang.eye +
+linkedlist.eye reject, both pre-existing XFAILs - the float-heavy
+montecarlopi/statistics/raytracer all still compile).**
+
+- `hir/errors.rs`: `TypeError::ArgTypeMismatch { index, expected, found }` (T37)
+  + `StructFieldTypeMismatch { field, expected, found }` (T38) - variants,
+  Display, Code.
+- `typeck/infer.rs`: `site_assignable(expected, found, types)` - the
+  coercion-site acceptance predicate. Accepts an equal/integer-family-compatible
+  type, the `&[T; N] -> &T` / `string` decay, and any pointer-shaped value
+  widening into the untyped `ptr` (the FFI escape). Wired into `infer_call`'s
+  defined-fn arm (per argument, after `site_coerce`) and the `StructLit` arm
+  (per field). Variadic-extra args (no parameter) and the `println`/intrinsic
+  Unresolved arm stay unchecked.
+- Lenient on int-family (defers the M2b strict-width rule) and pointer->`ptr`,
+  matching every other coercion site, so the blast radius is bounded to genuine
+  cross-family mismatches.
+- `typeck/tests/judgments.rs`: 3 tests (arg mismatch incl. two-wrong-args, arg
+  correct + `&[T;N]` decay + ptr-escape clean, struct-field mismatch).
+
+### 2026-06-16: S3 assignment-non-value
+
+The ruled assignment-non-value judgment (`AssignInValuePosition`, T39): a
+value-position `x = y` / `x += y` - a `let` initializer, an argument, a
+condition, an operand, a value-producing branch tail - is rejected (`if x = y`
+is the canonical `==` typo footgun). Statement position and discarded (void)
+tails stay legal. **Verified lean (a pure new diagnostic): `cargo test -p
+eye-typeck` judgments 56/0, driver `--check` sweep over all 44 `.eye` rejects
+only lang.eye + linkedlist.eye (the pre-existing XFAILs) - zero new rejections.**
+
+- `typeck/infer.rs`: post-walk `check_value_position_assignments` +
+  `mark_discarded`. The discarded set is seeded from the statement arena (every
+  `Stmt::Expr` discards its expr, nested blocks included) plus a void fn's body
+  tail, then propagated through the tails of discarded `if`/`block`/`match`
+  expressions - so an `if c { x = 1 } else { y = 2 }` *statement* keeps its
+  branch-tail assignments legal while the same shape as a `let` initializer is
+  rejected. The Assign arm drops its `PARITY(S3)` marker (still types as the rhs,
+  unused for a rejected program).
+- `typeck/tests/judgments.rs`: 2 tests (value-position let-init reject;
+  statement-position bare/compound/if-statement-branch-tail clean).
+
+Remaining S3: the cast lattice, M2b strict-width, F1 value-`if` / F2
+unary-unsigned / F3 float-literal, L4 cross-element, U2/U4 const-eval range/cast.
+
+### 2026-06-16: EXPERIMENTAL tag audit + cleanup
+
+Repo-wide audit of `EXPERIMENTAL` markers; removed stale/junk, kept genuinely
+provisional (all comment/doc-comment-only, no semantic change). Removed: 7
+`vamous` junk markers (parser sync-sets + typeck ICE comments - settled code);
+7 LSP module `//! EXPERIMENTAL` headers (the salsa-backed LSP shipped); A2
+`place_type` memoization ratified (`DONE (EXPERIMENTAL)` -> `DONE`, kept the
+`A2:` cross-ref). Demoted to plain doc-comments (shipped + load-bearing, not
+trials): the typed-arena infra (hir + mir, 8 sites) and the StringTable /
+query-pipeline trait (lexer + syntax + hir, 7 sites; the stability caveat
+reworded "provisional"). Kept: U1 (untested, ledger-tracked), the
+destructure-test caveat (accurate for the live S3-S5 work), the guard notes
+(complex-guard redesign still open), MEM.md (in-progress design). `VFS.md`'s
+`features = ["experimental"]` is a cargo feature name, not our tag.
+
+### 2026-06-16: dev build profile - cranelift dropped, native knobs
+
+The cranelift codegen backend cannot emit the `__mod_init_func` static-init
+section salsa's macros generate on macOS, so it failed `eye-database` and every
+downstream crate. Reverted; the dev profile now uses stable-toolchain-safe
+knobs: `codegen-units = 256`, `debug = 1`, and `split-debuginfo = "unpacked"`
+(skips the slow macOS `dsymutil` pack step). No backend swap, nothing for
+salsa's macros to trip over.
 
 ### 2026-06-15 (later): D - `typeck_fn` per-fn salsa query (LSP hover deferred)
 
@@ -507,9 +686,13 @@ independent of all). None is small - each is a multi-part change.
   above): the `typeck_fn` query + `hir_diagnostics` per-fn type-diag wiring.
   REMAINING (deferred to the LSP-latency push, per the user): (1) the **LSP hover**
   handler (none exists - add one in crates/lsp reading `TypeckResults.expr_types`
-  with a position->ExprId mapping); (2) decouple effect diagnostics from the
-  codegen `lowered_file` (a per-fn effect-atom query feeding a cheap fixpoint
-  query) so the diagnostics path is fully per-fn incremental.
+  with a position->ExprId mapping). On an **expression** hover show its type; on a
+  **function-name** hover show the inferred **effect set** from the `EffectMap`
+  (e.g. `io`, `ffi`, `state`, or `pure`) alongside the signature - effects are
+  inferred and otherwise invisible, so hover is their primary surfacing. (2)
+  decouple effect diagnostics from the codegen `lowered_file` (a per-fn
+  effect-atom query feeding a cheap fixpoint query) so the diagnostics path is
+  fully per-fn incremental.
 
 ### 2026-06-12 (evening): typeck + effects design ratified - sealed-body inference
 

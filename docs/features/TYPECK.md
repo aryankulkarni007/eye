@@ -1,9 +1,11 @@
 # TYPECK: sealed-body type inference
 
-Status: BUILD IN PROGRESS. Ratified 2026-06-12. S0-S1 built, S2 in progress
-(step B/C cutover), S3-S6 designed but not built. This document is the
-engineering design and the ratified inference strategy; status sigils track
-what exists in the working tree. [EFFECT.md](EFFECT.md) designs the second
+Status: BUILD IN PROGRESS. Ratified 2026-06-12. S0-S2 built (cutover C1-C5
+complete), S3 complete 2026-06-16 (judgments; only M2b strict-width deferred,
+ratified). S4 effects built. S5 firewall + S6 parallel wave + S7 row-poly
+effects designed, not built. This document is the engineering design and the
+ratified inference strategy; status sigils track what exists in the working
+tree. The cast lattice ruling lives in [CAST.md](CAST.md). [EFFECT.md](EFFECT.md) designs the second
 lattice on the same machine. [PARALLEL.md](../design/PARALLEL.md) records the
 parallelism substrate this strategy is built for.
 
@@ -316,17 +318,23 @@ body with the shared interner (same reasoning as `lowered_file`). `c_code`
 and the driver gate on typeck diagnostics exactly as they gate on lowering
 diagnostics today. `hir_diagnostics` grows the typeck sink.
 
-**The firewall** (ratified in-build, 2026-06-12): today `Memo`'s
-`Arc::ptr_eq` means no query ever backdates, so any edit re-runs everything
-downstream of `item_scope`. For keystroke-flat latency the signature data
-gains structural equality:
+**The firewall**: before it, `Memo`'s `Arc::ptr_eq` meant no query ever
+backdated, so any edit re-ran everything downstream of `item_scope`. For
+keystroke-flat latency the signature data gains structural equality:
 
-1. First step (segment S5): structural `PartialEq` on the signature portion
-   of `FileScope`, so a body edit that leaves signatures unchanged backdates
-   `item_scope` and every other body's `typeck_fn` is a cache hit. Keystroke
-   cost becomes: reparse one file + recheck one body + the effect fixpoint -
-   flat in project size.
-2. End state (with the multifile milestone): per-item signature queries
+1. + First step (segment S5) BUILT 2026-06-16. `Memo`'s blanket `Arc::ptr_eq`
+   `PartialEq` became a `MemoEq` trait (default conservative-false, the old
+   behavior), overridden for the two firewall results by a **content digest**
+   (not a deep `PartialEq` - correct-by-construction since lowering is
+   deterministic and `Text` is an owned `SmolStr`, no interner-id drift):
+   - `FileScope.sig_digest` - a hash of every item with fn *bodies* excluded; a
+     body-only edit leaves it equal, so `item_scope` backdates.
+   - `LoweredFn.digest` - this body's text combined with `sig_digest`; a sibling
+     body edit re-runs `lower_fn` but it backdates, so the sibling `typeck_fn`
+     cache-hits. Keystroke cost becomes: reparse one file + recheck one body +
+     the effect fixpoint - flat in project size. Verified both directions
+     (`body_edit_backdates_the_sibling_typeck`, `signature_edit_reruns_every_body`).
+2. - End state (with the multifile milestone): per-item signature queries
    (`fn_signature(StableFnId) -> Signature`, derived `Eq`), so salsa's
    read-tracking gives caller-precise invalidation automatically.
 

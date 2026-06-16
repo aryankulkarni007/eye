@@ -410,6 +410,7 @@ dependencies = [
  "eye-codegen",
  "eye-database",
  "eye-diagnostics",
+ "eye-effect",
  "eye-hir",
  "eye-lexer",
  "eye-mir",

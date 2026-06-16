@@ -11,9 +11,16 @@ Benchmarked 2026-06-11 on Apple M3 (macOS), `cargo bench --bench compile`.
 | Lex | 0.50 µs | 3.84 µs | 6.7% |
 | Parse | 1.79 µs | 19.96 µs | 35.1% |
 | HIR lower | 2.32 µs | 23.12 µs | 40.6% |
-| MIR lower | — | 0.45 µs | 0.8% |
-| Codegen + overhead | ~1.5 µs | ~9.5 µs | 16.8% |
-| **Full pipeline** | **6.12 µs** | **56.9 µs** | **100%** |
+| Typeck (incl. HIR lower) | ~2.5 µs | ~25 µs | ~44% |
+| Effect (fused, incl. HIR lower) | ~2.5 µs | ~25 µs | ~44% |
+| MIR lower (all fns) | — | <1 µs | <1% |
+| Codegen | — | ~1 µs | ~2% |
+| **Full pipeline (effect path)** | **~6.5 µs** | **~57 µs** | **100%** |
+
+Note: `typeck` and `effect` groups include HIR lowering (HIR is not `Clone`); isolate
+each stage's marginal cost by subtracting the `hir-lower` measurement. `effect`
+benchmarks the fused `effect::infer_file` path used in the salsa database's
+`lowered_file` query (the production path).
 
 All measurements from Criterion, 30 samples (20 for full-pipeline), output in `target/release/`. Criterion reports statistical noise within ±5%.
 
@@ -29,9 +36,13 @@ There are no non-linear algorithmic bottlenecks visible at this scale. The compi
 
 ---
 
-## 3. Flamegraph Analysis (73 samples, 6 MB concatenated stress input)
+## 3. Flamegraph Analysis
 
-Compiled `release` profile on a stress file (all `eyesrc/` files ×100, ~6 MB). The concatenation produces a syntactically-invalid file, so only the lexer and parser execute — HIR and later stages are never reached. Despite that, the lexer/parser data is valid and informative.
+Profile with `cargo xtask flamegraph --iterations 500` which generates a
+*syntactically valid* stress program (500 unique function definitions, ~22 KiB)
+exercising every pipeline stage: lex, parse, HIR lower, typeck, effect, MIR, and
+codegen. The `flamebench` binary (`cargo flamegraph --bin flamebench`)
+removes CLI-parsing noise from the profile.
 
 ### CPU distribution within `eye::compile_file`:
 
@@ -123,6 +134,26 @@ The rowan green tree accounts for ~60% of parse time. This is by design — Eye 
 
 ### Allocator
 mimalloc is the global allocator. The flamegraph shows ~4% total time in mimalloc routines (mi_free, mi_page_queue_find_free_ex, mi_page_free_list_extend), which is an efficient baseline.
+
+---
+
+## 8. Running Benchmarks & Profiles
+
+All pipeline stages are covered by Criterion benchmarks:
+
+| Command | What it runs |
+|---------|-------------|
+| `cargo xtask bench` | All groups (lex, parse, hir-lower, typeck, effect, mir-lower, codegen, full-pipeline) |
+| `cargo xtask bench -- lex` | Only the `lex` group |
+| `cargo xtask bench -- typeck` | Only the `typeck` group |
+| `cargo xtask flamegraph` | Valid stress program with 100 functions |
+| `cargo xtask flamegraph --iterations 1000` | Valid stress with 1000 functions |
+
+`cargo xtask flamegraph` generates a valid `.eye` program (chain of unique
+functions calling each other, struct construction, casts, if-else) and profiles
+through the `flamebench` binary (no CLI overhead). The old `profile_batch.sh`
+has been replaced — it concatenated files, producing an invalid program that
+never reached HIR+MIR+codegen.
 
 ---
 

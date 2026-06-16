@@ -31,7 +31,7 @@ use super::scopes::{Binding, Scopes};
 use super::types::parse_int_literal;
 use crate::core::{
     ConstError, ConstId, ConstValue, GlobalId, HIR, HirError, LocalConst, LocalConstId, Text,
-    TypedArena,
+    TypeKind, TypedArena,
 };
 
 /// a lookup of const values by name. the top-level pass uses the finished
@@ -95,9 +95,19 @@ pub(super) fn eval_consts(
         visiting: FxHashSet::with_capacity_and_hasher(8, FxBuildHasher),
         diagnostics: Sink::new(),
     };
-    for (id, _) in const_asts {
+    for (id, c) in const_asts {
         let name = hir.consts[*id].name.clone();
         let value = ev.eval_name(&name);
+        // U2: the folded value must fit the declared integer type. the type
+        // name is read out first so the immutable `hir.types` borrow ends
+        // before the value write below.
+        let ty_name = int_type_name(hir.consts[*id].ty, &hir.types);
+        check_const_range(
+            value.as_ref(),
+            ty_name.as_deref(),
+            c.value().as_ref(),
+            &mut ev.diagnostics,
+        );
         hir.consts[*id].value = value;
     }
 
@@ -124,9 +134,19 @@ pub(super) fn eval_globals(
 ) {
     let mut diagnostics = Sink::new();
     for (id, g) in global_asts {
-        let value = g
-            .value()
-            .and_then(|expr| fold_with_map(&expr, const_values, &mut diagnostics));
+        let expr = g.value();
+        let value = expr
+            .as_ref()
+            .and_then(|expr| fold_with_map(expr, const_values, &mut diagnostics));
+        // U2: a global initializer's folded value must fit its declared
+        // integer type, the same check the const folder runs.
+        let ty_name = int_type_name(hir.globals[*id].ty, &hir.types);
+        check_const_range(
+            value.as_ref(),
+            ty_name.as_deref(),
+            expr.as_ref(),
+            &mut diagnostics,
+        );
         hir.globals[*id].value = value;
     }
     hir.diagnostics.extend(diagnostics);
@@ -380,18 +400,92 @@ fn is_int_type(name: &str) -> bool {
     )
 }
 
-/// fold a numeric `as` cast between scalar kinds. only int<->float conversions
-/// reshape the value; every other target keeps it (a same-kind or unknown cast
-/// is a no-op fold). this mirrors c cast semantics for the scalar floor.
-// U4: int->float overflow to inf, float->int truncation, char/bool->int
-// signedness not range-checked. type inference surgery will add checks.
+/// fold a numeric `as` cast between scalar kinds, reproducing the C cast the
+/// backend would emit so a folded const equals its runtime value (U4). an
+/// integer *target* truncates the value to that type's width (two's-complement
+/// for signed, modulo for unsigned), so `200 as int8` folds to `-56`, not the
+/// out-of-range `200` the old no-op left behind. int->float widens to `f64`; a
+/// same-kind or pointer/unknown target keeps the value.
 fn apply_cast(value: ConstValue, target: Option<&str>) -> ConstValue {
-    match (target, &value) {
-        (Some(t), ConstValue::Int(v)) if is_float_type(t) => ConstValue::Float(*v as f64),
-        (Some(t), ConstValue::Float(f)) if is_int_type(t) => ConstValue::Int(*f as i128),
-        (Some(t), ConstValue::Char(c)) if is_int_type(t) => ConstValue::Int(*c as i128),
-        (Some(t), ConstValue::Bool(b)) if is_int_type(t) => ConstValue::Int(*b as i128),
+    let Some(t) = target else { return value };
+    match &value {
+        ConstValue::Int(v) if is_float_type(t) => ConstValue::Float(*v as f64),
+        ConstValue::Int(v) if is_int_type(t) => ConstValue::Int(wrap_int(*v, t)),
+        ConstValue::Float(f) if is_int_type(t) => ConstValue::Int(wrap_int(*f as i128, t)),
+        ConstValue::Char(c) if is_int_type(t) => ConstValue::Int(wrap_int(*c as i128, t)),
+        ConstValue::Bool(b) if is_int_type(t) => ConstValue::Int(wrap_int(*b as i128, t)),
         _ => value,
+    }
+}
+
+/// truncate an `i128` to the named integer type's width, exactly as a C cast
+/// to that type would (the `as`-cast escape's wrapping semantics). LP64 widths
+/// for `usize`/`isize`. an unknown name leaves the value unchanged.
+fn wrap_int(v: i128, name: &str) -> i128 {
+    match name {
+        "int8" => v as i8 as i128,
+        "int16" => v as i16 as i128,
+        "int32" => v as i32 as i128,
+        "int64" | "isize" => v as i64 as i128,
+        "uint8" => v as u8 as i128,
+        "uint16" => v as u16 as i128,
+        "uint32" => v as u32 as i128,
+        "uint64" | "usize" => v as u64 as i128,
+        _ => v,
+    }
+}
+
+/// the inclusive `(min, max)` value range of a named integer type, or `None`
+/// for a non-integer name. LP64 widths. drives the U2 const-value range check.
+fn int_range(name: &str) -> Option<(i128, i128)> {
+    Some(match name {
+        "int8" => (i8::MIN as i128, i8::MAX as i128),
+        "int16" => (i16::MIN as i128, i16::MAX as i128),
+        "int32" => (i32::MIN as i128, i32::MAX as i128),
+        "int64" | "isize" => (i64::MIN as i128, i64::MAX as i128),
+        "uint8" => (0, u8::MAX as i128),
+        "uint16" => (0, u16::MAX as i128),
+        "uint32" => (0, u32::MAX as i128),
+        "uint64" | "usize" => (0, u64::MAX as i128),
+        _ => return None,
+    })
+}
+
+/// U2 range check: emit [`ConstError::ConstValueOutOfRange`] when a folded
+/// integer value does not fit its declared integer type. only an integer value
+/// against an integer type with a known anchor is checked; everything else is a
+/// no-op. shared by the const and global folders.
+fn check_const_range(
+    value: Option<&ConstValue>,
+    ty_name: Option<&str>,
+    anchor: Option<&ast::Expr>,
+    diagnostics: &mut Sink<HirError>,
+) {
+    let (Some(ConstValue::Int(v)), Some(name), Some(expr)) = (value, ty_name, anchor) else {
+        return;
+    };
+    let Some((min, max)) = int_range(name) else {
+        return;
+    };
+    if *v < min || *v > max {
+        diagnostics.emit(
+            SyntaxNodePtr::new(expr.syntax()),
+            HirError::Const(ConstError::ConstValueOutOfRange {
+                value: v.to_string(),
+                ty: Text::from(name),
+                min: min.to_string(),
+                max: max.to_string(),
+            }),
+        );
+    }
+}
+
+/// the declared integer-type name of a `TypeRef`, or `None` when it is not a
+/// bare integer-type path (the only case the U2 range check applies to).
+fn int_type_name(ty: crate::core::TypeRef, types: &crate::core::TypeInterner) -> Option<Text> {
+    match types.lookup(ty) {
+        TypeKind::Path(n) if int_range(n).is_some() => Some(n.clone()),
+        _ => None,
     }
 }
 

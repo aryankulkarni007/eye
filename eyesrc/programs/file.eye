@@ -1,9 +1,4 @@
---*
-  * read a file and print its contents using libc i/o
-  * exercises the c seam: an opaque ffi type (type FILE;), a variadic
-  * extern (`printf`), and `file*`-typed signatures - the extern block is
-  * the sole prototype (no auto-included header).
---*
+--> my typa self-file read quine
 
 extern {
     type FILE;
@@ -11,32 +6,48 @@ extern {
     perror(string fmt);
     fopen(string path, string mode) -> FILE*;
     fclose(FILE* f) -> int32;
-    fgets(ptr buf, int32 n, FILE* f) -> ptr;
     calloc(usize count, usize size) -> ptr;
     free(ptr p);
-    exit(int32 status);
+
+    fseek(FILE* f, int64 offset, int32 whence) -> int32;
+    ftell(FILE* f) -> usize;
+    rewind(FILE* f);
+    fread(ptr buffer, usize size, usize count, FILE* f) -> usize;
 }
 
+const ptr NULL = 0 as ptr;
+const int32 SEEK_END = 2;
+
 main() {
-    mut FILE* file = fopen("eyesrc/programs/file.eye", "r");
-    if file == (0 as FILE*) {
+    let FILE* file = fopen("eyesrc/programs/file.eye", "rb");
+    if file == NULL {
         perror("fopen error");
-        exit(1);
+        return;
     }
 
-    mut ptr buf = calloc(256, 1);
-    if buf == (0 as ptr) {
+    fseek(file, 0, SEEK_END);
+    let usize buffer_size = ftell(file);
+    rewind(file);
+
+
+    mut char* buf = calloc(buffer_size, 1) as char*;
+    if buf == NULL {
         perror("calloc error");
         fclose(file);
-        exit(1);
+        return;
     }
 
-    mut ptr line = fgets(buf, 255, file);
-    loop {
-        if line == (0 as ptr) { break; }
-        printf("%s", buf as string);
-        line = fgets(buf, 255, file);
+    let usize bytes_read = fread(buf, 1, buffer_size, file);
+    if bytes_read != buffer_size {
+        println("fread error");
+        fclose(file);
+        free(buf);
+        return;
     }
+
+    buf[buffer_size] = '\0';
+
+    printf("%s", buf);
 
     fclose(file);
     free(buf);

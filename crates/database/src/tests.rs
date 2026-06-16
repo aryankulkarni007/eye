@@ -1,6 +1,8 @@
 //! database wiring tests: memoization within a revision, invalidation across
 //! revisions, and agreement between the per-fn and whole-file paths.
 
+use std::sync::Arc;
+
 use salsa::Setter as _;
 
 use crate::*;
@@ -36,8 +38,11 @@ fn queries_are_memoized_within_a_revision() {
     assert!(database_eq(&c_code(&db, input), &c_code(&db, input)));
 }
 
+/// true identity (the *same* cached `Arc`), for the within-revision
+/// memoization checks. distinct from `Memo`'s `PartialEq`, which is now a
+/// content-digest backdating test ([`MemoEq`]), not pointer identity.
 fn database_eq<T>(a: &Memo<T>, b: &Memo<T>) -> bool {
-    a == b
+    Arc::ptr_eq(&a.0, &b.0)
 }
 
 #[test]
@@ -81,8 +86,8 @@ fn per_fn_path_agrees_with_whole_file_path() {
     for &(_, ptr) in &scope.fns {
         let fn_id = StableFnId::new(&db, input, ptr);
         let lowered = lower_fn(&db, fn_id);
-        assert!(lowered.diagnostics.is_empty());
-        assert!(!lowered.body.exprs.is_empty());
+        assert!(lowered.lowered.diagnostics.is_empty());
+        assert!(!lowered.lowered.body.exprs.is_empty());
     }
 }
 
@@ -130,7 +135,7 @@ fn per_fn_diagnostics_localize_to_the_broken_body() {
     let mut per_fn: Vec<usize> = Vec::new();
     for &(_, ptr) in &scope.fns {
         let fn_id = StableFnId::new(&db, input, ptr);
-        per_fn.push(lower_fn(&db, fn_id).diagnostics.len());
+        per_fn.push(lower_fn(&db, fn_id).lowered.diagnostics.len());
     }
     assert_eq!(per_fn, vec![0, 1], "only `bad` carries a diagnostic");
 }
@@ -149,7 +154,7 @@ fn typeck_fn_localizes_type_diagnostics() {
         .map(|&(_, ptr)| {
             let fn_id = StableFnId::new(&db, input, ptr);
             // the error is type-only: lowering each body is clean.
-            assert!(lower_fn(&db, fn_id).diagnostics.is_empty());
+            assert!(lower_fn(&db, fn_id).lowered.diagnostics.is_empty());
             typeck_fn(&db, fn_id).diagnostics.len()
         })
         .collect();
@@ -159,5 +164,84 @@ fn typeck_fn_localizes_type_diagnostics() {
             .into_iter()
             .any(|(_, e)| matches!(e, hir::core::HirError::Type(_))),
         "the return-type mismatch must reach the file diagnostics via typeck_fn"
+    );
+}
+
+// --- the signature firewall (S5) ---
+
+const TWO_FNS: &str = "\
+alpha() -> int32 {
+    1
+}
+
+beta() -> int32 {
+    2
+}
+";
+
+/// editing one body must not re-run the *sibling* body's type check: with the
+/// signature firewall, `item_scope` backdates (no signature moved) and the
+/// unedited body's `lower_fn` backdates, so its `typeck_fn` is a cache hit -
+/// observable as the *same* stored `Arc` across the revision. without the
+/// firewall every body re-checks on every keystroke.
+#[test]
+fn body_edit_backdates_the_sibling_typeck() {
+    let mut db = Database::default();
+    let input = file(&db, TWO_FNS);
+
+    // alpha is first, so editing beta's (later) body leaves alpha's node range -
+    // and thus its StableFnId - identical across the edit.
+    let alpha_ptr = item_scope(&db, input).fns[0].1;
+    let alpha0 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr)).0.clone();
+
+    // edit only beta's body; every signature is untouched.
+    input
+        .set_text(&mut db)
+        .to(TWO_FNS.replace("    2", "    2 + 2"));
+
+    let alpha1 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr)).0.clone();
+    assert!(
+        Arc::ptr_eq(&alpha0, &alpha1),
+        "alpha's typeck_fn must cache-hit when only beta's body changed"
+    );
+
+    // and beta itself genuinely re-checked (its node moved, so a fresh key/value).
+    let beta_ptr = item_scope(&db, input).fns[1].1;
+    assert!(
+        typeck_fn(&db, StableFnId::new(&db, input, beta_ptr))
+            .diagnostics
+            .is_empty(),
+        "beta still type-checks clean after the edit"
+    );
+}
+
+const FN_THEN_CONST: &str = "\
+alpha() -> int32 {
+    5
+}
+
+const int32 K = 10;
+";
+
+/// the firewall must not go stale: editing a *signature*-level item (here a
+/// const initializer) changes the signature digest, so `item_scope` does not
+/// backdate and every body re-runs - even one whose own text did not move.
+/// alpha is before the const, so its node range/StableFnId is stable and the
+/// re-run is observable as a *new* `Arc`.
+#[test]
+fn signature_edit_reruns_every_body() {
+    let mut db = Database::default();
+    let input = file(&db, FN_THEN_CONST);
+
+    let alpha_ptr = item_scope(&db, input).fns[0].1;
+    let alpha0 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr)).0.clone();
+
+    // edit the const's value; alpha's node range is unchanged (const is later).
+    input.set_text(&mut db).to(FN_THEN_CONST.replace("= 10", "= 20"));
+
+    let alpha1 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr)).0.clone();
+    assert!(
+        !Arc::ptr_eq(&alpha0, &alpha1),
+        "a signature/const edit must re-run every body's typeck (no stale skip)"
     );
 }

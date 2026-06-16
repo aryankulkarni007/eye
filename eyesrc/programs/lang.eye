@@ -45,9 +45,12 @@ extern {
 -- same as above (evaluated away by the compiler)
 const ptr NULL = (0 as ptr);
 
--- FIXME: we need type checking
--- (`off off` - an undeclared field type - is now caught, R012; field/arg
--- VALUE types are still unchecked, see ledger.md typeck scope)
+-- FIXME: type checking is partial here - `off off` (an undeclared field type)
+-- is caught (R012); struct-field + call-argument VALUE types (T37/T38), the
+-- cast lattice (T43), and array-element types (T42) are now checked too. still
+-- open: tail-expression type enforcement (onset_head below). the `[char*; 24]`
+-- below now errors per element (string literals are &[uint8;N], no char* decay
+-- yet - see ledger.md "string literal -> char* decay").
 structure Arena {
     uint8* buffer,
     usize cap,

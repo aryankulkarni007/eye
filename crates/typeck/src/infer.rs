@@ -64,8 +64,152 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         self.enforce_return_type();
         self.check_int_literal_ranges();
         self.check_match_arm_consistency();
+        self.check_if_branch_consistency();
         self.check_matches();
+        self.check_value_position_assignments();
         self.results
+    }
+
+    /// assignment-non-value judgment (S3): an `Expr::Assign` is legal only in
+    /// statement position (the direct expr of a `Stmt::Expr`, anywhere in the
+    /// body) or as a discarded tail (a void function's body tail, or a tail
+    /// reached from one). every other assignment - a `let` initializer, an
+    /// argument, a condition, an operand, a value-producing branch tail - is in
+    /// value position and rejected (`if x = y` is the canonical footgun). the
+    /// discarded set is seeded from the statement arena and propagated through
+    /// the tails of discarded `if`/`block`/`match` expressions; an assignment
+    /// not in it is a value-position use.
+    fn check_value_position_assignments(&mut self) {
+        let assigns: Vec<ExprId> = self
+            .body
+            .exprs
+            .iter()
+            .filter_map(|(id, e)| matches!(e, Expr::Assign { .. }).then_some(id))
+            .collect();
+        if assigns.is_empty() {
+            return;
+        }
+        let discarded = self.discarded_set();
+        for a in assigns {
+            if !discarded.contains(&a) {
+                self.emit_at(a, None, hir::core::TypeError::AssignInValuePosition);
+            }
+        }
+    }
+
+    /// the set of expressions whose value is discarded - statement position
+    /// (a `Stmt::Expr` anywhere in the body, nested blocks included) plus a
+    /// void function's body tail, propagated through the tails of discarded
+    /// `if`/`block`/`match` expressions. an expression *not* in this set is in
+    /// value position. shared by the assignment-non-value (S3) and value-`if`
+    /// branch-consistency (F1) judgments.
+    fn discarded_set(&self) -> rustc_hash::FxHashSet<ExprId> {
+        let mut discarded: rustc_hash::FxHashSet<ExprId> = rustc_hash::FxHashSet::default();
+        for (_, stmt) in self.body.stmts.iter() {
+            if let Stmt::Expr(e) = stmt {
+                self.mark_discarded(*e, &mut discarded);
+            }
+        }
+        if self.fn_ret.is_none()
+            && let Some(tail) = self.body.tail
+        {
+            self.mark_discarded(tail, &mut discarded);
+        }
+        discarded
+    }
+
+    /// value-position `if` branch-type consistency (F1, S3). a value-position
+    /// `if` (one not in `discarded_set`) with both branches present and typed
+    /// must have `types_compatible` branch types - the `if` analogue of
+    /// `check_match_arm_consistency`. `let int32 x = if c { 1 } else { true }`
+    /// was accepted (it typed as the `then` branch, the `else` converting
+    /// silently in C); now rejected. a statement-position or discarded `if`
+    /// runs its branches for effect, so a type difference there stays legal.
+    fn check_if_branch_consistency(&mut self) {
+        let ifs: Vec<(ExprId, BlockId, BlockId)> = self
+            .body
+            .exprs
+            .iter()
+            .filter_map(|(id, e)| match e {
+                Expr::If {
+                    then_branch,
+                    else_branch: Some(eb),
+                    ..
+                } => Some((id, *then_branch, *eb)),
+                _ => None,
+            })
+            .collect();
+        if ifs.is_empty() {
+            return;
+        }
+        let discarded = self.discarded_set();
+        // collect first (immutable interner reads), then emit, so the borrow
+        // does not overlap `emit_at`'s `&mut self` (same pattern as the match
+        // consistency check).
+        let mut mismatches: Vec<(ExprId, String, String)> = Vec::new();
+        for (id, then_b, else_b) in ifs {
+            if discarded.contains(&id) {
+                continue;
+            }
+            let (Some(tt), Some(et)) = (self.block_type(then_b), self.block_type(else_b)) else {
+                continue;
+            };
+            if !types_compatible(tt, et, self.types) {
+                let expected = self.types.display(tt).to_string();
+                let found = self.types.display(et).to_string();
+                mismatches.push((id, expected, found));
+            }
+        }
+        for (id, expected, found) in mismatches {
+            self.emit_at(
+                id,
+                None,
+                hir::core::TypeError::IfBranchTypeMismatch { expected, found },
+            );
+        }
+    }
+
+    /// a block's value type: the recorded type of its tail expression, or
+    /// `None` for a tail-less (statement-only) block.
+    fn block_type(&self, id: BlockId) -> Option<TypeRef> {
+        self.body.blocks[id].tail.and_then(|t| self.ty_of(t))
+    }
+
+    /// mark `e` and the tails it discards as value-discarded positions. a
+    /// discarded `if`/`block`/`match` discards each of its branch/tail
+    /// sub-expressions in turn (so an `if c { x = 1 } else { y = 2 }` *statement*
+    /// keeps its branch-tail assignments legal). read-only; fills `set`.
+    fn mark_discarded(&self, e: ExprId, set: &mut rustc_hash::FxHashSet<ExprId>) {
+        if !set.insert(e) {
+            return;
+        }
+        match &self.body.exprs[e] {
+            Expr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                if let Some(t) = self.body.blocks[*then_branch].tail {
+                    self.mark_discarded(t, set);
+                }
+                if let Some(eb) = else_branch
+                    && let Some(t) = self.body.blocks[*eb].tail
+                {
+                    self.mark_discarded(t, set);
+                }
+            }
+            Expr::Block(b) => {
+                if let Some(t) = self.body.blocks[*b].tail {
+                    self.mark_discarded(t, set);
+                }
+            }
+            Expr::Match { arms, .. } => {
+                for arm in arms {
+                    self.mark_discarded(arm.body, set);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// value-position match-arm result-type consistency (moved from lowering,
@@ -789,6 +933,22 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                         },
                     );
                 }
+                // F2 (S3): unary `-` on an unsigned integer wraps modulo 2^N in
+                // C; reject it (Rust parity). `~` stays legal (well-defined
+                // complement). a negated literal is exempt - it is a single
+                // signed constant the range sweep already bounds, not a runtime
+                // negation of an unsigned value.
+                if matches!(op, UnaryOp::Neg)
+                    && !matches!(self.body.exprs[operand], Expr::Literal(Literal::Int(_)))
+                    && let Some(ty) = self.ty_of(operand)
+                    && let Some(name) = unsigned_int_name(ty, self.types)
+                {
+                    self.emit_at(
+                        id,
+                        None,
+                        hir::core::TypeError::NegationOnUnsigned { ty: name },
+                    );
+                }
                 match op {
                     UnaryOp::Not => Some(self.types.intern(TypeKind::Path(Text::from("bool")))),
                     UnaryOp::Neg | UnaryOp::BitNot => self.ty_of(operand),
@@ -896,8 +1056,11 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 let (lhs, rhs) = (*lhs, *rhs);
                 self.infer_expr(lhs);
                 self.infer_expr(rhs);
-                // PARITY(S3): assignment types as its RHS; ruled non-value,
-                // fixed after cutover.
+                // assignment is ruled non-value (S3); a value-position use is
+                // rejected post-walk by `check_value_position_assignments`. the
+                // synthesized type is the rhs's - unused either way (a
+                // statement-position assign is discarded, a value-position one
+                // is a rejected program), but kept so the walker stays total.
                 self.ty_of(rhs)
             }
             Expr::If {
@@ -959,6 +1122,25 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             Expr::Cast { operand, ty } => {
                 let (operand, ty) = (*operand, *ty);
                 self.infer_expr(operand);
+                // cast-lattice judgment (S3): `as` is no longer any-to-any.
+                // scalar<->scalar, pointer<->pointer, and pointer<->integer
+                // convert; an aggregate (array/struct/union) on either side has
+                // no value-level conversion and is rejected. an unresolved /
+                // error operand stays lenient (no cascade).
+                if let Some(from) = self.ty_of(operand)
+                    && !cast_allowed(from, ty, self.scope, self.types)
+                {
+                    let from_s = self.types.display(from).to_string();
+                    let to_s = self.types.display(ty).to_string();
+                    self.emit_at(
+                        id,
+                        None,
+                        hir::core::TypeError::CastNotAllowed {
+                            from: from_s,
+                            to: to_s,
+                        },
+                    );
+                }
                 Some(ty)
             }
             Expr::Match { scrut, arms } => {
@@ -1363,6 +1545,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
     fn site_coerce(&mut self, expected: TypeRef, id: ExprId) {
         self.coerce_array_literal(expected, id);
         self.adopt_int_literal(expected, id);
+        self.adopt_float_literal(expected, id);
         self.adopt_divergent(expected, id);
         self.record_decay(expected, id);
     }
@@ -1431,8 +1614,27 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             Expr::ArrayRepeat { value, .. } => vec![*value],
             _ => return,
         };
-        for child in children {
+        for (i, child) in children.into_iter().enumerate() {
             self.site_coerce(elem, child);
+            // L4 (S3): per-element value judgment against the declared element
+            // type (`[1, true, "x"]` against `[int32; 3]`). runs after the
+            // coercion so an adopted literal / decayed ref is not falsely
+            // flagged; the same `site_assignable` the arg/field judgments use.
+            if let Some(found) = self.ty_of(child)
+                && !site_assignable(elem, found, self.types)
+            {
+                let expected = self.types.display(elem).to_string();
+                let got = self.types.display(found).to_string();
+                self.emit_at(
+                    child,
+                    None,
+                    hir::core::TypeError::ArrayElementTypeMismatch {
+                        index: i,
+                        expected,
+                        found: got,
+                    },
+                );
+            }
         }
     }
 
@@ -1453,6 +1655,21 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// F3 (S3): a bare float literal defaults to `float64` (`literal_type`);
+    /// against a `float32` expectation it adopts the narrower width, so the
+    /// expression type agrees with its binding/slot instead of carrying a
+    /// latent `float64` the C assignment silently narrows. the int-literal
+    /// analogue of `adopt_int_literal`.
+    fn adopt_float_literal(&mut self, expected: TypeRef, id: ExprId) {
+        match self.types.lookup(expected) {
+            TypeKind::Path(name) if is_float_type_name(name) => {}
+            _ => return,
+        }
+        if matches!(self.body.exprs[id], Expr::Literal(Literal::Float(_))) {
+            self.record(id, expected);
         }
     }
 
@@ -1700,6 +1917,92 @@ fn is_pointer_shaped(ty: TypeRef, types: &TypeInterner) -> bool {
         types.lookup(ty),
         TypeKind::Ref(_) | TypeKind::Ptr(_) | TypeKind::RawPtr
     )
+}
+
+/// the name of an unsigned integer type, or `None` for anything else - the F2
+/// test for `-` rejection.
+fn unsigned_int_name(ty: TypeRef, types: &TypeInterner) -> Option<Text> {
+    match types.lookup(ty) {
+        TypeKind::Path(name)
+            if matches!(
+                name.as_str(),
+                "uint8" | "uint16" | "uint32" | "uint64" | "usize"
+            ) =>
+        {
+            Some(name.clone())
+        }
+        _ => None,
+    }
+}
+
+/// whether `name` is a float type (the F3 adoption test).
+fn is_float_type_name(n: &str) -> bool {
+    matches!(n, "float32" | "float64")
+}
+
+/// the cast-lattice class of a type (S3, CAST.md). the ratified `as` ruling is
+/// directional - `char`/`bool`/`enum` widen OUT to an integer but cannot be
+/// fabricated IN - so each scalar keeps its own class rather than collapsing to
+/// one "scalar". `Unknown` (an `Error` or an unresolved type name - a type
+/// parameter the floor cannot resolve) stays lenient.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CastClass {
+    Int,
+    Float,
+    Bool,
+    Char,
+    Enum,
+    Pointer,
+    Aggregate,
+    Fn,
+    Unknown,
+}
+
+fn cast_class(ty: TypeRef, scope: &HIR, types: &TypeInterner) -> CastClass {
+    match types.lookup(ty) {
+        TypeKind::Error => CastClass::Unknown,
+        TypeKind::Array { .. } => CastClass::Aggregate,
+        TypeKind::Fn { .. } => CastClass::Fn,
+        TypeKind::Ref(_) | TypeKind::Ptr(_) | TypeKind::RawPtr => CastClass::Pointer,
+        TypeKind::Path(name) => {
+            if is_int_type_name(name) {
+                CastClass::Int
+            } else if is_float_type_name(name) {
+                CastClass::Float
+            } else if name == "bool" {
+                CastClass::Bool
+            } else if name == "char" {
+                CastClass::Char
+            } else if scope.items.enums.contains_key(name) {
+                CastClass::Enum
+            } else if scope.items.structs.contains_key(name)
+                || scope.items.unions.contains_key(name)
+            {
+                CastClass::Aggregate
+            } else {
+                CastClass::Unknown
+            }
+        }
+    }
+}
+
+/// whether an `as` cast from `from` to `to` is in the cast lattice (CAST.md).
+/// the allowed directed pairs are listed explicitly; everything else rejects.
+/// an `Unknown` side is lenient (no cascade).
+fn cast_allowed(from: TypeRef, to: TypeRef, scope: &HIR, types: &TypeInterner) -> bool {
+    use CastClass::*;
+    match (cast_class(from, scope, types), cast_class(to, scope, types)) {
+        (Unknown, _) | (_, Unknown) => true,
+        // numeric <-> numeric.
+        (Int, Int) | (Int, Float) | (Float, Int) | (Float, Float) => true,
+        // pointer puns and the integer<->pointer bridge.
+        (Pointer, Pointer) | (Int, Pointer) | (Pointer, Int) => true,
+        // the tagged scalars widen OUT to an integer, never the reverse.
+        (Char, Int) | (Bool, Int) | (Enum, Int) => true,
+        // everything else - `_ -> bool`/`_ -> char`, `int -> enum`,
+        // float<->pointer, any aggregate/fn - is rejected.
+        _ => false,
+    }
 }
 
 fn is_integer_path(ty: TypeRef, types: &TypeInterner) -> bool {

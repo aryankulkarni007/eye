@@ -1,8 +1,8 @@
 //! compiler pipeline benchmarks. uses criterion for statistical analysis.
 //! run with `cargo bench`.
 //!
-//! each benchmark measures the full pipeline (lex → parse → HIR → MIR → codegen)
-//! on a representative `.eye` program.
+//! each benchmark measures a stage (or fused stage pair) on a representative
+//! `.eye` program.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
@@ -105,6 +105,70 @@ fn hir_lower(c: &mut Criterion) {
     group.finish();
 }
 
+/// type checking (fused with HIR lower since HIR is not Clone).
+/// isolate typeck cost by subtracting `hir-lower` from this measurement.
+fn typeck(c: &mut Criterion) {
+    let mut group = c.benchmark_group("typeck");
+    group.sample_size(30);
+
+    group.bench_function("minimal", |b| {
+        b.iter(|| {
+            let source = SourceText::new(black_box(MINIMAL_PROGRAM).to_string());
+            let lexed = Lexer::new(&source).tokenize();
+            let parse = parser::parse(&lexed.tokens, &source);
+            let file = ast::SourceFile::cast(parse.green).unwrap();
+            let mut hir = lower_source_file(file, &lexed.interner);
+            let _ = typeck::check_file(&mut hir);
+        });
+    });
+
+    group.bench_function("complex", |b| {
+        b.iter(|| {
+            let source = SourceText::new(black_box(COMPLEX_PROGRAM).to_string());
+            let lexed = Lexer::new(&source).tokenize();
+            let parse = parser::parse(&lexed.tokens, &source);
+            let file = ast::SourceFile::cast(parse.green).unwrap();
+            let mut hir = lower_source_file(file, &lexed.interner);
+            let _ = typeck::check_file(&mut hir);
+        });
+    });
+
+    group.finish();
+}
+
+/// fused type-checking + effect inference through `effect::infer_file`
+/// (the production path used in the database's `lowered_file` query).
+/// includes HIR lower (not Clone); subtract `hir-lower` for the effect-inference
+/// cost on top of type checking.
+fn effect(c: &mut Criterion) {
+    let mut group = c.benchmark_group("effect");
+    group.sample_size(30);
+
+    group.bench_function("minimal", |b| {
+        b.iter(|| {
+            let source = SourceText::new(black_box(MINIMAL_PROGRAM).to_string());
+            let lexed = Lexer::new(&source).tokenize();
+            let parse = parser::parse(&lexed.tokens, &source);
+            let file = ast::SourceFile::cast(parse.green).unwrap();
+            let mut hir = lower_source_file(file, &lexed.interner);
+            let _ = effect::infer_file(&mut hir);
+        });
+    });
+
+    group.bench_function("complex", |b| {
+        b.iter(|| {
+            let source = SourceText::new(black_box(COMPLEX_PROGRAM).to_string());
+            let lexed = Lexer::new(&source).tokenize();
+            let parse = parser::parse(&lexed.tokens, &source);
+            let file = ast::SourceFile::cast(parse.green).unwrap();
+            let mut hir = lower_source_file(file, &lexed.interner);
+            let _ = effect::infer_file(&mut hir);
+        });
+    });
+
+    group.finish();
+}
+
 fn mir_lower(c: &mut Criterion) {
     let mut group = c.benchmark_group("mir-lower");
     group.sample_size(30);
@@ -135,9 +199,47 @@ fn mir_lower(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("all_fns", |b| {
+        b.iter(|| {
+            let _ = mir::lower_all(black_box(&hir), black_box(&typeck));
+        });
+    });
+
     group.finish();
 }
 
+/// standalone code generation — MIR → C string emission.
+fn codegen(c: &mut Criterion) {
+    let mut group = c.benchmark_group("codegen");
+    group.sample_size(30);
+
+    let (hir, mirs, seed) = {
+        let source = SourceText::new(COMPLEX_PROGRAM.to_string());
+        let lexed = Lexer::new(&source).tokenize();
+        let parse = parser::parse(&lexed.tokens, &source);
+        let file = ast::SourceFile::cast(parse.green).unwrap();
+        let mut hir = lower_source_file(file, &lexed.interner);
+        let typeck = typeck::check_file(&mut hir);
+        let seed = typeck::expr_type_seed(&typeck);
+        let mirs = mir::lower_all(&hir, &typeck);
+        (hir, mirs, seed)
+    };
+
+    group.bench_function("complex", |b| {
+        b.iter(|| {
+            let _ = codegen::core::gen_mir(
+                black_box(&hir),
+                black_box(&mirs),
+                black_box(&seed),
+            );
+        });
+    });
+
+    group.finish();
+}
+
+/// full pipeline using the production `effect::infer_file` path
+/// (lex → parse → HIR → fused typeck+effect → MIR → codegen).
 fn full_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("full-pipeline");
     group.sample_size(20);
@@ -149,7 +251,7 @@ fn full_pipeline(c: &mut Criterion) {
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
             let mut hir = lower_source_file(file, &lexed.interner);
-            let typeck = typeck::check_file(&mut hir);
+            let (typeck, _effects, _diags) = effect::infer_file(&mut hir);
             let seed = typeck::expr_type_seed(&typeck);
             let _ = codegen::core::gen_mir(&hir, &mir::lower_all(&hir, &typeck), &seed);
         });
@@ -162,7 +264,7 @@ fn full_pipeline(c: &mut Criterion) {
             let parse = parser::parse(&lexed.tokens, &source);
             let file = ast::SourceFile::cast(parse.green).unwrap();
             let mut hir = lower_source_file(file, &lexed.interner);
-            let typeck = typeck::check_file(&mut hir);
+            let (typeck, _effects, _diags) = effect::infer_file(&mut hir);
             let seed = typeck::expr_type_seed(&typeck);
             let _ = codegen::core::gen_mir(&hir, &mir::lower_all(&hir, &typeck), &seed);
         });
@@ -171,5 +273,15 @@ fn full_pipeline(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, lex, parse, hir_lower, mir_lower, full_pipeline);
+criterion_group!(
+    benches,
+    lex,
+    parse,
+    hir_lower,
+    typeck,
+    effect,
+    mir_lower,
+    codegen,
+    full_pipeline,
+);
 criterion_main!(benches);

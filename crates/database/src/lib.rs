@@ -1,3 +1,8 @@
+// the house doc style keeps list-item continuation lines flush with the
+// marker; clippy's `doc_lazy_continuation` (newly on by default) wants them
+// indented. allowed crate-wide to keep the existing style consistent.
+#![allow(clippy::doc_lazy_continuation)]
+
 //! salsa-based query database for the eye compiler.
 //!
 //! this crate owns the incremental compilation infrastructure. every compiler
@@ -32,6 +37,7 @@
 //!
 //! see `docs/design/SALSA.md` for the full design rationale.
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use ast::AstNode;
@@ -121,20 +127,36 @@ pub struct FileScope {
     /// position)`. The ptr re-roots through [`parseresult::syntax`] and
     /// interns into a [`StableFnId`] for the per-fn queries.
     pub fns: Vec<(FnId, SyntaxNodePtr)>,
+    /// content digest of every item *signature* (the firewall key, S5): all
+    /// item declarations with fn bodies excluded. equal across a body-only edit
+    /// so `item_scope` backdates; see [`MemoEq for FileScope`](MemoEq).
+    pub sig_digest: u64,
+}
+
+/// a lowered body plus the firewall digest of the inputs it was lowered from
+/// (this function's source text combined with the scope signature digest).
+/// `lower_fn` returns this so an unedited body's re-lowering backdates - the
+/// digest is unchanged when neither the body text nor any signature moved.
+pub struct LoweredFn {
+    pub lowered: LoweredBody,
+    pub digest: u64,
 }
 
 // ---------------------------------------------------------------------------
 // memo: the query-result wrapper
 // ---------------------------------------------------------------------------
 
-/// shared ownership plus conservative change detection for query results.
+/// shared ownership plus change detection for query results.
 ///
 /// salsa stores each tracked fn's value and needs to know, on re-execution,
-/// whether the new value equals the old one (backdating). our result types
-/// (token streams, HIR, MIR) have no meaningful `PartialEq`, so `Memo`
-/// compares by `Arc::ptr_eq`: a re-executed query always allocates a fresh
-/// `Arc`, counts as changed, and dependents re-run. conservative - never
-/// stale. structural backdating can be added per result type later.
+/// whether the new value equals the old one (*backdating*: an equal result
+/// keeps the prior revision stamp, so dependents do not re-run). a re-executed
+/// query always allocates a fresh `Arc`, so `Memo` cannot compare by pointer;
+/// it delegates to [`MemoEq`], whose default is conservative (every
+/// re-execution counts as changed - never stale, but no backdating either).
+/// the signature-firewall result types ([`FileScope`], [`LoweredFn`]) override
+/// `memo_eq` with a content digest so a body-only edit backdates `item_scope`
+/// and the unedited bodies' queries cache-hit (segment S5, TYPECK.md).
 #[derive(Debug)]
 pub struct Memo<T>(pub Arc<T>);
 
@@ -150,9 +172,53 @@ impl<T> Clone for Memo<T> {
     }
 }
 
-impl<T> PartialEq for Memo<T> {
+/// how a query result decides equality for salsa backdating. the default is
+/// conservative (`false`: a re-executed query always counts as changed),
+/// reproducing the old `Arc::ptr_eq` behavior for every result that does not
+/// opt in. a type overrides this with a cheap, *correct* equality - a content
+/// digest, never a pointer - to let its query backdate.
+pub trait MemoEq {
+    fn memo_eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
+impl<T: MemoEq> PartialEq for Memo<T> {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        self.0.memo_eq(&other.0)
+    }
+}
+
+// conservative (default) results: every re-execution counts as changed, exactly
+// as before the firewall. only the signature-bearing results below opt in.
+impl MemoEq for Lexed {}
+impl MemoEq for ParseResult {}
+impl MemoEq for TypeckResults {}
+impl MemoEq for CheckedFile {}
+impl MemoEq for String {}
+impl MemoEq for FxHashMap<FnId, MirBody> {}
+
+/// the firewall: two item scopes are equal when their *signature digest* is -
+/// every item declaration unchanged (fn signatures, struct/enum/union defs,
+/// const/global initializers), regardless of fn *body* edits. so a keystroke
+/// inside one body produces an equal `FileScope`, `item_scope` backdates, and
+/// every query that reads only the scope cache-hits.
+impl MemoEq for FileScope {
+    fn memo_eq(&self, other: &Self) -> bool {
+        self.sig_digest == other.sig_digest
+    }
+}
+
+/// the firewall, body half: a re-lowered body is equal when its source text and
+/// the scope signatures it lowered against are both unchanged (`digest`
+/// combines them). a sibling body edit re-runs `lower_fn` but the result
+/// backdates, so the sibling `typeck_fn` (which reads only the scope and this
+/// body) cache-hits. relies on lowering being deterministic and `Text` being an
+/// owned `SmolStr` (no interner-id drift across edits), so equal inputs give a
+/// bit-identical `LoweredBody`.
+impl MemoEq for LoweredFn {
+    fn memo_eq(&self, other: &Self) -> bool {
+        self.digest == other.digest
     }
 }
 
@@ -161,6 +227,54 @@ impl<T> std::ops::Deref for Memo<T> {
     fn deref(&self) -> &T {
         &self.0
     }
+}
+
+// ---------------------------------------------------------------------------
+// firewall digests (S5)
+// ---------------------------------------------------------------------------
+
+/// the signature digest: a hash of every top-level item with each function's
+/// body block excluded. stable across a body-only edit (the firewall key),
+/// changed by any signature / type-def / const-or-global-initializer edit.
+/// hashes item text *content*, not byte offsets, so an edit that shifts later
+/// items without changing them leaves the digest unchanged.
+fn signature_digest(text: &str, ast: &ast::SourceFile) -> u64 {
+    let mut h = rustc_hash::FxHasher::default();
+    for item in ast.items() {
+        let range = item.syntax().text_range();
+        // a function contributes its signature only - everything up to the body
+        // block's `{`; every other item contributes whole.
+        let end = match &item {
+            ast::Item::FnDef(f) => f
+                .body()
+                .map(|b| b.syntax().text_range().start())
+                .unwrap_or_else(|| range.end()),
+            _ => range.end(),
+        };
+        hash_text_range(text, range.start(), end, &mut h);
+    }
+    h.finish()
+}
+
+/// the body digest: this function's full source text combined with the scope
+/// signature digest. unchanged across a sibling-body edit (this node's text and
+/// every signature stay equal); changed by an edit to this body or to any
+/// signature/const it lowered against.
+fn body_digest(text: &str, fn_ast: &ast::FnDef, sig_digest: u64) -> u64 {
+    let mut h = rustc_hash::FxHasher::default();
+    sig_digest.hash(&mut h);
+    let r = fn_ast.syntax().text_range();
+    hash_text_range(text, r.start(), r.end(), &mut h);
+    h.finish()
+}
+
+fn hash_text_range(text: &str, start: rowan::TextSize, end: rowan::TextSize, h: &mut impl Hasher) {
+    if let Some(slice) = text.get(usize::from(start)..usize::from(end)) {
+        slice.hash(h);
+    }
+    // a separator so two adjacent items' concatenated text cannot alias a
+    // different item split with the same bytes.
+    0xFF_u8.hash(h);
 }
 
 // ---------------------------------------------------------------------------
@@ -191,16 +305,19 @@ pub fn parse(db: &dyn salsa::Database, file: SourceFileInput) -> Memo<ParseResul
 pub fn item_scope(db: &dyn salsa::Database, file: SourceFileInput) -> Memo<FileScope> {
     let lexed = lex(db, file);
     let parse = parse(db, file);
-    let collected = hir::core::collect_file_scope(&parse.ast(), &lexed.interner);
+    let ast = parse.ast();
+    let collected = hir::core::collect_file_scope(&ast, &lexed.interner);
     let fns = collected
         .fn_asts
         .iter()
         .map(|(fn_id, fn_ast)| (*fn_id, SyntaxNodePtr::new(fn_ast.syntax())))
         .collect();
+    let sig_digest = signature_digest(file.text(db), &ast);
     Memo::new(FileScope {
         scope: collected.hir,
         const_values: collected.const_values,
         fns,
+        sig_digest,
     })
 }
 
@@ -208,7 +325,7 @@ pub fn item_scope(db: &dyn salsa::Database, file: SourceFileInput) -> Memo<FileS
 /// [`StableFnId`], so an edit inside one body re-runs only that body's query
 /// (provided the item scope itself backdates clean).
 #[salsa::tracked]
-pub fn lower_fn<'db>(db: &'db dyn salsa::Database, fn_id: StableFnId<'db>) -> Memo<LoweredBody> {
+pub fn lower_fn<'db>(db: &'db dyn salsa::Database, fn_id: StableFnId<'db>) -> Memo<LoweredFn> {
     let file = fn_id.file(db);
     let lexed = lex(db, file);
     let parse = parse(db, file);
@@ -224,13 +341,19 @@ pub fn lower_fn<'db>(db: &'db dyn salsa::Database, fn_id: StableFnId<'db>) -> Me
         .map(|(id, _)| *id)
         .expect("StableFnId ptr is a collected function");
 
-    Memo::new(hir::core::lower_fn_body(
+    let lowered = hir::core::lower_fn_body(
         &scope.scope,
         arena_id,
         &fn_ast,
         &scope.const_values,
         &lexed.interner,
-    ))
+    );
+    // the firewall digest: this body's text plus the scope signatures it lowered
+    // against. an unedited sibling re-lowers to a bit-identical body with an
+    // identical digest, so this query backdates and the sibling's `typeck_fn`
+    // cache-hits.
+    let digest = body_digest(file.text(db), &fn_ast, scope.sig_digest);
+    Memo::new(LoweredFn { lowered, digest })
 }
 
 /// type-check one function body against the frozen item scope (the per-fn
@@ -257,10 +380,10 @@ pub fn typeck_fn<'db>(db: &'db dyn salsa::Database, fn_id: StableFnId<'db>) -> M
         .expect("StableFnId ptr is a collected function");
     let fn_ret = scope.scope.functions[arena_id].ret;
 
-    let mut types = lowered.types.clone();
+    let mut types = lowered.lowered.types.clone();
     Memo::new(typeck::check_body(
         &scope.scope,
-        &lowered.body,
+        &lowered.lowered.body,
         fn_ret,
         &mut types,
     ))
@@ -277,7 +400,7 @@ pub fn hir_diagnostics(db: &dyn salsa::Database, file: SourceFileInput) -> Sink<
     // the cache.
     for &(_, ptr) in &scope.fns {
         let fn_id = StableFnId::new(db, file, ptr);
-        out.extend(lower_fn(db, fn_id).diagnostics.clone());
+        out.extend(lower_fn(db, fn_id).lowered.diagnostics.clone());
     }
     for &(_, ptr) in &scope.fns {
         let fn_id = StableFnId::new(db, file, ptr);

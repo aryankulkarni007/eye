@@ -180,6 +180,45 @@ pub enum TypeError {
         expected: String,
         found: String,
     },
+    /// an assignment (`x = y`, `x += y`) used where a value is expected - a
+    /// `let` initializer, an argument, a condition, an operand, a
+    /// value-producing branch tail. assignment is ruled non-value (no
+    /// footgun: `if x = y` reads as a typo for `==`), so it is legal only in
+    /// statement position or a discarded (void) tail.
+    AssignInValuePosition,
+    /// unary `-` applied to an unsigned integer (`-(uint32)`). the C result
+    /// silently wraps modulo 2^N; Rust rejects it (no negative unsigned). `~`
+    /// (bitwise complement) stays legal - it is well-defined on unsigned and
+    /// the standard way to build all-ones masks.
+    NegationOnUnsigned {
+        ty: Text,
+    },
+    /// a value-position `if` whose `then` and `else` branches have
+    /// incompatible types (`if c { 1 } else { true }`). the `match` analogue
+    /// is `MatchArmTypeMismatch`; this runs the same branch-consistency
+    /// judgment for `if`.
+    IfBranchTypeMismatch {
+        expected: String,
+        found: String,
+    },
+    /// an array-literal element whose type does not match the array's element
+    /// type (`[1, true, "x"]` against `[int32; 3]`). the length and
+    /// literal-typing halves are checked elsewhere; this is the per-element
+    /// value judgment (L4).
+    ArrayElementTypeMismatch {
+        /// 0-based element position, for the message.
+        index: usize,
+        expected: String,
+        found: String,
+    },
+    /// an `as` cast between types the cast lattice does not permit (an
+    /// aggregate - array/struct/union - on either side). scalar<->scalar,
+    /// pointer<->pointer, and pointer<->integer casts are allowed; aggregates
+    /// have no value-level conversion.
+    CastNotAllowed {
+        from: String,
+        to: String,
+    },
     OpOnArray {
         op: &'static str,
     },
@@ -378,6 +417,15 @@ pub enum ConstError {
     /// a `const` used as an array length whose folded value is not a
     /// non-negative integer.
     ArrayLenNotInteger,
+    /// a `const`/global whose folded integer value does not fit its declared
+    /// integer type (`const int8 X = 200`). an explicit `as` cast to the type
+    /// is the blessed truncation; a bare out-of-range value is rejected (U2).
+    ConstValueOutOfRange {
+        value: String,
+        ty: Text,
+        min: String,
+        max: String,
+    },
 }
 
 /// `E`: machine-EFFECT contract failures (EFFECT.md). the data lives here so the
@@ -586,6 +634,28 @@ impl fmt::Display for TypeError {
                 f,
                 "field `{field}` type mismatch: expected {expected}, got {found}"
             ),
+            TypeError::AssignInValuePosition => write!(
+                f,
+                "assignment produces no value and cannot be used where a value is expected"
+            ),
+            TypeError::NegationOnUnsigned { ty } => {
+                write!(f, "cannot apply unary `-` to unsigned type `{ty}`")
+            }
+            TypeError::IfBranchTypeMismatch { expected, found } => write!(
+                f,
+                "`if` branches have incompatible types: expected {expected}, got {found}"
+            ),
+            TypeError::ArrayElementTypeMismatch {
+                index,
+                expected,
+                found,
+            } => write!(
+                f,
+                "array element {index} type mismatch: expected {expected}, got {found}"
+            ),
+            TypeError::CastNotAllowed { from, to } => {
+                write!(f, "cannot cast {from} to {to}")
+            }
             TypeError::OpOnArray { op } => write!(f, "cannot apply `{op}` to an array"),
             TypeError::ModuloOnFloat => {
                 write!(
@@ -795,6 +865,15 @@ impl fmt::Display for ConstError {
             ConstError::ArrayLenNotInteger => {
                 write!(f, "array length constant must be a non-negative integer")
             }
+            ConstError::ConstValueOutOfRange {
+                value,
+                ty,
+                min,
+                max,
+            } => write!(
+                f,
+                "constant value {value} is out of range for type `{ty}` ({min}..{max})"
+            ),
         }
     }
 }
@@ -890,6 +969,11 @@ impl Diagnostic for HirError {
                 TypeError::RefOfNonPlace => Code::new(Class::Type, 36),
                 TypeError::ArgTypeMismatch { .. } => Code::new(Class::Type, 37),
                 TypeError::StructFieldTypeMismatch { .. } => Code::new(Class::Type, 38),
+                TypeError::AssignInValuePosition => Code::new(Class::Type, 39),
+                TypeError::NegationOnUnsigned { .. } => Code::new(Class::Type, 40),
+                TypeError::IfBranchTypeMismatch { .. } => Code::new(Class::Type, 41),
+                TypeError::ArrayElementTypeMismatch { .. } => Code::new(Class::Type, 42),
+                TypeError::CastNotAllowed { .. } => Code::new(Class::Type, 43),
             },
             HirError::Pattern(e) => match e {
                 PatternError::UnreachableAfterWildcard => Code::new(Class::Pattern, 1),
@@ -915,6 +999,7 @@ impl Diagnostic for HirError {
                 ConstError::RefOfConst { .. } => Code::new(Class::Const, 10),
                 ConstError::AssignToConst { .. } => Code::new(Class::Const, 11),
                 ConstError::ArrayLenNotInteger => Code::new(Class::Const, 12),
+                ConstError::ConstValueOutOfRange { .. } => Code::new(Class::Const, 13),
             },
             HirError::Effect(e) => match e {
                 EffectError::UnknownEffect { .. } => Code::new(Class::Effect, 1),

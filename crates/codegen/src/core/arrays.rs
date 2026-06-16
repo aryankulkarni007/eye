@@ -27,8 +27,7 @@ use hir::core::{TypeInterner, TypeKind, TypeRef};
 /// single typedef and miscompile one of them).
 ///
 /// injectivity rests on two rules:
-/// - a `Path` name is length-prefixed (`ref_int` -> `7ref_int`). the map
-/// `s -> len(s) ++ s` is injective because `n -> digits(n) + n` is strictly
+/// - a `Path` name is length-prefixed (`ref_int` -> `7ref_int`). the map `s -> len(s) ++ s` is injective because `n -> digits(n) + n` is strictly
 /// increasing, so the prefix pins the name's extent unambiguously.
 /// - the `ref_`/`ptr_`/`arr_`/`err` constructors all start with a letter, while
 /// a length-prefixed `Path` always starts with a digit. so a user type named

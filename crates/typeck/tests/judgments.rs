@@ -1356,7 +1356,7 @@ main() {
 fn struct_field_value_type_mismatch_is_rejected() {
     let hir = lower(
         "\
-struct Point { int32 x, int32 y }
+structure Point { int32 x, int32 y, }
 
 main() {
     let Point p = Point { x: \"hi\", y: 2 };
@@ -1370,6 +1370,274 @@ main() {
                 if field.as_str() == "x" && expected == "int32"
         )),
         "expected StructFieldTypeMismatch on `x`, got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// S3 assignment-non-value: an assignment used where a value is expected (here
+/// a `let` initializer) is rejected. assignment is statement-only.
+#[test]
+fn value_position_assignment_is_rejected() {
+    let hir = lower(
+        "\
+main() {
+    mut int32 y = 0;
+    let int32 x = y = 5;
+    println(\"{}\", x);
+}
+",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::AssignInValuePosition))),
+        "expected AssignInValuePosition for the `y = 5` initializer, got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// statement-position assignments stay legal: a bare `x = y;`, a compound
+/// `x += y;`, and - critically - the branch-tail assignments of an `if` used
+/// as a statement (those tails are discarded, not value-producing).
+#[test]
+fn statement_position_assignments_are_clean() {
+    let hir = lower(
+        "\
+counter(bool up) {
+    mut int32 n = 0;
+    n = 1;
+    n += 5;
+    if up { n = 10 } else { n = 20 }
+}
+
+main() { counter(true); }
+",
+    );
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::AssignInValuePosition))),
+        "statement-position assignments must be clean, got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// F2 (S3): unary `-` on an unsigned value wraps in C; rejected (Rust parity).
+/// a negated literal (a signed constant) and `-` on a signed value stay legal.
+#[test]
+fn negation_on_unsigned_is_rejected() {
+    let hir = lower(
+        "\
+main() {
+    mut uint32 u = 7;
+    let uint32 a = -u;
+    let int32 s = -5;
+    println(\"{}\", a);
+    println(\"{}\", s);
+}
+",
+    );
+    let neg: Vec<_> = diags(&hir)
+        .iter()
+        .filter_map(|d| match d {
+            HirError::Type(TypeError::NegationOnUnsigned { ty }) => Some(ty.as_str().to_owned()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        neg,
+        ["uint32".to_owned()],
+        "expected exactly one NegationOnUnsigned (on `-u`), got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// F3 (S3): a float literal adopts the expected float width, so a `float32`
+/// array literal types each element `float32` and the L4 element judgment does
+/// not falsely reject the `float64`-default literals. (an F3-less stamp would
+/// surface here as a spurious ArrayElementTypeMismatch.)
+#[test]
+fn float_literal_adopts_expected_width() {
+    let hir = lower(
+        "\
+main() {
+    let float32 f = 1.5;
+    let [float32; 2] xs = [1.5, 2.5];
+    println(\"{}\", f);
+}
+",
+    );
+    assert!(
+        !diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::ArrayElementTypeMismatch { .. })
+        )),
+        "float literals must adopt float32; no element mismatch expected, got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// F1 (S3): a value-position `if` whose branches have incompatible types is
+/// rejected (the `if` analogue of match-arm consistency).
+#[test]
+fn value_position_if_branch_mismatch_is_rejected() {
+    let hir = lower(
+        "\
+main() {
+    let bool c = true;
+    let int32 x = if c { 1 } else { true };
+    println(\"{}\", x);
+}
+",
+    );
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::IfBranchTypeMismatch { found, .. }) if found == "bool"
+        )),
+        "expected IfBranchTypeMismatch (then int32 vs else bool), got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// a consistent value-`if` and a statement-position `if` with differing branch
+/// types (its values discarded) both stay clean.
+#[test]
+fn if_branch_consistency_clean_cases() {
+    let hir = lower(
+        "\
+main() {
+    let bool c = true;
+    let int32 x = if c { 1 } else { 2 };
+    if c { 1 } else { true };
+    println(\"{}\", x);
+}
+",
+    );
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::IfBranchTypeMismatch { .. }))),
+        "consistent value-if and statement-if must be clean, got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// L4 (S3): an array-literal element whose type does not match the declared
+/// element type is rejected per element; a uniform literal is clean.
+#[test]
+fn array_element_type_mismatch_is_rejected() {
+    let hir = lower(
+        "\
+main() {
+    let [int32; 2] bad = [1, true];
+    println(\"{}\", bad[0]);
+}
+",
+    );
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::ArrayElementTypeMismatch { index, expected, .. })
+                if *index == 1 && expected == "int32"
+        )),
+        "expected ArrayElementTypeMismatch on element 1, got: {:?}",
+        diags(&hir)
+    );
+
+    let clean = lower(
+        "\
+main() {
+    let [int32; 3] ok = [1, 2, 3];
+    println(\"{}\", ok[0]);
+}
+",
+    );
+    assert!(
+        !diags(&clean)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ArrayElementTypeMismatch { .. }))),
+        "uniform int array must be clean, got: {:?}",
+        diags(&clean)
+    );
+}
+
+/// cast lattice (S3): an `as` cast with an aggregate (array) operand has no
+/// value-level conversion and is rejected; scalar<->scalar, pointer<->pointer,
+/// and pointer<->integer casts stay clean.
+#[test]
+fn aggregate_cast_is_rejected() {
+    let hir = lower(
+        "\
+main() {
+    let [int32; 2] a = [1, 2];
+    let int32 b = a as int32;
+    println(\"{}\", b);
+}
+",
+    );
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::CastNotAllowed { from, .. }) if from.contains("int32")
+        )),
+        "expected CastNotAllowed casting an array to int32, got: {:?}",
+        diags(&hir)
+    );
+}
+
+#[test]
+fn scalar_and_pointer_casts_are_clean() {
+    let hir = lower(
+        "\
+main() {
+    let int32 i = 5;
+    let int64 j = i as int64;
+    let int32* q = &i;
+    let usize addr = q as usize;
+    let ptr z = 0 as ptr;
+    println(\"{}\", j);
+}
+",
+    );
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::CastNotAllowed { .. }))),
+        "scalar/pointer/int casts must be clean, got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// U2/U4 (S3): a bare out-of-range const value is rejected; the same magnitude
+/// behind an explicit `as` cast to the type is the blessed truncation (U4 folds
+/// it to the wrapped value, which is in range) and stays clean.
+#[test]
+fn const_value_out_of_range_is_rejected() {
+    let hir = lower(
+        "\
+const int8 BIG = 200;
+const int8 OK = 200 as int8;
+const int8 FINE = 100;
+
+main() {
+    println(\"{}\", FINE);
+}
+",
+    );
+    let oor: Vec<_> = diags(&hir)
+        .iter()
+        .filter_map(|d| match d {
+            HirError::Const(ConstError::ConstValueOutOfRange { value, ty, .. }) => {
+                Some((value.clone(), ty.as_str().to_owned()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        oor,
+        [("200".to_owned(), "int8".to_owned())],
+        "only the bare `200` const should be out of range (the `200 as int8` is blessed), got: {:?}",
         diags(&hir)
     );
 }

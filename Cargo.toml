@@ -20,6 +20,10 @@ members = [
 [profile.dev]
 debug = 1
 codegen-units = 256
+# macOS: emit debuginfo beside the objects instead of running the slow
+# `dsymutil` pack step - a large debug-build win, and stable-toolchain safe
+# (no codegen-backend swap, so nothing for salsa's macros to trip over).
+split-debuginfo = "unpacked"
 
 [workspace.package]
 version = "0.1.0"
@@ -76,6 +80,10 @@ edition.workspace = true
 name = "eye"
 path = "src/main.rs"
 
+[[bin]]
+name = "flamebench"
+path = "src/bin/flamebench.rs"
+
 [lib]
 name = "eye"
 path = "src/lib.rs"
@@ -94,6 +102,7 @@ typeck.workspace = true
 mir.workspace = true
 codegen.workspace = true
 diagnostics.workspace = true
+effect.workspace = true
 ariadne.workspace = true
 clap.workspace = true
 rustc-hash.workspace = true

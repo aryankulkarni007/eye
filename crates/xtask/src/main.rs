@@ -1,28 +1,35 @@
-//! `cargo xtask` - workspace automation.
+//! `cargo xtask` — workspace automation.
 //!
-//! `cargo xtask codegen` reads `crates/ast/eye.ungram` and regenerates
-//! `crates/ast/src/generated.rs`: the structural typed-AST layer over the
-//! rowan CST. the generated file is committed; rerun this whenever the
-//! grammar changes.
+//! commands:
+//!   codegen     — regenerate AST types from eye.ungram
+//!   bench       — run compiler pipeline benchmarks
+//!   flamegraph  — profile the compiler with flamegraph
+//!
+//! flags are passed through: `cargo xtask bench -- lex` runs only the lex
+//! group, `cargo xtask flamegraph --iterations 500` generates a stress file
+//! with 500 unique function definitions.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
-use ungrammar::{Grammar, Rule};
+use std::process::{Command, Stdio};
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("codegen") => codegen(),
+        Some("bench") => bench(),
+        Some("flamegraph") => flamegraph(),
         _ => {
-            eprintln!("usage: cargo xtask codegen");
+            eprintln!("usage: cargo xtask <command>");
+            eprintln!();
+            eprintln!("commands:");
+            eprintln!("  codegen     regenerate AST types from eye.ungram");
+            eprintln!("  bench       run compiler pipeline benchmarks");
+            eprintln!("  flamegraph  profile the compiler with flamegraph");
             std::process::exit(1);
         }
     }
 }
 
-/// repo root - `crates/xtask` is two levels down from it.
+/// repo root — `crates/xtask` is two levels down from it.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -31,6 +38,10 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+// ---------------------------------------------------------------------------
+// codegen
+// ---------------------------------------------------------------------------
+
 fn codegen() {
     let root = repo_root();
     let ungram_path = root.join("crates/ast/eye.ungram");
@@ -38,7 +49,7 @@ fn codegen() {
 
     let text = std::fs::read_to_string(&ungram_path)
         .unwrap_or_else(|e| panic!("read {}: {e}", ungram_path.display()));
-    let grammar: Grammar = text.parse().expect("eye.ungram failed to parse");
+    let grammar: ungrammar::Grammar = text.parse().expect("eye.ungram failed to parse");
 
     std::fs::write(&out_path, generate(&grammar)).expect("write generated.rs");
 
@@ -52,26 +63,21 @@ fn codegen() {
     println!("regenerated {}", out_path.display());
 }
 
-// ---- field model ----
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote};
+use ungrammar::{Grammar, Rule};
 
-/// what a node field resolves to in the generated accessor.
 enum FieldTy {
-    /// a child node of the named kind.
     Node(String),
-    /// a direct child token. in the v0.1 grammar every labelled token is an
-    /// identifier, so the accessor always looks up `SyntaxKind::Ident`.
     Token,
 }
 
 struct Field {
-    /// accessor name - from the ungrammar label, or derived from the type.
     label: Option<String>,
     ty: FieldTy,
-    /// true for a `Node*` repetition.
     rep: bool,
 }
 
-/// flatten a rule into the flat field list its node accessors are built from.
 fn walk(g: &Grammar, rule: &Rule, label: Option<&str>, out: &mut Vec<Field>) {
     match rule {
         Rule::Labeled { label, rule } => walk(g, rule, Some(label), out),
@@ -80,7 +86,6 @@ fn walk(g: &Grammar, rule: &Rule, label: Option<&str>, out: &mut Vec<Field>) {
             ty: FieldTy::Node(g[*n].name.clone()),
             rep: false,
         }),
-        // an unlabelled token (punctuation/keyword) generates no accessor
         Rule::Token(_) => {
             if let Some(l) = label {
                 out.push(Field {
@@ -91,7 +96,6 @@ fn walk(g: &Grammar, rule: &Rule, label: Option<&str>, out: &mut Vec<Field>) {
             }
         }
         Rule::Rep(inner) => {
-            // a label may sit inside or outside the repetition
             let (lbl, core) = match &**inner {
                 Rule::Labeled { label, rule } => (Some(label.as_str()), &**rule),
                 other => (label, other),
@@ -106,14 +110,10 @@ fn walk(g: &Grammar, rule: &Rule, label: Option<&str>, out: &mut Vec<Field>) {
         }
         Rule::Opt(inner) => walk(g, inner, label, out),
         Rule::Seq(rules) => rules.iter().for_each(|r| walk(g, r, None, out)),
-        // an alternation inside a node body is the all-token `Literal` case -
-        // no structural accessors
         Rule::Alt(_) => {}
     }
 }
 
-/// if `rule` is an alternation of plain node references, return their names -
-/// this node is a typed `enum`.
 fn as_enum(g: &Grammar, rule: &Rule) -> Option<Vec<String>> {
     let Rule::Alt(alts) = rule else { return None };
     let mut names = Vec::with_capacity(alts.len());
@@ -125,8 +125,6 @@ fn as_enum(g: &Grammar, rule: &Rule) -> Option<Vec<String>> {
     }
     Some(names)
 }
-
-// ---- code generation ----
 
 fn generate(grammar: &Grammar) -> String {
     let items = grammar.iter().map(|node| {
@@ -143,7 +141,7 @@ fn generate(grammar: &Grammar) -> String {
     let body = quote! { #(#items)* };
     format!(
         "//! Generated by `cargo xtask codegen` from crates/ast/eye.ungram.\n\
-         //! do not edit by hand - edit the grammar and regenerate.\n\n\
+         //! do not edit by hand — edit the grammar and regenerate.\n\n\
          use syntax::{{SyntaxKind, SyntaxNode, SyntaxToken}};\n\n\
          use crate::{{support, AstChildren, AstNode}};\n\n{body}\n",
     )
@@ -208,9 +206,6 @@ fn gen_accessors(fields: &[Field]) -> TokenStream {
             });
             continue;
         }
-        // single child node. if the same node type appears more than once in
-        // this node (e.g. `BinExpr = lhs:Expr rhs:Expr`), accessors must pick
-        // by position rather than by first-of-kind.
         let same: Vec<usize> = fields
             .iter()
             .enumerate()
@@ -280,4 +275,221 @@ fn snake(camel: &str) -> String {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// bench
+// ---------------------------------------------------------------------------
+
+/// run compiler pipeline benchmarks with Criterion.
+///
+/// extra args are passed through to `cargo bench` (and onward to the Criterion
+/// binary as a filter):
+///
+///   cargo xtask bench                  # all benchmarks
+///   cargo xtask bench -- lex           # only the lex group
+///   cargo xtask bench -- full-pipeline # only the full-pipeline group
+fn bench() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+
+    let status = Command::new("cargo")
+        .arg("bench")
+        .arg("--bench")
+        .arg("compile")
+        .args(&args)
+        .status()
+        .expect("cargo bench failed");
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// flamegraph
+// ---------------------------------------------------------------------------
+
+fn flamegraph() {
+    let root = repo_root();
+
+    // ---- parse flags ----
+    let mut iterations: usize = 100;
+    let mut output = root.join("flamegraph.svg");
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    {
+        let mut i = 0;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--iterations" | "-n" => {
+                    i += 1;
+                    iterations = args[i]
+                        .parse()
+                        .unwrap_or_else(|_| panic!("--iterations requires a number, got {}", args[i]));
+                }
+                "--output" | "-o" => {
+                    i += 1;
+                    output = root.join(&args[i]);
+                }
+                other => {
+                    eprintln!("xtask flamegraph: unknown flag {other}");
+                    eprintln!("usage: cargo xtask flamegraph [--iterations N] [--output path]");
+                    std::process::exit(1);
+                }
+            }
+            i += 1;
+        }
+    }
+
+    if iterations == 0 {
+        eprintln!("xtask flamegraph: --iterations must be > 0");
+        std::process::exit(1);
+    }
+
+    // ---- check tooling ----
+    if !tool_installed("cargo-flamegraph") {
+        eprintln!("cargo-flamegraph not found. Install with: cargo install flamegraph");
+        std::process::exit(1);
+    }
+
+    let stress_file = root.join("eyesrc/STRESS_GENERATED.eye");
+
+    // ---- generate a valid stress program ----
+    println!("generating {iterations} unique functions → {}", stress_file.display());
+    generate_stress_program(&stress_file, iterations);
+
+    let stress_size = filesize(&stress_file);
+    println!("stress file: {stress_size}");
+
+    // ---- run flamegraph ----
+    // Build in release for representative profiles (the binary runs the stress
+    // file once, so incremental compilation does not matter).
+    println!("running cargo flamegraph (release, with debug symbols) ...");
+    let status = Command::new("cargo")
+        .args([
+            "flamegraph",
+            "--bin",
+            "flamebench",
+            "--deterministic",
+            "--",
+            &stress_file.to_string_lossy(),
+        ])
+        .env("CARGO_PROFILE_RELEASE_DEBUG", "1")
+        .status()
+        .expect("cargo flamegraph failed");
+
+    if !status.success() {
+        // clean up stress file on failure
+        let _ = std::fs::remove_file(&stress_file);
+        eprintln!("cargo flamegraph failed (exit: {:?})", status.code());
+        std::process::exit(1);
+    }
+
+    // ---- move output ----
+    let default_svg = root.join("flamegraph.svg");
+    if default_svg.exists() {
+        if output != default_svg {
+            std::fs::rename(&default_svg, &output)
+                .unwrap_or_else(|e| panic!("move {} → {}: {e}", default_svg.display(), output.display()));
+        }
+        println!("flamegraph written to {}", output.display());
+    } else {
+        eprintln!("flamegraph.svg was not generated");
+        std::process::exit(1);
+    }
+
+    // ---- cleanup ----
+    let _ = std::fs::remove_file(&stress_file);
+}
+
+/// check whether a cargo subcommand is installed by running its --help.
+fn tool_installed(name: &str) -> bool {
+    Command::new("cargo")
+        .args([name, "--help"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
+}
+
+/// generate a syntactically valid Eye program with `n` unique functions.
+///
+/// each function `f0`..`f{n-1}` returns an `int32` and calls the previous one
+/// with no arguments, creating a call chain that exercises every pipeline stage.
+/// body variants rotate through arithmetic, struct construction, if-else, and
+/// casts to stress more AST/MIR/emitter paths.
+fn generate_stress_program(path: &Path, n: usize) {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path).expect("create stress file");
+
+    // preamble — a struct to exercise type + MIR + codegen
+    writeln!(f, "structure Pair {{ int32 a, int32 b, }};").unwrap();
+    writeln!(f).unwrap();
+
+    // each function is `fN() -> int32` calling `f{N-1}()`, with a body
+    // rotated through different forms so the compiler never hits trivial dedup.
+    //
+    // note: all calls are `f{i-1}()` — no arguments — because every function
+    // has zero parameters. this is the simplest valid multi-function chain.
+    for i in 0..n {
+        if i == 0 {
+            writeln!(f, "f0() -> int32 {{ 0 }}").unwrap();
+        } else {
+            match i % 5 {
+                0 => writeln!(
+                    f,
+                    "f{i}() -> int32 {{ let int32 x = f{}(); x + 1 }}",
+                    i - 1
+                )
+                .unwrap(),
+                1 => writeln!(
+                    f,
+                    "f{i}() -> int32 {{ let int32 y = f{}(); y * 2 + 1 }}",
+                    i - 1
+                )
+                .unwrap(),
+                2 => writeln!(
+                    f,
+                    "f{i}() -> int32 {{ let Pair p = Pair {{ a: f{}(), b: 3 }}; p.a + p.b }}",
+                    i - 1
+                )
+                .unwrap(),
+                3 => writeln!(
+                    f,
+                    "f{i}() -> int32 {{ let int32 z = f{}(); if z > 0 {{ z }} else {{ 0 }} }}",
+                    i - 1
+                )
+                .unwrap(),
+                _ => writeln!(
+                    f,
+                    "f{i}() -> int32 {{ let int32 w = f{}(); (w as int64) as int32 + 1 }}",
+                    i - 1
+                )
+                .unwrap(),
+            }
+        }
+    }
+    writeln!(f).unwrap();
+
+    // main — call the last function and print the result (exercises println = io
+    // effect atom, checked by the effect lattice).
+    writeln!(f, "main() {{").unwrap();
+    if n > 0 {
+        writeln!(f, "    let int32 x = f{}();", n - 1).unwrap();
+        writeln!(f, "    println(\"{{}}\", x);").unwrap();
+    } else {
+        writeln!(f, "    println(\"empty\");").unwrap();
+    }
+    writeln!(f, "}}").unwrap();
+}
+
+/// return a human-readable file size.
+fn filesize(path: &Path) -> String {
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if len < 1024 {
+        format!("{len} B")
+    } else if len < 1024 * 1024 {
+        format!("{:.1} KiB", len as f64 / 1024.0)
+    } else {
+        format!("{:.1} MiB", len as f64 / (1024.0 * 1024.0))
+    }
 }
