@@ -22,8 +22,10 @@
 -- sim we seem to making quite unsafe decisions. compiler safety
 -- is not absolute yet
 
--- NOTE: syntax highlighting is also cooked. We need to fix the treesitter
+-- FIXED: syntax highlighting is also cooked. We need to fix the treesitter
 -- parser at some point
+
+-- FIXME: panic in MIR when compiling this file - not good
 
 extern {
     memcpy(ptr dst, ptr src, usize n) -> ptr;
@@ -101,10 +103,10 @@ alloc(Arena* arena, usize size) -> ptr {
 }
 
 align_alloc(Arena *arena, usize size) -> ptr {
-    let usize addr = (arena.buffer + arena.off) as usize;
+    let int64 addr = (arena.buffer + arena.off) as usize;
     let usize alignment = 8;
     let usize mask = alignment - 1;
-    let usize padding = (-addr) & mask;
+    let usize padding = (-addr) & mask as int64;
 
     let usize total_size = size + padding;
     if arena.off + total_size > arena.cap { return NULL; };
@@ -176,14 +178,17 @@ generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
     loop {
         if idx >= wc { break; }
         let int32* onset_head = if onset_count > 0 {
-            -- FIXME: shouldn't be allowed to omit semi even if the fn return
-            -- doesn't match the required type
-            malloc(sizeof(int32) * onset_count)
-        } else { NULL };
+            -- FIXED: shouldn't be allowed to omit semi even if the fn return
+            -- doesn't match the required type:
+            -- fixed by checking type of each block so if no semi it will erro
+            -- NOTE; i imagine that there are edge cases where the expr evaluates to
+            -- the correct type so the semi colon is not check
+            malloc(sizeof(int32) * onset_count) as int32*
+        } else { NULL; };
 
         let int32* coda_head = if coda_count > 0 {
-            malloc(sizeof(int32) * coda_count)
-        } else { NULL };
+            malloc(sizeof(int32) * coda_count) as int32*
+        } else { NULL; };
 
         const float64 RAND_MAX = 0x7fffffff;
         mut int32* tmp = onset_head;
@@ -215,7 +220,7 @@ generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
 
         if onset_head != NULL {
             let char* onset = consonants[onset_head[0]];
-            let usize onset_bytes = strlen(onset);
+            let usize onset_bytes = strlen(onset as string);
             let char* onset_a = align_alloc(arena, onset_bytes) as char*;
             if onset_a == NULL { exit(1); }
 
@@ -226,7 +231,7 @@ generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
             loop {
                 if loc_i >= onset_count { break; }
                 let char* loc_onset = consonants[onset_head[loc_i]];
-                let usize loc_onset_bytes = strlen(loc_onset);
+                let usize loc_onset_bytes = strlen(loc_onset as string);
                 let char* loc_onset_a = alloc(arena, loc_onset_bytes) as ptr;
                 if loc_onset_a == NULL { exit(1); }
                 memcpy(loc_onset_a, loc_onset, loc_onset_bytes);
@@ -237,7 +242,7 @@ generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
 
         let int32 nucleus_idx = (rand() as float64 / (RAND_MAX + 1) * vowel_len) as int32;
         let char* nucleus = vowels[nucleus_idx];
-        let usize nucleus_bytes = strlen(nucleus);
+        let usize nucleus_bytes = strlen(nucleus as string);
         let char* nucleus_a = alloc(arena, nucleus_bytes) as ptr;
 
         if onset_head == NULL { word_arr[idx] = nucleus_a; }
@@ -251,7 +256,7 @@ generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
                 if loc_i >= coda_count - 1 { break; }
 
                 let char* loc_coda = consonants[coda_head[loc_i]];
-                let usize loc_coda_bytes = strlen(loc_coda);
+                let usize loc_coda_bytes = strlen(loc_coda as string);
                 let char* loc_coda_a = alloc(arena, loc_coda_bytes) as ptr;
 
                 if loc_coda_a == NULL { exit(1); }
@@ -260,7 +265,7 @@ generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
             }
 
             let char* coda = consonants[coda_head[loc_i]];
-            let usize coda_bytes = strlen(coda) + 1;
+            let usize coda_bytes = strlen(coda as string) + 1;
             let char* coda_a = alloc(arena, coda_bytes) as ptr;
             if coda_a == NULL { exit(1); }
             memcpy(coda_a, coda, coda_bytes);
@@ -323,8 +328,8 @@ main() {
     -- but a string is supposed to be a uint8 array under the hood
     let Syllable syllable = Syllable { str: "cvc" };
 
-    -- FIXME: compiler doesn't error on incorrect args and ordering
+    -- FIXED: compiler doesn't error on incorrect args and ordering
     -- and all possible issues with that
-    generate_lang(&lang, &arena, syllable, 10);
+    generate_lang(*lang, *arena, syllable, 10);
     print_lang(lang);
 }

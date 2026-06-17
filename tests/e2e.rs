@@ -829,14 +829,15 @@ fn early_return_in_value_position_diverges() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "3\n99\n");
 }
 
-/// a `loop` in value position used to panic the compiler at an MIR `unreachable!`.
-/// it now lowers like the other divergent control flow (`return`/`break`): the
-/// loop runs as a statement and yields the poison `0` (break is valueless today;
-/// break-with-value is fork d). the program compiles and runs instead of crashing
-/// the compiler.
+/// a `loop` in value position used to panic the compiler at an MIR `unreachable!`
+/// (the A3 footgun: it silently yielded poison `0`). with the unit/never types it
+/// is typed precisely: `loop { break; }` completes with `()` (unit), so returning
+/// it where `int32` is expected is a clean type error - not an ICE, and not a
+/// silent `0`. (a divergent `loop {}` would instead be `!` and coerce to any
+/// return type; here the `break` makes the loop unit.)
 #[test]
 fn value_position_loop_does_not_panic() {
-    let (out, _) = common::run_program(
+    let out = common::compile_expect_failure(
         "pick() -> int32 {\n\
          \x20   loop { break; }\n\
          }\n\
@@ -844,13 +845,19 @@ fn value_position_loop_does_not_panic() {
          \x20   println(\"{}\", pick());\n\
          }\n",
     );
-    assert!(
-        out.status.success(),
-        "program exited {}; stderr: {}",
-        out.status,
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n");
+    assert!(
+        !report.to_lowercase().contains("panic"),
+        "compiler panicked instead of cleanly rejecting: {report}"
+    );
+    assert!(
+        report.contains("T024") || report.contains("produces no value"),
+        "expected a void-value (T024) diagnostic, got: {report}"
+    );
 }
 
 /// a complex (temp-spilling) match guard falls through correctly when false.

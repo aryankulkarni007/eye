@@ -51,6 +51,19 @@ pub enum TypeKind {
         /// it can be arity-checked as a minimum, not an exact count.
         variadic: bool,
     },
+    /// `()` -- the unit type. the type of an expression that completes but
+    /// yields no value: a statement-position `if`/`loop`/`block`, a call to a
+    /// function with no return type, an assignment. spellable in source as `()`.
+    /// binding or operating on a unit value is a `VoidValueInValuePosition`
+    /// error - the kernel has no use for a discardable value in value position.
+    Unit,
+    /// `!` -- the never type (the bottom type). the type of an expression that
+    /// diverges and never yields control: `return`, `break`, `continue`, a
+    /// `loop` with no reachable `break`, or an `if`/`match` whose every branch
+    /// is `Never`. coerces to any type, so a diverging branch never forces a
+    /// branch-consistency mismatch (`if c { 5 } else { return }` types as the
+    /// `5`). synthesized by inference only - not spellable in source.
+    Never,
     /// the error sentinel -- produced when a prior diagnostic already fired.
     Error,
 }
@@ -85,6 +98,8 @@ pub struct TypeInterner {
     int32_ty: TypeRef,
     uint8_ty: TypeRef,
     usize_ty: TypeRef,
+    unit_ty: TypeRef,
+    never_ty: TypeRef,
 }
 
 impl TypeInterner {
@@ -97,6 +112,8 @@ impl TypeInterner {
             int32_ty: TypeRef(0),
             uint8_ty: TypeRef(0),
             usize_ty: TypeRef(0),
+            unit_ty: TypeRef(0),
+            never_ty: TypeRef(0),
         };
         // `&self` interning lets this run on the freshly built (not-yet-shared)
         // interner; the cached handles are captured before it is handed out.
@@ -107,8 +124,11 @@ impl TypeInterner {
         ] {
             this.intern(TypeKind::Path(Text::from(*name)));
         }
-        // `ptr` is structural (`TypeKind::RawPtr`), not a named path.
+        // `ptr` is structural (`TypeKind::RawPtr`), not a named path; `()` and
+        // `!` likewise have their own variants.
         this.intern(TypeKind::RawPtr);
+        let unit_ty = this.intern(TypeKind::Unit);
+        let never_ty = this.intern(TypeKind::Never);
         let int32_ty = this.intern(TypeKind::Path(Text::from("int32")));
         let uint8_ty = this.intern(TypeKind::Path(Text::from("uint8")));
         let usize_ty = this.intern(TypeKind::Path(Text::from("usize")));
@@ -117,6 +137,8 @@ impl TypeInterner {
             int32_ty,
             uint8_ty,
             usize_ty,
+            unit_ty,
+            never_ty,
             ..this
         }
     }
@@ -139,6 +161,16 @@ impl TypeInterner {
     /// retrieve the pre-injected `usize` handle (read-only).
     pub fn usize_ty(&self) -> TypeRef {
         self.usize_ty
+    }
+
+    /// retrieve the pre-injected unit (`()`) handle (read-only).
+    pub fn unit_ty(&self) -> TypeRef {
+        self.unit_ty
+    }
+
+    /// retrieve the pre-injected never (`!`) handle (read-only).
+    pub fn never_ty(&self) -> TypeRef {
+        self.never_ty
     }
 
     /// intern a [`TypeKind`], returning its canonical [`TypeRef`] handle.
@@ -265,6 +297,8 @@ impl<'a> fmt::Display for TypeRefDisplay<'a> {
                 }
                 Ok(())
             }
+            TypeKind::Unit => write!(f, "()"),
+            TypeKind::Never => write!(f, "!"),
             TypeKind::Error => write!(f, "<error>"),
         }
     }
@@ -297,7 +331,11 @@ impl TypeInterner {
                     self.walk(*r, visitor);
                 }
             }
-            TypeKind::Path(_) | TypeKind::RawPtr | TypeKind::Error => {}
+            TypeKind::Path(_)
+            | TypeKind::RawPtr
+            | TypeKind::Unit
+            | TypeKind::Never
+            | TypeKind::Error => {}
         }
         visitor.visit_ty_post(ty, self);
     }

@@ -1641,3 +1641,216 @@ main() {
         diags(&hir)
     );
 }
+
+/// a string literal (`&[uint8; N]`) decays into a `char*` slot - both a scalar
+/// `let` and an array element - via the `char`<->`uint8` byte pun. closes the
+/// string/char duality gap; no type error at any of the three sites.
+#[test]
+fn string_literal_decays_to_char_ptr() {
+    let hir = lower(
+        "\
+greet(char* s) -> int32 { 0 }
+
+main() -> int32 {
+    let char* s = \"hi\";
+    let [char*; 2] xs = [\"a\", \"b\"];
+    greet(s) + greet(xs[0])
+}
+",
+    );
+    assert!(
+        diags(&hir).is_empty(),
+        "string -> char* decay (scalar + array element + arg) must be accepted: {:?}",
+        diags(&hir)
+    );
+}
+
+/// M2b: a binary on two distinct *concrete* integer widths (neither a literal)
+/// silently narrows in C; reject and make the user cast (Rust's strict-width
+/// rule). the literal-adoption case (M2) and equal widths stay legal.
+#[test]
+fn mixed_integer_widths_are_rejected() {
+    let hir = lower(
+        "\
+f(int8 a, int64 b) -> int8 { a + b }
+main() -> int32 { 0 }
+",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|d| matches!(d, HirError::Type(TypeError::MixedIntegerWidths { .. }))),
+        "int8 + int64 must reject (M2b): {:?}",
+        diags(&hir)
+    );
+}
+
+#[test]
+fn matching_width_and_literal_binaries_accepted() {
+    let hir = lower(
+        "\
+same(int8 a, int8 b) -> int8 { a + b }
+adopt(int8 a) -> int8 { a + 5 }
+wide(usize n) -> usize { n - 1 }
+main() -> int32 { 0 }
+",
+    );
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|d| matches!(d, HirError::Type(TypeError::MixedIntegerWidths { .. }))),
+        "equal widths + literal adoption must be accepted: {:?}",
+        diags(&hir)
+    );
+}
+
+/// boundary strict width (the `types_compatible` integer-family leniency is
+/// gone): a non-literal `int64` argument to an `int8` parameter rejects - the
+/// arg-boundary analogue of M2b. a literal would adopt the param width instead.
+#[test]
+fn mismatched_width_argument_is_rejected() {
+    let hir = lower(
+        "\
+take(int8 x) -> int8 { x }
+f(int64 n) -> int8 { take(n) }
+main() -> int32 { 0 }
+",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|d| matches!(d, HirError::Type(TypeError::ArgTypeMismatch { .. }))),
+        "an int64 arg to an int8 param must reject: {:?}",
+        diags(&hir)
+    );
+}
+
+/// a literal in a value-position `if`/`match` branch adopts the expected width
+/// (`site_coerce` forwards the expectation into branches), so a wider declared
+/// type stays consistent - no spurious arm/branch mismatch.
+#[test]
+fn value_position_branch_literals_adopt_width() {
+    let hir = lower(
+        "\
+choose(int64 k) -> int64 {
+    let int64 x = match k { 0 -> 1, _ -> 2 };
+    let int64 y = if k > 0 { 10 } else { 20 };
+    x + y
+}
+main() -> int32 { 0 }
+",
+    );
+    assert!(
+        !diags(&hir).iter().any(|d| matches!(d, HirError::Type(_))),
+        "branch literals must adopt int64: {:?}",
+        diags(&hir)
+    );
+}
+
+/// the kernel cuts the implicit raw-`ptr` -> typed-pointer footgun: a `ptr`
+/// (`malloc`) tail in an `int32*` value-position `if` rejects (the branch is
+/// consistent with its sibling but not the declared type). an explicit
+/// `as int32*` is the escape.
+#[test]
+fn raw_ptr_into_typed_pointer_branch_is_rejected() {
+    let hir = lower(
+        "\
+extern { malloc(usize n) -> ptr; }
+bad(int32 c) -> int32 { let int32* x = if c > 0 { malloc(8) } else { malloc(4) }; 0 }
+main() -> int32 { 0 }
+",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|d| matches!(d, HirError::Type(TypeError::IfBranchTypeMismatch { .. }))),
+        "raw ptr -> int32* if-branch must reject: {:?}",
+        diags(&hir)
+    );
+}
+
+#[test]
+fn raw_ptr_into_typed_pointer_with_cast_is_accepted() {
+    let hir = lower(
+        "\
+extern { malloc(usize n) -> ptr; }
+good(int32 c) -> int32 { let int32* x = if c > 0 { malloc(8) as int32* } else { malloc(4) as int32* }; 0 }
+main() -> int32 { 0 }
+",
+    );
+    assert!(
+        !diags(&hir).iter().any(|d| matches!(d, HirError::Type(_))),
+        "explicit `as int32*` must be accepted: {:?}",
+        diags(&hir)
+    );
+}
+
+// ---- unit (`()`) / never (`!`) types ----
+
+/// the explicit unit type `()` is spellable as a return type and behaves like
+/// the implicit void return: a tail-less body is clean (it completes with
+/// unit), and binding the `()` result in value position is the void-value error.
+#[test]
+fn explicit_unit_return_type_is_void_like() {
+    let clean = lower("noop() -> () { }\nmain() { noop(); }\n");
+    assert!(
+        diags(&clean).is_empty(),
+        "`-> ()` no-op function must be clean: {:?}",
+        diags(&clean)
+    );
+
+    let rejected = lower("noop() -> () { }\nmain() { let int32 x = noop(); }\n");
+    assert!(
+        rejected.diagnostics.entries().iter().any(|(_, e)| matches!(
+            e,
+            HirError::Type(TypeError::VoidValueInValuePosition)
+        )),
+        "binding a `()` value must be the void-value error: {:?}",
+        diags(&rejected)
+    );
+}
+
+/// a value-position `if` whose branches yield no value (tail-less, so the whole
+/// `if` is `()`) is rejected wherever it sits - here as a `let` initializer and,
+/// crucially, buried as a `Binary` operand (the lang.eye MIR-ICE repro). a
+/// statement-position void `if` stays legal (its value is discarded).
+#[test]
+fn value_position_void_if_is_rejected() {
+    let init = lower(
+        "extern { f(); }\nmain() { let int32 x = if true { f(); } else { f(); }; }\n",
+    );
+    assert!(
+        init.diagnostics.entries().iter().any(|(_, e)| matches!(
+            e,
+            HirError::Type(TypeError::VoidValueInValuePosition)
+        )),
+        "a void `if` bound to int32 must be rejected: {:?}",
+        diags(&init)
+    );
+
+    // statement position: the `if` runs for effect, its `()` discarded.
+    let stmt = lower("extern { f(); }\nmain() { if true { f(); } else { f(); } }\n");
+    assert!(
+        !stmt.diagnostics.entries().iter().any(|(_, e)| matches!(
+            e,
+            HirError::Type(TypeError::VoidValueInValuePosition)
+        )),
+        "a statement-position void `if` must be clean: {:?}",
+        diags(&stmt)
+    );
+}
+
+/// a diverging branch has the never type (`!`), which coerces to any expected
+/// type, so a value-position `if` whose other branch yields a value is clean -
+/// `let int32 x = if c { return; } else { 2 }` types as the `2`.
+#[test]
+fn never_branch_coerces_to_value_branch() {
+    let hir = lower(
+        "pick(int32 c) -> int32 {\n    let int32 x = if c < 0 { return 0; } else { 2 };\n    x\n}\nmain() { }\n",
+    );
+    assert!(
+        diags(&hir).is_empty(),
+        "a `Never` (return) branch must coerce to the value branch: {:?}",
+        diags(&hir)
+    );
+}

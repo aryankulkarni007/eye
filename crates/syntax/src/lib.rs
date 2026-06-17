@@ -55,7 +55,7 @@ syntax_kinds! {
     UnionDef,
     ExternBlock, ExternFn, ExternTypeDef,
     FnDef, EffectList, ParamList, Param, Variadic, Block,
-    IdentType, RefType, PtrType, ArrayType, FnType, FnTypeParam,
+    IdentType, RefType, PtrType, ArrayType, FnType, FnTypeParam, UnitType,
     LetStmt, ExprStmt,
     Literal, NameRef, CallExpr, ArgList,
     ArrayLit, ArrayRepeat, IndexExpr,

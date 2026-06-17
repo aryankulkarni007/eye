@@ -323,6 +323,7 @@ fn describe_type_ref(t: &ast::TypeRef) -> String {
                 None => format!("({params})"),
             }
         }
+        ast::TypeRef::UnitType(_) => "()".to_string(),
     }
 }
 

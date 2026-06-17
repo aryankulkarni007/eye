@@ -64,7 +64,11 @@ LetStmt = ty:TypeRef? name:'ident'? pat:StructPat? '=' value:Expr ';'
 ExprStmt = Expr ';'
 
 // --- TYPE SYSTEM UPDATES ---
-TypeRef = IdentType | RefType | PtrType | ArrayType | FnType
+TypeRef = IdentType | RefType | PtrType | ArrayType | FnType | UnitType
+
+// the unit type `()`: an empty parenthesis with no return arrow. `() -> R` is
+// still a FnType (a paramless function pointer); `()` alone is unit.
+UnitType = '(' ')'
 
 IdentType = name:'ident'
 

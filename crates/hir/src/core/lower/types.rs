@@ -81,6 +81,8 @@ pub(super) fn lower_type_ref(
             Some(t) => types.intern(TypeKind::Path(SmolStr::from(t.text()))),
             None => types.intern(TypeKind::Error),
         },
+        // `()` - the unit type, spelled explicitly (`f() -> () { ... }`).
+        ast::TypeRef::UnitType(_) => types.unit_ty(),
         ast::TypeRef::RefType(rt) => {
             let inner = rt
                 .inner()

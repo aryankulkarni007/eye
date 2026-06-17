@@ -175,6 +175,8 @@ fn classify_type_ref(ty: &TypeRef, spans: &mut Vec<ClassifiedSpan>) {
                 classify_type_ref(&ret, spans);
             }
         }
+        // `()` is punctuation only - no name token to classify.
+        TypeRef::UnitType(_) => {}
     }
 }
 

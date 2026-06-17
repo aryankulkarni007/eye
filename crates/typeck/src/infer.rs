@@ -37,7 +37,11 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             scope,
             body,
             types,
-            fn_ret,
+            // a `-> ()` return is the void return: the body completes with unit,
+            // needs no explicit `return`, and discards its tail. normalizing it
+            // to `None` here makes the explicit unit return behave identically to
+            // the implicit void one across every return/tail judgment.
+            fn_ret: fn_ret.filter(|&t| t != types.unit_ty()),
             results: TypeckResults::default(),
             obs,
         }
@@ -57,7 +61,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             if let Some(ret) = self.fn_ret {
                 self.site_coerce(ret, tail);
                 if matches!(self.body.exprs[tail], Expr::Match { .. }) {
-                    self.record(tail, ret);
+                    self.restamp_value_node(tail, ret);
                 }
             }
         }
@@ -67,7 +71,108 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         self.check_if_branch_consistency();
         self.check_matches();
         self.check_value_position_assignments();
+        self.check_value_position_voids();
         self.results
+    }
+
+    /// completeness sweep - the walker's totality guarantee, now expressed
+    /// through the unit type. every expression in value position (one not in
+    /// `discarded_set`) that yields *no* value has type `()`; binding or
+    /// operating on it is rejected (`VoidValueInValuePosition`). this is what
+    /// makes the walker *total*: such an expression would otherwise reach MIR as
+    /// `void` and miscompile. the let-initializer / return-value / tail sites
+    /// catch what they can see; this sweep generalizes to *every* value position
+    /// - a `Binary` operand, an index, a nested argument - so a void value buried
+    /// in an expression is caught, not silently miscompiled. a diverging
+    /// expression has type `!` (`Never`), not `()`, so it is never swept - its
+    /// value is never read. an assignment is `()` too but owns its own
+    /// `AssignInValuePosition` message, so it is skipped here.
+    fn check_value_position_voids(&mut self) {
+        let unit = self.types.unit_ty();
+        let discarded = self.discarded_set();
+        let voids: Vec<ExprId> = self
+            .body
+            .exprs
+            .iter()
+            .filter_map(|(id, expr)| {
+                if !self.results.visited.contains(&id)
+                    || discarded.contains(&id)
+                    || matches!(expr, Expr::Assign { .. })
+                {
+                    return None;
+                }
+                (self.ty_of(id) == Some(unit)).then_some(id)
+            })
+            .collect();
+        for id in voids {
+            self.emit_at(id, None, hir::core::TypeError::VoidValueInValuePosition);
+        }
+    }
+
+    /// whether an expression has the never type (`!`) - it diverges and never
+    /// yields control. used to detect a diverging tail-less block.
+    fn is_never(&self, id: ExprId) -> bool {
+        self.ty_of(id) == Some(self.types.never_ty())
+    }
+
+    /// whether an expression has the unit type (`()`) - it completes but yields
+    /// no value. the value-position void check; a coercion site skips its
+    /// type-mismatch comparison for a unit value (the sweep owns the diagnostic).
+    fn is_unit(&self, id: ExprId) -> bool {
+        self.ty_of(id) == Some(self.types.unit_ty())
+    }
+
+    /// the never-absorbing join of two branch types: a `Never` branch takes the
+    /// other's type, so `if c { 5 } else { return }` joins to the `5`. when both
+    /// are non-`Never` and differ, the first wins and the branch-consistency
+    /// check reports the mismatch (it stays bug-compatible with the old
+    /// first-arm-wins rule for the non-divergent case).
+    fn join(&self, a: TypeRef, b: TypeRef) -> TypeRef {
+        if a == self.types.never_ty() { b } else { a }
+    }
+
+    /// [`Self::join`] lifted over optional branch types (an untyped branch
+    /// contributes nothing).
+    fn join_opt(&self, a: Option<TypeRef>, b: Option<TypeRef>) -> Option<TypeRef> {
+        match (a, b) {
+            (Some(x), Some(y)) => Some(self.join(x, y)),
+            (Some(x), None) => Some(x),
+            (None, y) => y,
+        }
+    }
+
+    /// whether a `loop` body contains a `break` that targets *this* loop (a
+    /// `break` inside a nested loop belongs to the inner loop, so the scan does
+    /// not descend into nested `Loop` bodies). a loop with such a break completes
+    /// with unit; one without never returns control and is `Never`.
+    fn loop_has_break(&self, block: BlockId) -> bool {
+        self.block_has_break(block)
+    }
+
+    fn block_has_break(&self, block: BlockId) -> bool {
+        let b = &self.body.blocks[block];
+        b.stmts.iter().any(|&s| {
+            matches!(&self.body.stmts[s], Stmt::Expr(e) if self.expr_has_break(*e))
+        }) || b.tail.is_some_and(|t| self.expr_has_break(t))
+    }
+
+    fn expr_has_break(&self, id: ExprId) -> bool {
+        match &self.body.exprs[id] {
+            Expr::Break => true,
+            // a `break` inside a nested loop targets the inner loop.
+            Expr::Loop { .. } => false,
+            Expr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.block_has_break(*then_branch)
+                    || else_branch.is_some_and(|b| self.block_has_break(b))
+            }
+            Expr::Block(b) => self.block_has_break(*b),
+            Expr::Match { arms, .. } => arms.iter().any(|a| self.expr_has_break(a.body)),
+            _ => false,
+        }
     }
 
     /// assignment-non-value judgment (S3): an `Expr::Assign` is legal only in
@@ -200,6 +305,14 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             }
             Expr::Block(b) => {
                 if let Some(t) = self.body.blocks[*b].tail {
+                    self.mark_discarded(t, set);
+                }
+            }
+            // a `loop` never yields its body's value, so the body block's tail
+            // is discarded - a trailing else-less `if` (`loop { ..; if c { f(); } }`)
+            // runs for effect, exactly like a statement.
+            Expr::Loop { body } => {
+                if let Some(t) = self.body.blocks[*body].tail {
                     self.mark_discarded(t, set);
                 }
             }
@@ -534,9 +647,10 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             }
             return;
         };
-        // a tail else-less / void-branch `if` yields no value for the return.
-        if self.yields_no_value(tail) {
-            self.emit_at(tail, None, hir::core::TypeError::VoidValueInValuePosition);
+        // a unit tail (an else-less `if`, a tail-less block, a void call) yields
+        // no value for the return; the completeness sweep owns that diagnostic,
+        // so here we just skip the return-type comparison.
+        if self.is_unit(tail) {
             return;
         }
         // a value-position tail match: `check_match_arm_consistency` owns the
@@ -583,13 +697,13 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 );
             }
             (Some(ret), Some(val)) => {
-                // a returned else-less / void-branch `if` yields no value.
-                if self.yields_no_value(val) {
-                    self.emit_at(val, ret_ptr, hir::core::TypeError::VoidValueInValuePosition);
+                // a returned unit value (an else-less `if`, a void call) yields
+                // no value; the completeness sweep owns that diagnostic, so here
+                // we only compare a *known* return value type to the declared one.
+                if self.is_unit(val) {
                     return;
                 }
                 let Some(actual) = self.ty_of(val) else {
-                    self.emit_at(val, ret_ptr, hir::core::TypeError::VoidValueInValuePosition);
                     return;
                 };
                 if !types_compatible(actual, ret, self.types)
@@ -638,35 +752,26 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         }
     }
 
-    /// explicit-let initializer type check (moved from lowering, S2 step b): an
-    /// `if` initializer must yield a value on every path, and a call
-    /// initializer's result type must match the declared type. other
-    /// initializers are not yet checked (no full inference). lenient on `Error`
-    /// and on array length (the latter is `check_array_init_len`'s job).
+    /// explicit-let initializer type check (moved from lowering, S2 step b): a
+    /// call initializer's result type must match the declared type. a void
+    /// initializer (an else-less `if`, a tail-less block, a void call) is the
+    /// completeness sweep's job (`check_value_position_voids`); here we only
+    /// compare a *known* initializer type. other initializers are not yet checked
+    /// (no full inference). lenient on `Error` and on array length (the latter is
+    /// `check_array_init_len`'s job).
     fn check_explicit_let_init_type(
         &mut self,
         expected: TypeRef,
         init: ExprId,
         stmt_ptr: Option<SyntaxNodePtr>,
     ) {
-        // an else-less / void-branch `if` leaves the binding uninitialized.
-        if self.yields_no_value(init) {
-            self.emit_at(
-                init,
-                stmt_ptr,
-                hir::core::TypeError::VoidValueInValuePosition,
-            );
+        if self.is_unit(init) {
             return;
         }
         if !matches!(self.body.exprs[init], Expr::Call { .. }) {
             return;
         }
         let Some(actual) = self.ty_of(init) else {
-            self.emit_at(
-                init,
-                stmt_ptr,
-                hir::core::TypeError::VoidValueInValuePosition,
-            );
             return;
         };
         if type_ref_contains_error(expected, self.types)
@@ -689,35 +794,6 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 stmt_ptr,
                 hir::core::TypeError::LetTypeMismatch { expected, got },
             );
-        }
-    }
-
-    /// true when an expression provably yields no value on some control path
-    /// (a value-consuming-position error). ported from lowering's
-    /// `yields_no_value`; the only proven case is an else-less / void-branch
-    /// `if`. conservative: anything unproven yields `false`.
-    fn yields_no_value(&self, id: ExprId) -> bool {
-        let (then_block, else_block) = match &self.body.exprs[id] {
-            Expr::If {
-                then_branch,
-                else_branch,
-                ..
-            } => (*then_branch, *else_branch),
-            _ => return false,
-        };
-        match else_block {
-            None => true,
-            Some(eb) => self.block_yields_no_value(then_block) || self.block_yields_no_value(eb),
-        }
-    }
-
-    /// a block provably yields no value only when its tail does (a nested
-    /// else-less `if`); a tail-less block may diverge, which is legal in value
-    /// position, so it returns `false`.
-    fn block_yields_no_value(&self, block: BlockId) -> bool {
-        match self.body.blocks[block].tail {
-            None => false,
-            Some(tail) => self.yields_no_value(tail),
         }
     }
 
@@ -858,9 +934,10 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                         self.site_coerce(declared, init);
                         // mirrors `record_match_result_override`: an
                         // explicitly typed `let` is authoritative for a
-                        // value-position match initializer.
+                        // value-position match initializer (guarded so a void
+                        // match stays untyped for the completeness sweep).
                         if matches!(self.body.exprs[init], Expr::Match { .. }) {
-                            self.record(init, declared);
+                            self.restamp_value_node(init, declared);
                         }
                         // let-initializer judgments (moved from lowering, S2
                         // step b), against the explicit declared type.
@@ -888,10 +965,27 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         for &stmt in &body.blocks[id].stmts {
             self.infer_stmt(stmt);
         }
-        tail.and_then(|t| {
-            self.infer_expr(t);
-            self.ty_of(t)
-        })
+        match tail {
+            Some(t) => {
+                self.infer_expr(t);
+                self.ty_of(t)
+            }
+            // a tail-less block ran its statements for effect and completes with
+            // unit (`()`) - unless its last statement diverges (`{ ..; return; }`),
+            // in which case control never reaches the end and the block is
+            // `Never`. before the unit type this was `None`, which left a
+            // value-position block untyped and ICEd MIR.
+            None => {
+                let diverges = body.blocks[id].stmts.last().is_some_and(|&s| {
+                    matches!(&body.stmts[s], Stmt::Expr(e) if self.is_never(*e))
+                });
+                Some(if diverges {
+                    self.types.never_ty()
+                } else {
+                    self.types.unit_ty()
+                })
+            }
+        }
     }
 
     /// type one expression bottom-up, mirroring `lower_expr`'s stamping.
@@ -917,9 +1011,9 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 let (op, operand) = (*op, *operand);
                 self.infer_expr(operand);
                 // opaque enums (T035): `-`/`~` on an enum value is arithmetic
-                // and rejected, like the binary operators. PARITY(S3): emit the
-                // diagnostic but keep lowering's type (the operand's); the
-                // poison flip lands at the S2 cutover.
+                // and rejected, like the binary operators. the expr keeps the
+                // operand's type below - unused, since a rejected program never
+                // reaches codegen.
                 if matches!(op, UnaryOp::Neg | UnaryOp::BitNot)
                     && let Some(enum_name) = self.expr_enum_name(operand)
                 {
@@ -1056,12 +1150,10 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 let (lhs, rhs) = (*lhs, *rhs);
                 self.infer_expr(lhs);
                 self.infer_expr(rhs);
-                // assignment is ruled non-value (S3); a value-position use is
-                // rejected post-walk by `check_value_position_assignments`. the
-                // synthesized type is the rhs's - unused either way (a
-                // statement-position assign is discarded, a value-position one
-                // is a rejected program), but kept so the walker stays total.
-                self.ty_of(rhs)
+                // assignment yields unit (`()`), Rust's rule; it is ruled
+                // non-value (S3), so a value-position use is rejected by
+                // `check_value_position_assignments` with its own message.
+                Some(self.types.unit_ty())
             }
             Expr::If {
                 cond,
@@ -1071,15 +1163,35 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 let (cond, then_branch, else_branch) = (*cond, *then_branch, *else_branch);
                 self.infer_expr(cond);
                 let then_ty = self.infer_block(then_branch);
-                let else_ty = else_branch.and_then(|b| self.infer_block(b));
-                then_ty.or(else_ty)
+                match else_branch {
+                    // an else-less `if` completes with unit: the false path
+                    // yields no value, so the whole `if` is `()`. a value-yielding
+                    // then branch is simply discarded (legal as a statement);
+                    // binding the `()` result in value position is rejected by
+                    // the completeness sweep.
+                    None => Some(self.types.unit_ty()),
+                    // both branches present: the never-absorbing join, so a
+                    // diverging branch (`else { return }`) takes the other's type.
+                    Some(b) => {
+                        let else_ty = self.infer_block(b);
+                        self.join_opt(then_ty, else_ty)
+                    }
+                }
             }
             Expr::Loop { body: loop_body } => {
                 let loop_body = *loop_body;
                 self.infer_block(loop_body);
-                None
+                // a loop that can `break` out completes with unit; one with no
+                // reachable break never returns control, so it is `Never`.
+                if self.loop_has_break(loop_body) {
+                    Some(self.types.unit_ty())
+                } else {
+                    Some(self.types.never_ty())
+                }
             }
-            Expr::Break | Expr::Continue => None,
+            // a `break`/`continue` transfers control away and never yields a
+            // value here: the never type, which coerces to any expectation.
+            Expr::Break | Expr::Continue => Some(self.types.never_ty()),
             Expr::Return(value) => {
                 let value = *value;
                 if let Some(v) = value {
@@ -1089,7 +1201,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     }
                 }
                 self.check_explicit_return(id, value);
-                None
+                Some(self.types.never_ty())
             }
             Expr::Ref { operand } => {
                 let operand = *operand;
@@ -1157,8 +1269,9 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                         }
                     }
                 }
-                // type of the whole match mirrors `if`: the first arm whose
-                // body type is known. a `let`/return override re-records it
+                // type of the whole match mirrors `if`: the join of the arm
+                // body types, with `Never` arms absorbed so the first
+                // value-yielding arm wins. a `let`/return override re-records it
                 // afterwards (see `infer_stmt` / `run`).
                 let mut arm_type: Option<TypeRef> = None;
                 for arm in arms {
@@ -1166,9 +1279,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                         self.infer_expr(g);
                     }
                     self.infer_expr(arm.body);
-                    if arm_type.is_none() {
-                        arm_type = self.ty_of(arm.body);
-                    }
+                    arm_type = self.join_opt(arm_type, self.ty_of(arm.body));
                 }
                 arm_type
             }
@@ -1265,7 +1376,10 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                         );
                     }
                 }
-                self.scope.functions[fn_id].ret
+                // a call to a function with no return type yields unit (`()`).
+                self.scope.functions[fn_id]
+                    .ret
+                    .or_else(|| Some(self.types.unit_ty()))
             }
             // the `println` intrinsic (the only unresolved callee that
             // survives lowering as a call): not a typed value.
@@ -1295,7 +1409,10 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 for (a, kind) in bad {
                     self.emit_at(a, None, hir::core::TypeError::PrintCannotFormat { kind });
                 }
-                None
+                // an unresolved callee (`println`, or a genuinely undeclared
+                // name already diagnosed) has an unknown result: poison, so a
+                // value-position use never cascades into a spurious mismatch.
+                Some(self.types.error_type())
             }
             // indirect call through a function-pointer value. a callee that is
             // neither a function pointer nor `Error` is not callable
@@ -1308,15 +1425,18 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 }
                 match callee_ty {
                     Some(ty) => match self.types.lookup(ty) {
-                        TypeKind::Fn { ret, .. } => *ret,
-                        TypeKind::Error => None,
+                        // a void function pointer's call yields unit.
+                        TypeKind::Fn { ret, .. } => {
+                            ret.or_else(|| Some(self.types.unit_ty()))
+                        }
+                        TypeKind::Error => Some(self.types.error_type()),
                         _ => {
                             let found = self.types.display(ty).to_string();
                             self.emit_at(callee, None, hir::core::TypeError::CallNonFunction { found });
-                            None
+                            Some(self.types.error_type())
                         }
                     },
-                    None => None,
+                    None => Some(self.types.error_type()),
                 }
             }
         }
@@ -1431,6 +1551,23 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 return Some(hir::core::TypeError::ModuloOnFloat);
             }
         }
+        // M2b: two operands of *distinct concrete* integer widths (neither a
+        // literal that would adopt the other's width, M2) silently narrow - the
+        // C result takes one operand's width and truncates the wider value.
+        // reject; the user casts explicitly (no-footgun, Rust's strict-width
+        // rule). applies to arithmetic, bitwise, and comparison alike.
+        if let (Some(l), Some(r)) = (self.ty_of(lhs), self.ty_of(rhs))
+            && l != r
+            && is_integer_path(l, self.types)
+            && is_integer_path(r, self.types)
+            && !self.is_int_literal(lhs)
+            && !self.is_int_literal(rhs)
+        {
+            return Some(hir::core::TypeError::MixedIntegerWidths {
+                left: self.types.display(l).to_string(),
+                right: self.types.display(r).to_string(),
+            });
+        }
         None
     }
 
@@ -1543,11 +1680,98 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
     // -----------------------------------------------------------------
 
     fn site_coerce(&mut self, expected: TypeRef, id: ExprId) {
+        // forward the expectation through transparent value-position nodes -
+        // `if`/`match` branches - so a literal in a branch adopts the expected
+        // width (the downward-propagation the Tier-2 spine generalizes). without
+        // it, `let int64 x = match s { A -> 1, ... }` leaves the `1` at the
+        // `int32` default and (post-leniency-removal) mismatches the int64 the
+        // arm-consistency check expects. after adopting the branches, the node
+        // itself takes the expected type (MIR reads its temp from this).
+        let body = self.body;
+        match &body.exprs[id] {
+            Expr::Match { arms, .. } => {
+                let bodies: Vec<ExprId> = arms.iter().map(|a| a.body).collect();
+                for b in bodies {
+                    self.site_coerce(expected, b);
+                }
+                self.restamp_value_node(id, expected);
+                return;
+            }
+            Expr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                let (tb, eb) = (*then_branch, *else_branch);
+                if let Some(tail) = body.blocks[tb].tail {
+                    self.site_coerce(expected, tail);
+                    self.expect_branch_type(expected, tail);
+                }
+                if let Some(eb) = eb
+                    && let Some(tail) = body.blocks[eb].tail
+                {
+                    self.site_coerce(expected, tail);
+                    self.expect_branch_type(expected, tail);
+                }
+                self.restamp_value_node(id, expected);
+                return;
+            }
+            _ => {}
+        }
         self.coerce_array_literal(expected, id);
         self.adopt_int_literal(expected, id);
         self.adopt_float_literal(expected, id);
         self.adopt_divergent(expected, id);
         self.record_decay(expected, id);
+    }
+
+    /// re-type an `if`/`match` to the coercion-site's expected type so MIR reads
+    /// the hoist temp from it - but only when the node actually yields a value.
+    /// a unit `if`/`match` (every branch value-less) is left as `()` so the
+    /// completeness sweep rejects it; a never one is left `!` (it diverges, MIR
+    /// lowers it in place). without this guard a coercion site would fabricate a
+    /// temp of the expected type and silently miscompile the void binding
+    /// (`let int32* p = if c { malloc(); } else { NULL; };`).
+    fn restamp_value_node(&mut self, id: ExprId, expected: TypeRef) {
+        match self.ty_of(id) {
+            Some(t) if t != self.types.unit_ty() && t != self.types.never_ty() => {
+                self.record(id, expected);
+            }
+            _ => {}
+        }
+    }
+
+    /// validate a value-position `if`-branch tail against the declared type,
+    /// after `site_coerce` has adopted its literals. a tail that still does not
+    /// match (and is not a valid decay) is a mismatch - e.g. a raw `ptr`
+    /// (`malloc()`) tail meeting an `int32*` slot: the kernel cuts the implicit
+    /// `ptr -> typed pointer` footgun, so the user writes `malloc(...) as int32*`.
+    /// this catches what `check_if_branch_consistency` cannot - branches
+    /// consistent with each *other* but not with the declared type. (match arms
+    /// are covered by `check_match_arm_consistency`, which compares each arm to
+    /// the recorded match type.)
+    fn expect_branch_type(&mut self, expected: TypeRef, tail: ExprId) {
+        let Some(found) = self.ty_of(tail) else { return };
+        // a unit (void) branch tail is the completeness sweep's diagnostic, not
+        // a branch-type mismatch; `Never` is assignable via `site_assignable`.
+        if found == expected
+            || matches!(self.types.lookup(found), TypeKind::Unit)
+            || site_assignable(expected, found, self.types)
+            || type_ref_contains_error(found, self.types)
+            || type_ref_contains_error(expected, self.types)
+        {
+            return;
+        }
+        let exp = self.types.display(expected).to_string();
+        let fnd = self.types.display(found).to_string();
+        self.emit_at(
+            tail,
+            None,
+            hir::core::TypeError::IfBranchTypeMismatch {
+                expected: exp,
+                found: fnd,
+            },
+        );
     }
 
     /// record an array-reference *decay* (`coerce.rs` `maybe_decay` mirror): a
@@ -1566,16 +1790,14 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         }
     }
 
-    /// a value-position divergent expression (`loop` with no `break value`, or
-    /// `return`/`break`/`continue`) never produces a value: MIR lowers it as a
-    /// statement and yields poison `0` in its place. it has no synthesized
-    /// type, so adopt the expected type at the coercion site. this keeps
-    /// `expr_types` complete - MIR types the poison temp from it, and without
-    /// the stamp it falls back (A3: `void* /* ERROR TY */`, an invalid c
-    /// return). the whole-corpus shadow oracle permits this walker-extra stamp;
-    /// lowering left these untyped and leaned on the fallback.
+    /// a value-position divergent expression (a `Never`-typed `loop`/`return`/
+    /// `break`/`continue`) never produces a value: MIR lowers it as a statement
+    /// and yields poison `0` in its place. re-type it from `!` to the expected
+    /// type at the coercion site so MIR types the poison temp concretely (a bare
+    /// `!` temp would emit `void _t`). the value is never read, so the adopted
+    /// type is purely a placeholder for the unreachable slot.
     fn adopt_divergent(&mut self, expected: TypeRef, id: ExprId) {
-        if self.ty_of(id).is_none()
+        if (self.ty_of(id).is_none() || self.is_never(id))
             && matches!(
                 self.body.exprs[id],
                 Expr::Loop { .. } | Expr::Return(_) | Expr::Break | Expr::Continue
@@ -1857,19 +2079,28 @@ fn type_ref_contains_error(ty: TypeRef, types: &TypeInterner) -> bool {
     v.0
 }
 
-/// compatibility test for value-position match-arm types (ported from
-/// lowering, S2 step b). compatible when equal, when either side carries an
-/// `Error` (no follow-on cascade), or when both are integer-family scalars.
-/// PARITY(S3): the integer leniency exists because integer literals are all
-/// `int32` today, so a wider explicit binding would otherwise reject literal
-/// arms; it dies with literal adoption at the cutover.
+/// compatibility test for value-position match-arm types. compatible when
+/// either side carries an `Error` (no follow-on cascade), when either side is
+/// `Never` (the bottom type coerces to anything), or by exact `TypeRef`
+/// equality. the old integer-family leniency (any int ~ any int) is gone (M2b):
+/// a literal adopts the expected width at the coercion site before this runs,
+/// so a surviving mismatch is two distinct concrete widths.
 fn types_compatible(a: TypeRef, b: TypeRef, types: &TypeInterner) -> bool {
     if type_ref_contains_error(a, types) || type_ref_contains_error(b, types) {
         return true;
     }
-    if is_integer_path(a, types) && is_integer_path(b, types) {
+    // `!` (never) is the bottom type: a diverging value is acceptable wherever
+    // any type is expected, so a `Never` branch never forces a mismatch
+    // (`if c { 5 } else { return }` returns the `5`'s type, `loop {}` satisfies
+    // any return type).
+    if matches!(types.lookup(a), TypeKind::Never) || matches!(types.lookup(b), TypeKind::Never) {
         return true;
     }
+    // exact-width equality: the integer-family leniency (any int ~ any int) is
+    // gone (M2b at the boundaries). a literal already adopts the expected width
+    // at the coercion site before this runs, so a surviving mismatch is two
+    // distinct concrete widths - the same silent-narrowing footgun M2b rejects
+    // for operands, here for arguments / fields / returns.
     a == b
 }
 
@@ -1890,9 +2121,27 @@ fn array_ref_decays_to(declared: TypeRef, found: TypeRef, types: &TypeInterner) 
         TypeKind::Path(n) if n == "string" => {
             matches!(types.lookup(elem), TypeKind::Path(e) if e == "uint8")
         }
-        TypeKind::Ref(t) | TypeKind::Ptr(t) => *t == elem,
+        // `&T`/`T*` accepts `&[T; N]` on an exact element match, plus the
+        // `char`<->`uint8` byte pun: a string literal is `&[uint8; N]`, so this
+        // lets it decay into a `char*` slot (`let [char*; N] = ["a", ...]`, FFI
+        // string args). both are one-byte types; the decay emits an explicit
+        // `(char*)` cast, which is well-defined and silences `-Wpointer-sign`.
+        TypeKind::Ref(t) | TypeKind::Ptr(t) => *t == elem || byte_pun(*t, elem, types),
         _ => false,
     }
+}
+
+/// whether two scalar type handles are the interchangeable one-byte pair
+/// `char` and `uint8` (a string literal's element type vs a C `char*`).
+fn byte_pun(a: TypeRef, b: TypeRef, types: &TypeInterner) -> bool {
+    let name = |t: TypeRef| match types.lookup(t) {
+        TypeKind::Path(n) => Some(n.clone()),
+        _ => None,
+    };
+    matches!(
+        (name(a).as_deref(), name(b).as_deref()),
+        (Some("char"), Some("uint8")) | (Some("uint8"), Some("char"))
+    )
 }
 
 /// whether a value of type `found` is acceptable at a site expecting
@@ -1961,7 +2210,9 @@ enum CastClass {
 fn cast_class(ty: TypeRef, scope: &HIR, types: &TypeInterner) -> CastClass {
     match types.lookup(ty) {
         TypeKind::Error => CastClass::Unknown,
-        TypeKind::Array { .. } => CastClass::Aggregate,
+        // `()` / `!` have no value-level representation to cast through; the
+        // aggregate class rejects every cast pair involving them.
+        TypeKind::Array { .. } | TypeKind::Unit | TypeKind::Never => CastClass::Aggregate,
         TypeKind::Fn { .. } => CastClass::Fn,
         TypeKind::Ref(_) | TypeKind::Ptr(_) | TypeKind::RawPtr => CastClass::Pointer,
         TypeKind::Path(name) => {

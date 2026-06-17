@@ -50,6 +50,11 @@ impl fmt::Display for CType<'_> {
             } => f.write_str(&super::arrays::fn_typedef_name(
                 params, *ret, *variadic, self.types,
             )),
+            // `()` and `!` carry no value; a clean program never gives a temp
+            // either type (value-position unit is rejected, never coerces away),
+            // so this only renders in a declaration position that is itself
+            // unreachable. `void` is the honest c spelling.
+            TypeKind::Unit | TypeKind::Never => f.write_str("void"),
             TypeKind::Error => f.write_str("void* /* ERROR TY */"),
         }
     }
@@ -104,6 +109,8 @@ pub(super) fn spec_for_type(ty: TypeRef, types: &TypeInterner) -> &'static str {
             "%s"
         }
         TypeKind::Ref(_) | TypeKind::Ptr(_) | TypeKind::Array { .. } | TypeKind::Fn { .. } => "%p",
-        TypeKind::Error => "%d",
+        // unreachable: a unit/never value is never a `println` argument (rejected
+        // as a void value before lowering).
+        TypeKind::Unit | TypeKind::Never | TypeKind::Error => "%d",
     }
 }

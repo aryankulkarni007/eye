@@ -219,6 +219,12 @@ pub enum TypeError {
         from: String,
         to: String,
     },
+    /// M2b: a binary on two distinct concrete integer widths (neither a literal
+    /// that would adopt) silently narrows; the user must cast explicitly.
+    MixedIntegerWidths {
+        left: String,
+        right: String,
+    },
     OpOnArray {
         op: &'static str,
     },
@@ -425,6 +431,13 @@ pub enum ConstError {
         ty: Text,
         min: String,
         max: String,
+    },
+    /// the folded value's kind does not match the declared type's kind
+    /// (`const bool B = 5`, `const char C = 65`, `const int32 X = true`).
+    /// matches the cast lattice: no implicit `int -> bool` / `int -> char`.
+    ConstTypeMismatch {
+        ty: Text,
+        found: Text,
     },
 }
 
@@ -656,6 +669,10 @@ impl fmt::Display for TypeError {
             TypeError::CastNotAllowed { from, to } => {
                 write!(f, "cannot cast {from} to {to}")
             }
+            TypeError::MixedIntegerWidths { left, right } => write!(
+                f,
+                "mismatched integer types `{left}` and `{right}`: cast one operand to match"
+            ),
             TypeError::OpOnArray { op } => write!(f, "cannot apply `{op}` to an array"),
             TypeError::ModuloOnFloat => {
                 write!(
@@ -874,6 +891,10 @@ impl fmt::Display for ConstError {
                 f,
                 "constant value {value} is out of range for type `{ty}` ({min}..{max})"
             ),
+            ConstError::ConstTypeMismatch { ty, found } => write!(
+                f,
+                "constant of type `{ty}` cannot be initialized with {found} value"
+            ),
         }
     }
 }
@@ -974,6 +995,7 @@ impl Diagnostic for HirError {
                 TypeError::IfBranchTypeMismatch { .. } => Code::new(Class::Type, 41),
                 TypeError::ArrayElementTypeMismatch { .. } => Code::new(Class::Type, 42),
                 TypeError::CastNotAllowed { .. } => Code::new(Class::Type, 43),
+                TypeError::MixedIntegerWidths { .. } => Code::new(Class::Type, 44),
             },
             HirError::Pattern(e) => match e {
                 PatternError::UnreachableAfterWildcard => Code::new(Class::Pattern, 1),
@@ -1000,6 +1022,7 @@ impl Diagnostic for HirError {
                 ConstError::AssignToConst { .. } => Code::new(Class::Const, 11),
                 ConstError::ArrayLenNotInteger => Code::new(Class::Const, 12),
                 ConstError::ConstValueOutOfRange { .. } => Code::new(Class::Const, 13),
+                ConstError::ConstTypeMismatch { .. } => Code::new(Class::Const, 14),
             },
             HirError::Effect(e) => match e {
                 EffectError::UnknownEffect { .. } => Code::new(Class::Effect, 1),

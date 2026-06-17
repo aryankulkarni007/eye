@@ -2,9 +2,10 @@
 
 Status: BUILD IN PROGRESS. Ratified 2026-06-12. S0-S2 built (cutover C1-C5
 complete - lowering no longer types any expression, typeck is the sole type
-source), S3 complete 2026-06-16 (judgments; only M2b strict-width deferred,
-ratified), S4 effects built, S5 firewall built 2026-06-16. Remaining: the
-Tier-2 expectation spine (downward propagation, below), S6 parallel wave, S7
+source), S3 complete 2026-06-16 (judgments, including M2b strict-width), S4
+effects built, S5 firewall built 2026-06-16, S6 parallel wave built 2026-06-16,
+Unit/Never types built 2026-06-17 (the void rule, below). Remaining: the Tier-2
+expectation spine (downward propagation, below), S7
 row-poly effects - designed, not built. This document is the engineering design
 and the ratified inference strategy; status sigils track what exists in the
 working tree. The cast lattice ruling lives in [CAST.md](CAST.md). [EFFECT.md](EFFECT.md) designs the second
@@ -54,11 +55,14 @@ retrofit.
 
 + built: `infer_expr` walks every `Expr` variant in `typeck/src/infer.rs`;
   bottom-up synthesis is complete and is the sole type source for MIR
-~ partial: expectations flow down only at the scattered coercion *sites*
-  (`site_coerce`: int/float-literal width adoption, array elements, decay,
-  divergent adoption). The unified `infer_expr(id, expected)` + single `expect`
-  funnel (below) is NOT threaded - this is the remaining Tier-1/Tier-2 work,
-  the only piece of in-kernel inference still outstanding
+~ partial: expectations flow down at the coercion *sites* (`site_coerce`:
+  int/float-literal width adoption, array elements, decay, divergent adoption),
+  and `site_coerce` now also forwards the expected type one level through
+  value-position `if`/`match` branches (so branch literals adopt the declared
+  width). The fully unified `infer_expr(id, expected)` + single `expect` funnel
+  (below) - propagation through *every* transparent node, plus two-span `Cause`
+  diagnostics - is NOT yet threaded; that is the remaining Tier-2 spine work,
+  the only piece of in-kernel inference still outstanding.
 
 ```rust
 fn infer_expr(&mut self, id: ExprId, expected: Expectation) -> TypeRef
@@ -223,7 +227,7 @@ pub fn check_body(scope: &HIR, body: &Body, types: &TypeInterner) -> TypeckResul
   + `println` arity (structural)
   + U2/U4 const range + cast checks (const-eval, layered below inference)
 
-The deferred S3 list below is now built except M2b; it is kept for the rulings
+The deferred S3 list below is now fully built; it is kept for the rulings
 that closed each design question (ratified 2026-06-12):
 
 - **M2 operand rule: strict same-type.** Binary arithmetic, bitwise, and
@@ -290,9 +294,22 @@ diagnostic and records `Error` - it never leaves a hole. Consequences:
   file; the const declared-type judgment lives there. Global initializers
   are const-expr today, so they have no effect surface (assumption
   recorded; revisit if initializers ever call fns).
-+ **The void rule.** A call to a fn with no return type produces no value;
-  using it where a value is expected is a T-class error carrying the call's
-  cause. `VoidValueInValuePosition` (T024) exists and fires.
++ **The void rule + Unit/Never (BUILT 2026-06-17).** Backed by a real
+  Rust-style type pair, so the walker is total over all control flow (closes
+  the cascading MIR-ICE on a value-less `if`/`loop`):
+  - `TypeKind::Unit` (`()`, the value-less completing type) - a tail-less block,
+    an else-less `if`, a bare assignment, a void fn body. Pre-interned
+    (`unit_ty()`); spellable in source (`f() -> () { }`, parser `UnitType` node,
+    normalized to void in `InferCtx::new`). A value-position expr that types
+    `()` is rejected: `VoidValueInValuePosition` (T024), via the post-walk
+    `check_value_position_voids` sweep. A void-fn call used as a value lands here.
+  - `TypeKind::Never` (`!`, the bottom/divergent type) - `return`/`break`/
+    `continue`/bare `loop {}`. Pre-interned (`never_ty()`); inference-internal
+    only (no source syntax). Coerces to any expected type: the Never-absorbing
+    `join`/`join_opt` makes branch unification uniform (`if c { 5 } else { return }`
+    is `int32`; `loop {}` satisfies any return type), and `types_compatible`
+    short-circuits on it.
+  Both render to C `void`; `mangle` uses `unit`/`never`.
 + **Pattern judgments split.** Built (C2, rust-analyzer name-based model):
   typeck's `check_matches` owns domain/coverage/exhaustiveness/dup/unreachable
   + variant-belongs (`PatternEnumMismatch`) and binds `local_types`; structural
@@ -456,13 +473,17 @@ database); on-disk persistence stays deferred.
   A3 fallback is an ICE, shadow harness deleted. step D: per-fn
   `typeck_fn(StableFnId)` query built; `hir_diagnostics` sources type diags
   per-fn.
-+ **S3 - new judgments (BUILT, only M2b deferred).** M2 literal-width operand
-  adoption, assignment non-value (T39), cast lattice (T43, [CAST.md](CAST.md)),
-  struct-field value types (T38), call argument types (T37), const declared-type
-  value check (U2/C13) + cast truncation (U4), F1 if-branch consistency (T41),
-  F2 negation-on-unsigned (T40), F3 float-literal adoption, L4 cross-element
-  (T42), `types_compatible` integer-leniency removed for literals. Open: M2b
-  (two distinct concrete widths) + tail-expression enforcement in value blocks.
++ **S3 - new judgments (BUILT).** M2 literal-width operand adoption + M2b
+  strict-width reject (T44, two distinct concrete widths), assignment non-value
+  (T39), cast lattice (T43, [CAST.md](CAST.md)), struct-field value types (T38),
+  call argument types (T37), const declared-type value+kind check (U2/C13,
+  C14) + cast truncation (U4), F1 if-branch consistency (T41), F2
+  negation-on-unsigned (T40), F3 float-literal adoption, L4 cross-element (T42),
+  `types_compatible` integer-family leniency fully removed (exact-width at
+  arguments/fields/returns, the boundary analogue of M2b; `site_coerce` forwards
+  the expected width into value-position `if`/`match` branches so branch literals
+  adopt). Open: tail-expression enforcement in value blocks (the raw-ptr->
+  typed-ptr leniency, e.g. `malloc()` into `int32*` - a `ptr`-ergonomics ruling).
 + **S4 - effects (BUILT).** [EFFECT.md](EFFECT.md): `crates/effect` implements
   the `InferObserver` seam. `EffectSet` bitset (io/ffi/state), contextual
   annotation surface, Tarjan-SCC condensation fixpoint, witness-trail

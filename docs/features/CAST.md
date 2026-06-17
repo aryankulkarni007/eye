@@ -68,10 +68,10 @@ to a type is the blessed truncation, a bare out-of-range value is rejected.
 
 ## not covered
 
-! `&[uint8; N] -> char*` (a string literal into a `char*` slot) is not a cast;
-it is the array-reference decay (STRING.md). the decay helper
-(`array_ref_decays_to`) accepts `&[T; N] -> &T`/`T*` on an exact element type
-and the `string` (uint8) view, but not the uint8/char pun, so
-`let [char*; N] = ["a", ...]` is rejected per element (lang.eye). extending
-the decay to char is an open string/char duality item, not a cast-lattice
-change (ledger).
++ `&[uint8; N] -> char*` (a string literal into a `char*` slot) is the
+array-reference decay (STRING.md), not a cast. RESOLVED 2026-06-16: the decay
+helper (`array_ref_decays_to`) accepts `&[T; N] -> &T`/`T*` on an exact element
+type, the `string` (uint8) view, and the `char`<->`uint8` byte pun (`byte_pun`),
+so a string literal decays into a `char*` slot - scalar, array element, or FFI
+arg. The decay emits an explicit `(char*)` cast (well-defined; silences
+`-Wpointer-sign`).

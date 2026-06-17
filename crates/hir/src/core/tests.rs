@@ -651,6 +651,56 @@ main() {}
     assert_eq!(hir.consts[hir.items.consts["A"]].value, None);
 }
 
+/// the const value-vs-type *kind* check (the const analogue of the cast
+/// lattice): a wrong-kind initializer is rejected. no implicit `int -> bool`
+/// or `int -> char`, so `const bool B = 5` and `const char C = 65` are errors,
+/// as is `const int32 X = true`.
+#[test]
+fn const_value_kind_mismatch_is_rejected() {
+    let hir = lower(
+        "\
+const bool B = 5;
+const char C = 65;
+const int32 X = true;
+main() {}
+",
+    );
+    let n = diags(&hir)
+        .iter()
+        .filter(|d| matches!(d, HirError::Const(ConstError::ConstTypeMismatch { .. })))
+        .count();
+    assert_eq!(
+        n,
+        3,
+        "all three kind mismatches must be rejected: {:?}",
+        diags(&hir)
+    );
+}
+
+/// matching kinds, an `int` literal widening into a `float` const, and the
+/// `ptr <- int` address idiom all stay legal (the corpus exercises each).
+#[test]
+fn const_matching_and_widening_kinds_accepted() {
+    let hir = lower(
+        "\
+const bool B = true;
+const char C = 'A';
+const float64 F = 3.0;
+const float64 R = 100;
+const ptr P = 0 as ptr;
+const int32 I = 7;
+main() {}
+",
+    );
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|d| matches!(d, HirError::Const(ConstError::ConstTypeMismatch { .. }))),
+        "matching kinds + int->float widening + ptr<-int must be accepted: {:?}",
+        diags(&hir)
+    );
+}
+
 /// a const sharing a name with another item is a duplicate, like any item clash.
 #[test]
 fn duplicate_const_name_is_rejected() {

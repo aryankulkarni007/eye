@@ -33,7 +33,7 @@ limitations of the frozen kernel and become the typeck pass's scope.
       temp no longer truncates the C `size_t` result. Both operand orders fixed
       (the prior LHS-only rule was asymmetric). Regression:
       `judgments::mixed_width_arith_adopts_concrete_width`. (Was: CLEAK M2,
-      VERIFIED 2026-06-11.) Follow-up out of scope: two *distinct concrete*
+      VERIFIED 2026-06-11.) Follow-up out of scope: two _distinct concrete_
       widths (neither a literal, e.g. `int8 + int64`) still keep the LHS type;
       tracked as M2b below.
 
@@ -59,24 +59,25 @@ limitations of the frozen kernel and become the typeck pass's scope.
       widens to f64. Paired with U2 so the truncation is the explicit-cast
       escape, not a silent loss.
 
-- [ ] **M2b - distinct concrete integer widths keep LHS** [typeck]. M2 closed
-      the literal case; a binary of two *non-literal* operands with different
-      concrete integer widths (`int8 a + int64 b`) still takes the LHS type and
-      can narrow. The no-footgun ruling (Rust model) is to reject this as a
-      mixed-width type error rather than silently widen/narrow; deferred because
-      no corpus program exercises it (the literal case was the live miscompile).
-      Decide reject-vs-widen when a real program needs it. **The one remaining
-      S3 item, ratified-deferred** (the rest of S3 closed 2026-06-16).
+- [x] **M2b - distinct concrete integer widths** [typeck] - CLOSED 2026-06-16.
+      A binary on two _non-literal_ operands of different concrete integer widths
+      (`int8 a + int64 b`) silently narrowed (took the LHS width); now rejected
+      with `TypeError::MixedIntegerWidths`/T44 (the Rust strict-width rule),
+      applied to arithmetic, bitwise, and comparison. The literal-adoption case
+      (M2) and equal widths stay legal. Built per the correctness-over-breakage
+      directive - but the corpus turned out to need _no_ changes (it already uses
+      `usize` consistently for lengths/indices and literals elsewhere; sweep =
+      0 new rejections). Regressions: `mixed_integer_widths_are_rejected`,
+      `matching_width_and_literal_binaries_accepted`.
 
-- [ ] **string literal -> `char*` decay** [typeck, discovered by L4 2026-06-16].
-      `let [char*; N] = ["a", ...]` is rejected per element: a string literal is
-      `&[uint8; N]` and `array_ref_decays_to` accepts the `string`/exact-element
-      decay but not the uint8/char pun, so `char*` slots reject (the array
-      analogue of the existing scalar string->char* limitation, lang.eye). The
-      no-footgun answer is to let string literals decay to `char*` too (char and
-      uint8 are both byte types); deferred as a string/char duality change
-      (touches the shared decay helper + codegen acceptance, needs corpus
-      review), not a cast-lattice item. See CAST.md "not covered".
+- [x] **string literal -> `char*` decay** - CLOSED 2026-06-16. `array_ref_decays_to`
+      now accepts the `char`<->`uint8` byte pun (helper `byte_pun`), so a string
+      literal (`&[uint8; N]`) decays into a `char*` slot - the scalar
+      `let char* s = "hi"`, an array element `let [char*; N] = ["a", ...]`, and a
+      `char*` FFI argument. Codegen needed no change: the decay already lowers to
+      `RValue::Cast(inner, target)`, emitting an explicit `(char*)` cast that is
+      well-defined and silences `-Wpointer-sign`. Verified end-to-end (compiles,
+      links, runs) + strict-C. Regression: `string_literal_decays_to_char_ptr`.
 
 - [x] **A3 - `mir_type_of` fallback** [typeck] - CLOSED 2026-06-15 at S2C C5.
       `mir_type_of` now reads typeck's `expr_types` (the sole type source) and
@@ -100,61 +101,81 @@ docs/features/EFFECT.md (the second lattice); see the completed entry for
 the rulings.
 
 - [x] Struct-literal field **value** types unchecked - CLOSED 2026-06-16 (S3
-  first judgments, `StructFieldTypeMismatch`/T38). `P { x: "hello" }` with
-  `int32 x` is now rejected at the typeck `StructLit` arm via `site_assignable`.
+      first judgments, `StructFieldTypeMismatch`/T38). `P { x: "hello" }` with
+      `int32 x` is now rejected at the typeck `StructLit` arm via `site_assignable`.
 - [x] Call argument **types** unchecked - CLOSED 2026-06-16 (S3 first judgments,
-  `ArgTypeMismatch`/T37). Swapped/wrong-type args are rejected at `infer_call`'s
-  defined-fn arm (arity stays T026). Int-family + pointer-into-`ptr` stay lenient
-  (defers M2b; FFI escape). Source FIXME at `generate_lang` updated.
+      `ArgTypeMismatch`/T37). Swapped/wrong-type args are rejected at `infer_call`'s
+      defined-fn arm (arity stays T026). Int-family + pointer-into-`ptr` stay lenient
+      (defers M2b; FFI escape). Source FIXME at `generate_lang` updated.
 - [x] `as` casts unrestricted any-to-any - CLOSED 2026-06-16 (S3). The cast
-  lattice (CAST.md) is built: scalar<->scalar, pointer<->pointer,
-  pointer<->integer convert; an aggregate (array/struct/union) on either side
-  is rejected (`CastNotAllowed`/T43). `cast_allowed`/`cast_class` in the
-  walker's `Cast` arm.
-- [x] `const` declared type vs folded value unchecked - CLOSED 2026-06-16 (U2,
-  open-bug row above). Integer consts/globals range-check; `const bool B = 5`
-  and `const ptr NULL = 0 as ptr` are non-integer declared types (the range
-  check is integer-only) - a bool/ptr value-vs-type check is a follow-up if a
-  program needs it, but the headline integer case is closed.
+      lattice (CAST.md) is built: scalar<->scalar, pointer<->pointer,
+      pointer<->integer convert; an aggregate (array/struct/union) on either side
+      is rejected (`CastNotAllowed`/T43). `cast_allowed`/`cast_class` in the
+      walker's `Cast` arm.
+- [x] `const` declared type vs folded value unchecked - CLOSED 2026-06-16. U2
+      range-checks integer consts/globals; the value-_kind_ check (`check_const_kind`,
+      `ConstError::ConstTypeMismatch`/C14) closes the non-integer cases: a folded
+      value's scalar kind must match the declared type's kind, so `const bool B = 5`,
+      `const char C = 65`, `const int32 X = true` reject - the const analogue of the
+      cast lattice (no implicit `int -> bool`/`int -> char`). `int -> float`
+      widening (`const float64 R = 0x7fffffff`) and the `ptr <- int` address idiom
+      (`const ptr NULL = 0 as ptr`) stay legal. Regressions:
+      `const_value_kind_mismatch_is_rejected`, `const_matching_and_widening_kinds_accepted`;
+      corpus sweep 0 new rejections.
 - M2 operand unification (open-bug row above).
 - Integer-literal typing: the `int32` default replaced by expected-type
   propagation (the T030 range sweep already guards the values).
 - A3 `mir_type_of` fallback flipped to a hard error (open-bug row above).
-- `types_compatible` integer-family leniency (any int matches any int)
-  removed with the literal default.
+- [x] `types_compatible` integer-family leniency (any int matches any int) -
+      REMOVED 2026-06-16. Compatibility is now exact `TypeRef` equality (plus Error
+      poison): the boundary analogue of M2b, so a non-literal `int64` argument to an
+      `int8` parameter (and the same at fields/returns) rejects. Required a spine
+      slice - `site_coerce` now forwards the expected type into value-position
+      `if`/`match` branches, so a literal in a branch adopts the declared width
+      (`let int64 x = match k { 0 -> 1, _ -> 2 }`); the only corpus program affected
+      (match.eye) is fixed by the adoption, 0 net new rejections. Regressions:
+      `mismatched_width_argument_is_rejected`, `value_position_branch_literals_adopt_width`.
 - [x] Assignment is non-value - CLOSED 2026-06-16 (S3, `AssignInValuePosition`
-  T39). A value-position `x = y` / `x += y` (let init, argument, condition,
-  operand, value-producing branch tail) is rejected; statement position and
-  discarded (void) tails stay legal.
+      T39). A value-position `x = y` / `x += y` (let init, argument, condition,
+      operand, value-producing branch tail) is rejected; statement position and
+      discarded (void) tails stay legal.
 - `ptr` duality: magic `Path("ptr")` vs `Ptr(inner)` appears at every type
   dispatch; give `ptr` a real representation.
 - Fn-type variadic flag: `TypeKind::Fn` carries none, so indirect calls
   through a fn-pointer value skip the arity check (L3 residue).
 - [x] U2/U4 const-eval range and cast checks - CLOSED 2026-06-16 (open-bug rows
-  above).
+      above).
 - [x] L4 cross-element judgment - CLOSED 2026-06-16 (open-bug row above).
-- Tail-expression type enforcement in value-position blocks: a tail whose
-  type does not match the required type is accepted (`malloc(...)` tail in
-  an `int32*`-typed `if` arm). Source marker: `eyesrc/programs/lang.eye`
-  (FIXME at the `onset_head` init).
+- [x] Tail-expression type enforcement in value-position blocks - CLOSED
+      2026-06-16. A value-position `if`-branch tail is now checked against the
+      declared type (`expect_branch_type`, after `site_coerce` adopts its literals):
+      a `malloc()` tail (raw `ptr`) in an `int32*`-typed `if` rejects with
+      `IfBranchTypeMismatch`/T41, cutting the implicit raw-`ptr` -> typed-pointer
+      footgun per the kernel philosophy (a `void*`-style escape stays only for the
+      _safe_ direction, typed -> `ptr`; the dangerous direction needs `as int32*`).
+      match arms were already covered by `check_match_arm_consistency` (each arm vs
+      the recorded match type). Regressions: `raw_ptr_into_typed_pointer_branch_is_rejected`,
+      `raw_ptr_into_typed_pointer_with_cast_is_accepted`. 0 net corpus rejections
+      (only lang.eye used the pattern - already XFAIL). The lang.eye `onset_head`
+      FIXME is now an accurate rejection (it needs the `as int32*` casts).
 - [x] **F1 - value-`if` branch types unchecked** - CLOSED 2026-06-16 (S3).
-  `check_if_branch_consistency` runs the match-arm consistency judgment for a
-  value-position `if`: `let int32 x = if c { 1 } else { true }` is rejected
-  (`IfBranchTypeMismatch`/T41). Value position is the shared `discarded_set`
-  (a statement-position or discarded `if` runs its branches for effect and
-  stays legal). Regressions: `value_position_if_branch_mismatch_is_rejected`,
-  `if_branch_consistency_clean_cases`.
+      `check_if_branch_consistency` runs the match-arm consistency judgment for a
+      value-position `if`: `let int32 x = if c { 1 } else { true }` is rejected
+      (`IfBranchTypeMismatch`/T41). Value position is the shared `discarded_set`
+      (a statement-position or discarded `if` runs its branches for effect and
+      stays legal). Regressions: `value_position_if_branch_mismatch_is_rejected`,
+      `if_branch_consistency_clean_cases`.
 - [x] **F2 - unary `-` on an unsigned type unchecked** - CLOSED 2026-06-16 (S3).
-  `-u` on an unsigned value is rejected (`NegationOnUnsigned`/T40); a negated
-  literal (a signed constant the range sweep bounds) is exempt. `~` (BitNot)
-  stays legal - it is well-defined on unsigned (Rust parity), so the original
-  `-`/`~` grouping was too broad; only `-` rejects. Regression:
-  `negation_on_unsigned_is_rejected`.
+      `-u` on an unsigned value is rejected (`NegationOnUnsigned`/T40); a negated
+      literal (a signed constant the range sweep bounds) is exempt. `~` (BitNot)
+      stays legal - it is well-defined on unsigned (Rust parity), so the original
+      `-`/`~` grouping was too broad; only `-` rejects. Regression:
+      `negation_on_unsigned_is_rejected`.
 - [x] **F3 - float literals do not adopt the expected float width** - CLOSED
-  2026-06-16 (S3). `adopt_float_literal` (the float analogue of
-  `adopt_int_literal`) retypes a float literal to a `float32` expectation at
-  the coercion site, so `let float32 f = 1.5` and `[float32; N]` literals type
-  consistently. Regression: `float_literal_adopts_expected_width`.
+      2026-06-16 (S3). `adopt_float_literal` (the float analogue of
+      `adopt_int_literal`) retypes a float literal to a `float32` expectation at
+      the coercion site, so `let float32 f = 1.5` and `[float32; N]` literals type
+      consistently. Regression: `float_literal_adopts_expected_width`.
 
 Acceptance corpus for the pass: lang.eye plus the CLEAK reproducers.
 
@@ -178,17 +199,17 @@ features, not freeze blockers:
 ## Architecture / infrastructure backlog
 
 - [~] **Salsa structural backdating** (SALSA.md divergence 5). `Memo<T>`
-      equality WAS `Arc::ptr_eq` (every re-executed query counts as changed).
-      **Signature-firewall half BUILT 2026-06-16 (S5):** `Memo`'s `PartialEq`
-      now delegates to a `MemoEq` trait (default conservative); `FileScope` and
-      `LoweredFn` override it with a content digest (signature digest / body
-      digest), so a body-only edit backdates `item_scope` and the unedited
-      bodies' `typeck_fn` cache-hit - keystroke cost flat in project size.
-      Verified both directions (`body_edit_backdates_the_sibling_typeck`,
-      `signature_edit_reruns_every_body`). REMAINING (stays here, conservative):
-      token-stream/`lex`/`parse`/whole-file backdating (a comment edit stopping
-      at `lex`); and the end-state per-item signature queries
-      (`fn_signature(StableFnId)`, with the multifile milestone).
+  equality WAS `Arc::ptr_eq` (every re-executed query counts as changed).
+  **Signature-firewall half BUILT 2026-06-16 (S5):** `Memo`'s `PartialEq`
+  now delegates to a `MemoEq` trait (default conservative); `FileScope` and
+  `LoweredFn` override it with a content digest (signature digest / body
+  digest), so a body-only edit backdates `item_scope` and the unedited
+  bodies' `typeck_fn` cache-hit - keystroke cost flat in project size.
+  Verified both directions (`body_edit_backdates_the_sibling_typeck`,
+  `signature_edit_reruns_every_body`). REMAINING (stays here, conservative):
+  token-stream/`lex`/`parse`/whole-file backdating (a comment edit stopping
+  at `lex`); and the end-state per-item signature queries
+  (`fn_signature(StableFnId)`, with the multifile milestone).
 - [ ] **A9 - LSP full-document sync, no incremental parsing.** Every
       keystroke re-runs the pipeline on the whole file. Debounce threshold
       plus incremental update when practical; salsa now memoizes between
@@ -227,6 +248,39 @@ features, not freeze blockers:
       spans at emit time, scan for smart spans only on the error path.
 - [ ] **Parser sync mechanism re-evaluation**: resilient today, but should
       recover to the next valid code without producing rubbish diagnostics.
+- [ ] **Statement-boundary footgun: `if {} * p` parses as multiplication.**
+      A block-like expression (`if`/`loop`/`match`/`{}`) in statement position is
+      not terminated at the closing brace - a following prefix-`*` / `-` / `&`
+      binds as an infix operator on the block's value (`(if c {a} else {b}) * p`)
+      instead of starting a new statement. Surfaced by the unit-type work (a
+      value-less `if` followed by `*p` deref). Rust's rule: a block-like expr in
+      statement position is a complete statement; the next token starts a new one.
+      Decision pending (adopt the Rust statement-expression boundary in
+      `grammar.rs`); no-footgun directive applies.
+- [x] **Unit type `()` + Never type `!`** - CLOSED 2026-06-17. Was a cascading
+      MIR-ICE gap: a value-less `Expr::If`/`Expr::Loop` typed `None`, which
+      reached `mir_type_of` and panicked. Built the full Rust-style pair instead
+      of a single sentinel: `TypeKind::Unit` (the value-less completing type, `()`)
+      and `TypeKind::Never` (the bottom/divergent type, `!`), both pre-interned in
+      `TypeInterner` (`unit_ty()`/`never_ty()`). `()` is now spellable in source
+      (`f() -> () { }` - parser `UnitType` node, normalized to void in
+      `InferCtx::new`). The walker is now total: a tail-less or all-statement block
+      types `()`; a value-position `if`-without-else / bare `loop` (no break) /
+      `return` / `break` / `continue` types `!` and coerces to any expected type
+      (Never-absorbing `join`); a value-position expr that types `()` is rejected
+      (`VoidValueInValuePosition`/T024 via `check_value_position_voids`). Wired at
+      every `TypeKind` match site: display (`()`/`!`), walk leaf, lower, MIR/codegen
+      (both -> C `void`), const-eval, mangle (`unit`/`never`), LSP, AST dump.
+      Regressions: `explicit_unit_return_type_is_void_like`,
+      `value_position_void_if_is_rejected`, `never_branch_coerces_to_value_branch`,
+      e2e `value_position_loop_does_not_panic` (now a clean T024 reject, was a
+      silent print-0 footgun).
+- [ ] **Ref (`&T`) / ptr (`T*`) auto-conversion** — decided: `&T` and `T*`
+      should convert automatically in coercion-site positions (argument
+      passing, field init, return). Not a general implicit coercion — a
+      `site_assignable` rule. Not yet implemented. `*lang` → `&lang` hacks in
+      lang.eye reverted; the program should use `&Language` wherever a ref is
+      expected.
 
 ---
 
@@ -243,7 +297,7 @@ features, not freeze blockers:
 - [x] PARALLEL.md sharing: the type interner needs a concurrent structure -
       DONE 2026-06-16 (S6). `TypeInterner` is now lock-free (`boxcar::Vec` +
       `papaya::HashMap`, `&self` intern), so the whole-file per-body walk fans
-      out across rayon with no clone. The global *symbol* table (cross-file)
+      out across rayon with no clone. The global _symbol_ table (cross-file)
       still wants the same treatment at the multifile milestone (`lasso`).
 - [ ] `TypeKind::Fn { params, ret }` stores full `Vec<TypeRef>` copies
       while `Function::fn_type` already holds the interned handle;
@@ -280,11 +334,11 @@ Tracked here as pointers; the substance lives in DEFER.md / MASTERPLAN.md.
 
 Every in-source issue marker, so none float free of the ledger:
 
-| location | ledger row |
-|----------|------------|
-| `eyesrc/programs/lang.eye` top-of-file FIXME | readable-C mode (design questions) |
-| `eyesrc/programs/lang.eye` `off off` FIXME | typeck scope: field/arg value types + cast lattice CLOSED 2026-06-16 (T37/T38/T43); tail-expr open |
-| `eyesrc/programs/lang.eye` `onset_head` FIXME | typeck scope: tail-expression type enforcement |
+| location                                      | ledger row                                                                                         |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `eyesrc/programs/lang.eye` top-of-file FIXME  | readable-C mode (design questions)                                                                 |
+| `eyesrc/programs/lang.eye` `off off` FIXME    | typeck scope: field/arg value types + cast lattice CLOSED 2026-06-16 (T37/T38/T43); tail-expr open |
+| `eyesrc/programs/lang.eye` `onset_head` FIXME | typeck scope: tail-expression type enforcement                                                     |
 
 ---
 
@@ -334,7 +388,7 @@ added.
 The version-sensitive question (does salsa 0.27's parallel-snapshot API support
 the per-body fan-out the wave needs?) answered empirically before any interner
 rewrite. Result: `salsa::Database: Send` (not `Sync`), so the model is owned
-database *clones* - cheap `Storage` handle bumps onto the shared, internally
+database _clones_ - cheap `Storage` handle bumps onto the shared, internally
 synchronized memo tables - moved into workers via rayon `into_par_iter`;
 interned ids and salsa inputs are valid across clones of the same storage. The
 per-fn `typeck_fn` query is already seal-isolated (its own interner clone), so
@@ -346,7 +400,7 @@ it parallelizes with **zero** interner change and is trivially deterministic
   body, fans `typeck_fn` out across rayon, asserts the parallel diagnostics
   (in collection order) equal the serial loop's - determinism law #1.
 - Diagnostics are safe to compare across runs because they carry baked-in
-  display strings + type *names*, not raw `TypeRef` handles.
+  display strings + type _names_, not raw `TypeRef` handles.
 
 Verified: `cargo test -p eye-database` 11/0 (+1 spike), clippy clean. No
 production path changed yet - the spike is test-only.
@@ -369,8 +423,8 @@ correct-by-construction because lowering is deterministic and `Text` is an owned
 - `database/lib.rs`: `MemoEq` trait + `impl<T: MemoEq> PartialEq for Memo<T>`.
   `FileScope` gains `sig_digest` (hash of every item with fn bodies excluded -
   stable across a body-only edit); `lower_fn` now returns a `LoweredFn { lowered,
-  digest }` whose `digest` = this body's text combined with `sig_digest`.
-  `signature_digest`/`body_digest`/`hash_text_range` hash text *content* (not
+digest }` whose `digest` = this body's text combined with `sig_digest`.
+  `signature_digest`/`body_digest`/`hash_text_range` hash text _content_ (not
   byte offsets, so an edit shifting later items leaves their digest unchanged).
 - Effect: edit one body -> `item_scope` backdates (signatures equal) -> the
   unedited bodies' `lower_fn` re-runs but backdates -> their `typeck_fn`
@@ -382,14 +436,14 @@ correct-by-construction because lowering is deterministic and `Text` is an owned
   body's cache - the staleness guard). `database_eq` switched to `Arc::ptr_eq`
   for the within-revision identity checks (Memo's `==` is now a digest test).
 
-Scope: the *signature-firewall* half of salsa structural backdating. Still
+Scope: the _signature-firewall_ half of salsa structural backdating. Still
 conservative (open, ledgered): token-stream/`lex`/`parse`/whole-file backdating,
 and the end-state per-item `fn_signature` queries (multifile milestone).
 
 Verified: `cargo test -p eye-database` 10/0 (+2 firewall, both directions);
 full workspace green (e2e 71, hir 74, all suites 0-fail), corpus `--check` sweep
 44/2-XFAIL (0 new rejections through the changed `hir_diagnostics` path),
-strict-C 42/42, clippy clean. The firewall changes only *when* queries re-run,
+strict-C 42/42, clippy clean. The firewall changes only _when_ queries re-run,
 not their values, so codegen output is unchanged (e2e confirms).
 
 ### 2026-06-16: S3 complete - F1/F2/F3, L4, cast lattice, U2/U4
@@ -443,8 +497,8 @@ linkedlist.eye reject, both pre-existing XFAILs - the float-heavy
 montecarlopi/statistics/raytracer all still compile).**
 
 - `hir/errors.rs`: `TypeError::ArgTypeMismatch { index, expected, found }` (T37)
-  + `StructFieldTypeMismatch { field, expected, found }` (T38) - variants,
-  Display, Code.
+  - `StructFieldTypeMismatch { field, expected, found }` (T38) - variants,
+    Display, Code.
 - `typeck/infer.rs`: `site_assignable(expected, found, types)` - the
   coercion-site acceptance predicate. Accepts an equal/integer-family-compatible
   type, the `&[T; N] -> &T` / `string` decay, and any pointer-shaped value
@@ -472,7 +526,7 @@ only lang.eye + linkedlist.eye (the pre-existing XFAILs) - zero new rejections.*
   `mark_discarded`. The discarded set is seeded from the statement arena (every
   `Stmt::Expr` discards its expr, nested blocks included) plus a void fn's body
   tail, then propagated through the tails of discarded `if`/`block`/`match`
-  expressions - so an `if c { x = 1 } else { y = 2 }` *statement* keeps its
+  expressions - so an `if c { x = 1 } else { y = 2 }` _statement_ keeps its
   branch-tail assignments legal while the same shape as a `let` initializer is
   rejected. The Assign arm drops its `PARITY(S3)` marker (still types as the rhs,
   unused for a rejected program).
@@ -533,16 +587,18 @@ main fast-forwarded to the dual-inference work (`8ddf403`) before this step.
 ### 2026-06-15 (later): C5 cutover COMPLETE - lowering stops typing, shadow retired
 
 The dual-inference cutover is finished. Lowering no longer types any expression
+
 - the `Body.expr_types` field is **deleted** - and the typeck pass is the sole
-source of expression types for MIR/codegen. **Verified: workspace 357 / 0,
-c_codegen snapshot byte-identical, clippy clean, grammar parity green, strict-C
-41/41.** (357 < the prior 368 because the shadow-oracle tests + the lowering
-expr-type-stamp tests were removed/migrated, not regressions.)
+  source of expression types for MIR/codegen. **Verified: workspace 357 / 0,
+  c_codegen snapshot byte-identical, clippy clean, grammar parity green, strict-C
+  41/41.** (357 < the prior 368 because the shadow-oracle tests + the lowering
+  expr-type-stamp tests were removed/migrated, not regressions.)
 
 Done as two increments (the recovery commit `fce7ec5` "Point of no return"
 preceded the irreversible work):
+
 - **Increment 1 (shadow stayed green):** relocated the last type-directed
-  *structural* read in lowering - `CallNonFunction` (an indirect call through a
+  _structural_ read in lowering - `CallNonFunction` (an indirect call through a
   non-pointer value) - to typeck's `infer_call`.
 - **Increment 2 (the irreversible cut):**
   - Deleted `Body.expr_types` (compiler-guided). Gutted `lower_expr`'s entire
@@ -558,7 +614,7 @@ preceded the irreversible work):
     diagnostic-free program, where the walker is total).
   - Deleted `crates/typeck/src/shadow.rs` + `tests/shadow.rs` + `pub mod shadow`
     - the corpus-wide parity oracle. `corpus_generates_no_error_type` (e2e) is
-    the remaining completeness guard.
+      the remaining completeness guard.
   - **Architecture amended** where the old design coupled lowering to types: the
     codegen type-declaration topology (`typegraph::topo_order`) no longer reads
     `body.expr_types`; it takes a seed of whole-file typeck expr types
@@ -899,48 +955,49 @@ goal: typeck becomes the SOLE type source; lowering stops stamping. it is a
 coordinated, partly-irreversible segment (deletes the shadow oracle - the
 corpus-wide parity net). safe order = build prerequisites with the net UP,
 then one coordinated flip, delete the net LAST. surface as read:
-  + coerce.rs does 3 adjustments: array-lit retype + int-lit adopt (both
-    already mirrored walker-side by `site_coerce`, stamp-only) + DECAY
-    (injects a `Cast` node - the only one MIR sees structurally).
-  + MIR `mir_type_of` (lower.rs ~1148) is the A3 site: reads
-    `typeck.expr_types`, defaults int32 when absent. comment: fallback never
-    fires on corpus BUT "several Expr (notably Loop) never set expr_type" so
-    int32 is currently load-bearing -> A3->ICE has real prerequisite gaps.
+
+- coerce.rs does 3 adjustments: array-lit retype + int-lit adopt (both
+  already mirrored walker-side by `site_coerce`, stamp-only) + DECAY
+  (injects a `Cast` node - the only one MIR sees structurally).
+- MIR `mir_type_of` (lower.rs ~1148) is the A3 site: reads
+  `typeck.expr_types`, defaults int32 when absent. comment: fallback never
+  fires on corpus BUT "several Expr (notably Loop) never set expr_type" so
+  int32 is currently load-bearing -> A3->ICE has real prerequisite gaps.
   C1 DONE 2026-06-13 (net up): `len` HIR node. `Expr::Len(ExprId)` added
-     (body.rs variant + for_each_child + VisitExpr default). lowering emits
-     `Expr::Len(operand)`, keeps ALL structural+array checks (arity/place/
-     LenNotArray - still has types pre-cutover) + stamps usize. walker types
-     Len=usize and `const_uint_index` peels Len for the `a[len(a)]` OOB check.
-     MIR `lower_rvalue` folds Len -> `(usize)N` (reproduces the old cast-const
-     output exactly, codegen byte-identical). hir-dump variant_name +
-     `array_len_lowers_to_len_node` test updated. lsp rides VisitExpr default
-     (no change). 350/0 green, shadow oracle intact (lowering still stamps Len
-     usize = walker). NOTE: the old len fold's synthesized-cast-skip in
-     `check_int_literal_ranges` is now dead (no len literal) - harmless, remove
-     at C5. ALSO fixed 2 pre-existing clippy warns in the concurrent optimize.rs
-     (collapsible-if + needless-ref in `inline_in_block`).
+  (body.rs variant + for_each_child + VisitExpr default). lowering emits
+  `Expr::Len(operand)`, keeps ALL structural+array checks (arity/place/
+  LenNotArray - still has types pre-cutover) + stamps usize. walker types
+  Len=usize and `const_uint_index` peels Len for the `a[len(a)]` OOB check.
+  MIR `lower_rvalue` folds Len -> `(usize)N` (reproduces the old cast-const
+  output exactly, codegen byte-identical). hir-dump variant_name +
+  `array_len_lowers_to_len_node` test updated. lsp rides VisitExpr default
+  (no change). 350/0 green, shadow oracle intact (lowering still stamps Len
+  usize = walker). NOTE: the old len fold's synthesized-cast-skip in
+  `check_int_literal_ranges` is now dead (no len literal) - harmless, remove
+  at C5. ALSO fixed 2 pre-existing clippy warns in the concurrent optimize.rs
+  (collapsible-if + needless-ref in `inline_in_block`).
   C2 (net up): match bare-ident classification -> results pat-resolution table
-     (typeck classifies binding-vs-variant; MIR reads). shadow stays.
+  (typeck classifies binding-vs-variant; MIR reads). shadow stays.
   C3 DONE 2026-06-13 (net up, HARDENING): flipped MIR `mir_type_of`'s A3
-     fallback int32 -> error_type and the whole corpus stayed green - the
-     walker already types every expr MIR consumes, so the fallback never fires
-     (the "Loop never typed" worry was over-cautious). A gap now surfaces as
-     `void* /* ERROR TY */` in C, not a silent int32 miscompile. Regression
-     test `corpus_generates_no_error_type` (e2e): every accepted showcase
-     program generates C free of the error marker (rejected WIP programs -
-     lang/linkedlist/mandlebrot/physics - skipped). C5 hardens error_type ->
-     ICE once lowering stops stamping. shadow stays.
+  fallback int32 -> error_type and the whole corpus stayed green - the
+  walker already types every expr MIR consumes, so the fallback never fires
+  (the "Loop never typed" worry was over-cautious). A gap now surfaces as
+  `void* /* ERROR TY */` in C, not a silent int32 miscompile. Regression
+  test `corpus_generates_no_error_type` (e2e): every accepted showcase
+  program generates C free of the error marker (rejected WIP programs -
+  lang/linkedlist/mandlebrot/physics - skipped). C5 hardens error_type ->
+  ICE once lowering stops stamping. shadow stays.
   C4 (THE FLIP, coordinated): walker records `Adjustment::Decay`; MIR applies
-     decay from the adjustment; lowering's `maybe_decay` stops injecting the
-     Cast. (Decay-only flip is shadow-compatible: non-decay expr types
-     unchanged.) verify decay programs (strings/caesar) byte-identical.
+  decay from the adjustment; lowering's `maybe_decay` stops injecting the
+  Cast. (Decay-only flip is shadow-compatible: non-decay expr types
+  unchanged.) verify decay programs (strings/caesar) byte-identical.
   C5 (IRREVERSIBLE): delete lowering's `coerce` + all stamping
-     (`expr_types` writes) + `record_match_result_override`; flip A3 int32 ->
-     error_type/ICE; delete shadow.rs + tests/shadow.rs. after this the net is
-     gone - C3's completeness test is the remaining guard.
+  (`expr_types` writes) + `record_match_result_override`; flip A3 int32 ->
+  error_type/ICE; delete shadow.rs + tests/shadow.rs. after this the net is
+  gone - C3's completeness test is the remaining guard.
   then D: per-fn `typeck_fn` salsa query + LSP hover.
-recommendation: execute C1..C5 as their own focused turns (each verified
-green), net deleted only at C5.
+  recommendation: execute C1..C5 as their own focused turns (each verified
+  green), net deleted only at C5.
 
 S4 EFFECTS (the "dual") - FOUNDATIONAL SLICE BUILT 2026-06-14. Brought forward
 (out of strict S-order) because C3 proved the substantive precondition EFFECT.md
@@ -974,14 +1031,15 @@ dual-inference driver - `collect_results` runs ONE walk per body producing both
 the `TypeckResults` and the per-body `EffectResult` (judge fused as the
 observer), then `run_fixpoint` condenses. The database's `lowered_file` calls it
 and stores the map in a new `CheckedFile.effects` field beside `typeck`, so types
-+ effects share a single traversal and memoize together (no second walk). Added
-`effect` as a database dep. `typeck::check_file` stays the type-only entry for
-the non-salsa paths (src/lib.rs compile helper, benches, judgment tests);
-`infer_effects` stays the effect-only standalone (tests). No backend consumer
-reads `effects` yet - it feeds the annotation contract check + prime gate. DB
-test `lowered_file_carries_the_effect_map`; database 6 tests, effect 10.
-S4 COMPLETE 2026-06-14: annotations + `EffectError` class + exact-match contract
-+ witnesses all built.
+
+- effects share a single traversal and memoize together (no second walk). Added
+  `effect` as a database dep. `typeck::check_file` stays the type-only entry for
+  the non-salsa paths (src/lib.rs compile helper, benches, judgment tests);
+  `infer_effects` stays the effect-only standalone (tests). No backend consumer
+  reads `effects` yet - it feeds the annotation contract check + prime gate. DB
+  test `lowered_file_carries_the_effect_map`; database 6 tests, effect 10.
+  S4 COMPLETE 2026-06-14: annotations + `EffectError` class + exact-match contract
+- witnesses all built.
   - ANNOTATIONS: parser nests contextual effect idents before the fn name in a
     hand-written `EffectList` `SyntaxKind` node (`io render(...)`; name = the
     ident before `(`, so `FnDef::name()` unchanged). No ungram/xtask change and
@@ -1002,33 +1060,34 @@ S4 COMPLETE 2026-06-14: annotations + `EffectError` class + exact-match contract
     `witness_trail` DFS-walks the call graph (error path only) to the leaf,
     naming the via-chain ("the `io` effect comes from a call to `println` (via
     `reporter`)").
-  Tests: effect 16 (6 contract + witness), database 7 (effect map + E-class
-  gating C); parser 64 (2 annotation), hir_raw_dump snapshot accepted
-  (`declared_effects: []`). Workspace green, clippy clean.
+    Tests: effect 16 (6 contract + witness), database 7 (effect map + E-class
+    gating C); parser 64 (2 annotation), hir_raw_dump snapshot accepted
+    (`declared_effects: []`). Workspace green, clippy clean.
 
 PATH FORWARD (consolidated, 2026-06-14):
-  - S2C cutover: C1 done, C3 done; REMAINING C2 (match bare-ident
-    classification -> typeck results table), C4 (Adjustment::Decay flip), C5
-    (irreversible: delete coerce/stamping/shadow, A3 error_type->ICE), then D
-    (typeck_fn salsa query + LSP hover). C4/C5 must account for decay in the
-    type checks (return/let/arg) since the cast node disappears - see C4.
-  - S3 new judgments (M2 strict same-type operands, cast lattice, assign
-    non-value) - ledger rulings below; ride the cutover.
-  - S4 effects: COMPLETE 2026-06-14 (fixpoint + DB wiring + annotations +
-    `EffectError` E class + exact-match contract + witnesses). The whole effect
-    inference layer is done; the two remaining inference bodies of work are the
-    type-side cutover (C2/C4/C5+D) and S6 parallelism.
-  - S5 firewall (structural signature backdating).
-  - S5 firewall (structural signature backdating).
-  - S6 parallel wave: rayon per-body walks + lock-free interner (boxcar +
-    papaya, &self intern) + determinism gate (corpus-diff-twice). THIS is the
-    "parallelised" half; unstarted. Per-body sealed-body invariant already
-    makes the walks embarrassingly parallel; the fixpoint is the one join.
-  - S7 row-polymorphic effects: effect variables on fn types for precise
-    higher-order effect tracking. Monomorphic bitset -> row-polymorphic with
-    body-local effect variables (obeying the sealed-body invariant).
-    Requires S6 lock-free infrastructure (effect variable handles must be
-    Send+Sync). Not started.
+
+- S2C cutover: C1 done, C3 done; REMAINING C2 (match bare-ident
+  classification -> typeck results table), C4 (Adjustment::Decay flip), C5
+  (irreversible: delete coerce/stamping/shadow, A3 error_type->ICE), then D
+  (typeck_fn salsa query + LSP hover). C4/C5 must account for decay in the
+  type checks (return/let/arg) since the cast node disappears - see C4.
+- S3 new judgments (M2 strict same-type operands, cast lattice, assign
+  non-value) - ledger rulings below; ride the cutover.
+- S4 effects: COMPLETE 2026-06-14 (fixpoint + DB wiring + annotations +
+  `EffectError` E class + exact-match contract + witnesses). The whole effect
+  inference layer is done; the two remaining inference bodies of work are the
+  type-side cutover (C2/C4/C5+D) and S6 parallelism.
+- S5 firewall (structural signature backdating).
+- S5 firewall (structural signature backdating).
+- S6 parallel wave: rayon per-body walks + lock-free interner (boxcar +
+  papaya, &self intern) + determinism gate (corpus-diff-twice). THIS is the
+  "parallelised" half; unstarted. Per-body sealed-body invariant already
+  makes the walks embarrassingly parallel; the fixpoint is the one join.
+- S7 row-polymorphic effects: effect variables on fn types for precise
+  higher-order effect tracking. Monomorphic bitset -> row-polymorphic with
+  body-local effect variables (obeying the sealed-body invariant).
+  Requires S6 lock-free infrastructure (effect variable handles must be
+  Send+Sync). Not started.
   ordering note: effects (S4) were brought forward; the cutover (C2/C4/C5) and
   S6 parallelism remain the two large bodies of work to "parallelised dual
   inference" complete. S7 is the third addition, sequenced after S6.
@@ -1057,7 +1116,7 @@ Rulings, all ratified 2026-06-12:
   `InferObserver` seam (trait + no-op impl land in S1); fusion crosses the
   crate boundary at zero cost (monomorphized). **Inference is total** -
   annotations never required, optional contracts only; effect names are
-  *contextual* keywords (effect position only; `state`/`io` stay legal
+  _contextual_ keywords (effect position only; `state`/`io` stay legal
   identifiers; unknown effect = E-class at collect).
 - **Effect diagnostics: new E class** (`EffectError`, E001+; taxonomy 8 -> 9).
 - **Lock-free global type interner** for the parallel wave (`boxcar` arena +
@@ -1217,7 +1276,7 @@ tree):
 - **A8 - `process::exit(1)` in the driver**: no `process::exit` remains in
   `src/main.rs`; errors propagate as `Result`.
 - **Fuzz testing**: built - `fuzz/fuzz_targets/{fuzz_lexer,fuzz_parser,
-  fuzz_full}.rs`.
+fuzz_full}.rs`.
 - **L1/L2/L5/L6/M1/M1b/P1**: were still listed open in the old ledger and
   todo.md; all fixed 2026-06-11 (see the coercion-point entry below).
 - Stale source FIXMEs corrected: `example.eye` exhaustive struct-init

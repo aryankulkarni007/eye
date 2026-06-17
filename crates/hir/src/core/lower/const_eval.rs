@@ -101,10 +101,18 @@ pub(super) fn eval_consts(
         // U2: the folded value must fit the declared integer type. the type
         // name is read out first so the immutable `hir.types` borrow ends
         // before the value write below.
-        let ty_name = int_type_name(hir.consts[*id].ty, &hir.types);
+        let const_ty = hir.consts[*id].ty;
+        let ty_name = int_type_name(const_ty, &hir.types);
         check_const_range(
             value.as_ref(),
             ty_name.as_deref(),
+            c.value().as_ref(),
+            &mut ev.diagnostics,
+        );
+        check_const_kind(
+            value.as_ref(),
+            const_ty,
+            &hir.types,
             c.value().as_ref(),
             &mut ev.diagnostics,
         );
@@ -140,10 +148,18 @@ pub(super) fn eval_globals(
             .and_then(|expr| fold_with_map(expr, const_values, &mut diagnostics));
         // U2: a global initializer's folded value must fit its declared
         // integer type, the same check the const folder runs.
-        let ty_name = int_type_name(hir.globals[*id].ty, &hir.types);
+        let global_ty = hir.globals[*id].ty;
+        let ty_name = int_type_name(global_ty, &hir.types);
         check_const_range(
             value.as_ref(),
             ty_name.as_deref(),
+            expr.as_ref(),
+            &mut diagnostics,
+        );
+        check_const_kind(
+            value.as_ref(),
+            global_ty,
+            &hir.types,
             expr.as_ref(),
             &mut diagnostics,
         );
@@ -486,6 +502,75 @@ fn int_type_name(ty: crate::core::TypeRef, types: &crate::core::TypeInterner) ->
     match types.lookup(ty) {
         TypeKind::Path(n) if int_range(n).is_some() => Some(n.clone()),
         _ => None,
+    }
+}
+
+/// the scalar kind of a declared const/global type, for the value-kind check.
+/// a non-scalar declared type (struct, enum, array) is not a scalar const and
+/// returns `None` (no check - it is rejected by other rules).
+enum ScalarKind {
+    Int,
+    Float,
+    Bool,
+    Char,
+    Ptr,
+}
+
+fn declared_scalar_kind(
+    ty: crate::core::TypeRef,
+    types: &crate::core::TypeInterner,
+) -> Option<(ScalarKind, Text)> {
+    match types.lookup(ty) {
+        TypeKind::Path(n) if int_range(n).is_some() => Some((ScalarKind::Int, n.clone())),
+        TypeKind::Path(n) if is_float_type(n) => Some((ScalarKind::Float, n.clone())),
+        TypeKind::Path(n) if n == "bool" => Some((ScalarKind::Bool, n.clone())),
+        TypeKind::Path(n) if n == "char" => Some((ScalarKind::Char, n.clone())),
+        TypeKind::RawPtr => Some((ScalarKind::Ptr, Text::from("ptr"))),
+        _ => None,
+    }
+}
+
+/// the const value-vs-type *kind* check: a folded value's scalar kind must match
+/// its declared type's kind. the const analogue of the cast lattice (CAST.md):
+/// no implicit `int -> bool` / `int -> char`, so `const bool B = 5` and
+/// `const char C = 65` are rejected. an `int` literal widening into a `float`
+/// const (`const float64 R = 0x7fffffff`) and the `ptr <- int` address idiom
+/// (`const ptr NULL = 0 as ptr`) stay legal. the int *range* (U2) is a separate
+/// check; this is purely about the kind.
+fn check_const_kind(
+    value: Option<&ConstValue>,
+    ty: crate::core::TypeRef,
+    types: &crate::core::TypeInterner,
+    anchor: Option<&ast::Expr>,
+    diagnostics: &mut Sink<HirError>,
+) {
+    let (Some(value), Some((kind, ty_name)), Some(expr)) =
+        (value, declared_scalar_kind(ty, types), anchor)
+    else {
+        return;
+    };
+    let ok = matches!(
+        (&kind, value),
+        (ScalarKind::Int, ConstValue::Int(_))
+            | (ScalarKind::Float, ConstValue::Float(_) | ConstValue::Int(_))
+            | (ScalarKind::Bool, ConstValue::Bool(_))
+            | (ScalarKind::Char, ConstValue::Char(_))
+            | (ScalarKind::Ptr, ConstValue::Int(_))
+    );
+    if !ok {
+        let found = match value {
+            ConstValue::Int(_) => "an integer",
+            ConstValue::Float(_) => "a float",
+            ConstValue::Bool(_) => "a boolean",
+            ConstValue::Char(_) => "a character",
+        };
+        diagnostics.emit(
+            SyntaxNodePtr::new(expr.syntax()),
+            HirError::Const(ConstError::ConstTypeMismatch {
+                ty: ty_name,
+                found: Text::from(found),
+            }),
+        );
     }
 }
 

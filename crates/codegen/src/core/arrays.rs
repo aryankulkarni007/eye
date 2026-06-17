@@ -54,6 +54,11 @@ fn array_mangle(ty: TypeRef, types: &TypeInterner) -> String {
             ret,
             variadic,
         } => array_mangle_fn(params, *ret, *variadic, types),
+        // bare-letter fragments, injective against a digit-prefixed `Path` of
+        // the same spelling (`4unit` / `5never`); a unit/never never actually
+        // wraps an array, but the mangle must stay total.
+        TypeKind::Unit => "unit".to_string(),
+        TypeKind::Never => "never".to_string(),
         TypeKind::Error => "err".to_string(),
     }
 }

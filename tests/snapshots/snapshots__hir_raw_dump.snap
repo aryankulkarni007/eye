@@ -69,7 +69,7 @@ HIR {
                     variadic: false,
                     fn_type: Some(
                         TypeRef(
-                            18,
+                            20,
                         ),
                     ),
                     declared_effects: [],
@@ -416,13 +416,19 @@ HIR {
         ): RawPtr,
         TypeRef(
             18,
+        ): Unit,
+        TypeRef(
+            19,
+        ): Never,
+        TypeRef(
+            20,
         ): Fn {
             params: [],
             ret: None,
             variadic: false,
         },
         TypeRef(
-            19,
+            21,
         ): Array {
             elem: TypeRef(
                 5,
@@ -430,10 +436,10 @@ HIR {
             len: 2,
         },
         TypeRef(
-            20,
+            22,
         ): Ref(
             TypeRef(
-                19,
+                21,
             ),
         ),
     },

@@ -433,18 +433,21 @@ fn type_ref(p: &mut Parser) {
         type_ref(p);
         m.complete(p, SyntaxKind::RefType)
     } else if p.at(T!['(']) {
-        // function type `(T, T) -> R`. a `(` in type position can only begin a
-        // function type: eye has no tuple or parenthesized-group types. the
-        // return arrow is optional (omitted = returns nothing), mirroring a
-        // function declaration.
+        // a `(` in type position is either the unit type `()` or a function type
+        // `(T, T) -> R`: eye has no tuple or parenthesized-group types. an empty
+        // `()` with no return arrow is unit; `() -> R` is a paramless function
+        // pointer. the return arrow is otherwise optional (omitted = returns
+        // nothing), mirroring a function declaration.
         let m = p.open();
         let open_paren = p.cursor_range();
         p.advance(); // '('
+        let mut param_count = 0u32;
         while !p.at(T![')']) && !p.at_eof() {
             let param_m = p.open();
             type_ref(p);
             p.eat(T![,]); // optional separator; trailing comma allowed
             param_m.complete(p, SyntaxKind::FnTypeParam);
+            param_count += 1;
         }
         if !p.eat(T![')']) {
             let range = TextRange::new(open_paren.start(), p.last_consumed_range().end());
@@ -452,8 +455,14 @@ fn type_ref(p: &mut Parser) {
         }
         if p.eat(T![->]) {
             type_ref(p); // return type
+            m.complete(p, SyntaxKind::FnType)
+        } else if param_count == 0 {
+            // `()` with no arrow is the unit type, not a paramless fn pointer.
+            m.complete(p, SyntaxKind::UnitType)
+        } else {
+            // `(T)` / `(T, U)` with no `->`: a function pointer returning nothing.
+            m.complete(p, SyntaxKind::FnType)
         }
-        m.complete(p, SyntaxKind::FnType)
     } else if p.at(SyntaxKind::Ident) {
         let m = p.open();
         p.advance(); // ident
