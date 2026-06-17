@@ -218,6 +218,67 @@ features, not freeze blockers:
 
 ## Architecture / infrastructure backlog
 
+- [~] **Massive-file split** (maintainability; all 6 production files DONE
+      2026-06-18, only optional tier-2 test-file splits remain). Split
+      every oversized source file into concern-named module dirs, following the
+      repo precedent (`crates/hir/src/core/lower/`, `crates/codegen/src/core/`):
+      a concern dir + `mod.rs` (struct + `mod` decls + driver) and child files
+      each carrying one `impl` block (or free items); cross-module items become
+      `pub(crate)`, internal helpers stay private. Behavior-preserving (pure
+      module moves), verify per file (`cargo test -p <crate>` + clippy). Recipe
+      and gotchas: [[massive-file-refactor]] memory.
+      - [x] `typeck/src/infer.rs` 2287 -> `infer/` (mod 748 / judgments 991 /
+            coerce 280 / ty 302). 74 typeck green, clippy clean. UNCOMMITTED.
+      - [x] `mir/src/lower.rs` 1288 -> `lower/` 2026-06-18 (mod 224 = entry +
+            `Lower`/`ArmKind` + body/tail drivers + infra `collect_operands`/
+            `terminated`/`map_local`/`mir_type_of` / stmt 442 = `lower_stmt`/
+            `lower_expr_stmt`/blocks/`return` + match-arm machinery / expr 588 =
+            rvalue+operand cores + `lower_into` family + const inlining / place
+            87 = `lower_place`/`place_for_value`). 11 mir green, clippy clean.
+            UNCOMMITTED.
+      - [x] `codegen/src/core/mir_emit.rs` 1429 -> `mir_emit/` 2026-06-18 (mod
+            664 = `gen_mir` entry + `MirGen` + `gen_all` driver + function/
+            type-decl/global emission + `gen_stmt` + shared free helpers
+            `c_fn_name`/`write_c_char_literal`/`local_name` / expr 446 = rvalue/
+            operand/place + `place_type` recovery + `println` + literals / switch
+            161 = `gen_switch`/`gen_guarded_switch`/`gen_arm_test` (module named
+            `switch`, not the `match` keyword) / strings 209 = `collect_strings`/
+            `gen_string_statics`/`string_id`). 1 codegen unit green, e2e 71,
+            snapshots 4/4 (`c_codegen` byte-identical), clippy clean. UNCOMMITTED.
+      - [x] `parser/src/grammar.rs` 1378 -> `grammar/` 2026-06-18 (items 407 /
+            types 77 / expr 553 / pat 151 / stmt 156 + mod.rs re-globs siblings;
+            all free fns blanket `pub(crate)` in the private `mod grammar`). 64
+            parser green incl `cst_snapshot`, clippy clean. UNCOMMITTED.
+      - [x] `parser/src/lib.rs` 1306 -> `event.rs` 2026-06-18 (Event +
+            Marker/CompletedMarker + build_tree out; lib.rs keeps Parser/Parse/
+            parse/tests). Marker fields -> `pub(crate)` (lib `open()` constructs
+            it); `pub use event::{CompletedMarker, Marker}` keeps the API. 64
+            parser green, clippy clean. UNCOMMITTED.
+      - [x] `effect/src/lib.rs` 972 -> 2026-06-18 lattice.rs 121 (Atom/EffectSet
+            + atom_index/LIVE_ATOMS + parse_effect_name/describe) + judge.rs 178
+            (WitnessKind + EffectResult + EffectJudge observer + infer_body_effects)
+            + lib.rs (EffectMap + fixpoint/SCC + contracts + witness trail). 16
+            effect green, clippy clean. UNCOMMITTED.
+      - [x] `lexer/src/lib.rs` 732 -> 2026-06-18 interner.rs 106 (Symbol/Interner +
+            StringTable impl) + source.rs 173 (LineCol/SourceHolder/SourceText/
+            SourceFile) + lib.rs (LexError/Lexed/Lexer). All moved items already
+            `pub`; re-exported. 21 lexer green + Interner doctest, clippy clean.
+            UNCOMMITTED.
+      - [ ] (tier-2, optional) test files: `hir/src/core/tests.rs` 2008,
+            `typeck/tests/judgments.rs` 1856
+      - x EXCLUDED: `ast/src/generated.rs` 1827 (xtask codegen output).
+      - -> after the split: refresh TYPECK.md `infer.rs` path refs; then the
+            let-from-init inference build (below) + the two-span render.
+- [ ] **Let-from-init inference** (the real "type inference" feature, unblocked
+      by the Tier-2 spine 2026-06-17). Today an untyped `let x = 5;` is rejected
+      by T025 `MissingTypeAnnotation` (`lower/stmt.rs:67`) - the spine is
+      bidirectional CHECKING, not annotation-omission. With the spine, an
+      untyped `let x = <init>` whose init synthesizes a concrete T can bind x:T
+      (no inference variables). Plumbing: typeck back-fills the local type from
+      init synthesis into `local_types`; codegen reads the local type from
+      typeck (not lowering's `Stmt::Let.ty`); keep T025 only for init-less lets.
+      ! VERIFY codegen's local-type source first - lowering assigns local types
+      before typeck runs (ordering is the real gate). Detail: [[typeck-effects-design]].
 - [~] **Salsa structural backdating** (SALSA.md divergence 5). `Memo<T>`
   equality WAS `Arc::ptr_eq` (every re-executed query counts as changed).
   **Signature-firewall half BUILT 2026-06-16 (S5):** `Memo`'s `PartialEq`
