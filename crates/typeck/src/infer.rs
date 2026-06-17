@@ -14,7 +14,7 @@ use hir::core::{
 };
 use syntax::SyntaxNodePtr;
 
-use crate::{Adjustment, InferObserver, ObserverCx, TypeckResults};
+use crate::{Adjustment, Cause, Expectation, InferObserver, ObserverCx, TypeckResults};
 
 pub(crate) struct InferCtx<'a, O> {
     scope: &'a HIR,
@@ -52,18 +52,18 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             self.infer_stmt(stmt);
         }
         if let Some(tail) = self.body.tail {
-            self.infer_expr(tail);
-            // the tail goes through the coercion point against the declared
-            // return type, then the declared type is re-recorded onto a
-            // value-position tail match (stamping; mirrors `fn_body.rs`'s
-            // tail coercion + match re-record). the return-type *diagnostics*
-            // live in `enforce_return_type` below.
-            if let Some(ret) = self.fn_ret {
-                self.site_coerce(ret, tail);
-                if matches!(self.body.exprs[tail], Expr::Match { .. }) {
-                    self.restamp_value_node(tail, ret);
-                }
-            }
+            // the tail is checked against the declared return type by the spine:
+            // the `Return` expectation flows down so a branch/arm literal adopts
+            // the return width and the funnel coerces the tail node onto it (a
+            // value-position match/`if` is restamped, MIR reading its hoist temp
+            // from the result). the per-branch/arm mismatches surface through the
+            // consistency checks; the tail-vs-return mismatch through the funnel;
+            // the *arity* (a body that yields no value) through `enforce_return_type`.
+            let expected = match self.fn_ret {
+                Some(ret) => Expectation::HasType(ret, Cause::Return),
+                None => Expectation::None,
+            };
+            self.infer_expr(tail, expected);
         }
         self.enforce_return_type();
         self.check_int_literal_ranges();
@@ -82,7 +82,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
     /// makes the walker *total*: such an expression would otherwise reach MIR as
     /// `void` and miscompile. the let-initializer / return-value / tail sites
     /// catch what they can see; this sweep generalizes to *every* value position
-    /// - a `Binary` operand, an index, a nested argument - so a void value buried
+    /// (a `Binary` operand, an index, a nested argument), so a void value buried
     /// in an expression is caught, not silently miscompiled. a diverging
     /// expression has type `!` (`Never`), not `()`, so it is never swept - its
     /// value is never read. an assignment is `()` too but owns its own
@@ -248,36 +248,51 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             return;
         }
         let discarded = self.discarded_set();
-        // collect first (immutable interner reads), then emit, so the borrow
-        // does not overlap `emit_at`'s `&mut self` (same pattern as the match
-        // consistency check).
+        // each present branch tail must agree with the `if`'s settled type - the
+        // type the funnel restamped from a downward expectation, or the
+        // bottom-up join when there is none. comparing each branch against the
+        // node type (not then-vs-else) also catches a branch that disagrees with
+        // the *expected* type even when the branches agree with each other
+        // (`fn -> int32 { if c { 1.0 } else { 2.0 } }`) - the role the per-branch
+        // `expect_branch_type` played before the spine folded it here. collect
+        // first (immutable interner reads), then emit, so the borrow does not
+        // overlap `emit_at`'s `&mut self` (same pattern as the match check).
         let mut mismatches: Vec<(ExprId, String, String)> = Vec::new();
         for (id, then_b, else_b) in ifs {
             if discarded.contains(&id) {
                 continue;
             }
-            let (Some(tt), Some(et)) = (self.block_type(then_b), self.block_type(else_b)) else {
+            let Some(node_ty) = self.ty_of(id) else {
                 continue;
             };
-            if !types_compatible(tt, et, self.types) {
-                let expected = self.types.display(tt).to_string();
-                let found = self.types.display(et).to_string();
-                mismatches.push((id, expected, found));
+            for branch in [then_b, else_b] {
+                let Some(tail) = self.body.blocks[branch].tail else {
+                    continue;
+                };
+                let Some(branch_ty) = self.ty_of(tail) else {
+                    continue;
+                };
+                // a `()` (void) branch tail is the completeness sweep's
+                // diagnostic, not a branch-type mismatch.
+                if matches!(self.types.lookup(branch_ty), TypeKind::Unit) {
+                    continue;
+                }
+                if !types_compatible(branch_ty, node_ty, self.types)
+                    && !array_ref_decays_to(node_ty, branch_ty, self.types)
+                {
+                    let expected = self.types.display(node_ty).to_string();
+                    let found = self.types.display(branch_ty).to_string();
+                    mismatches.push((tail, expected, found));
+                }
             }
         }
-        for (id, expected, found) in mismatches {
+        for (tail, expected, found) in mismatches {
             self.emit_at(
-                id,
+                tail,
                 None,
                 hir::core::TypeError::IfBranchTypeMismatch { expected, found },
             );
         }
-    }
-
-    /// a block's value type: the recorded type of its tail expression, or
-    /// `None` for a tail-less (statement-only) block.
-    fn block_type(&self, id: BlockId) -> Option<TypeRef> {
-        self.body.blocks[id].tail.and_then(|t| self.ty_of(t))
     }
 
     /// mark `e` and the tails it discards as value-discarded positions. a
@@ -619,75 +634,41 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         }
     }
 
-    /// return-type enforcement for the body tail (moved from lowering, S2
-    /// step b): the implicit-return tail must produce the declared return
-    /// type. a body with neither a tail nor any explicit `return val;` never
-    /// produces a value (`ReturnMissingValue`, anchored on the whole fn
-    /// block). a tail that yields no value (a void-branch `if`) is rejected;
-    /// a value-position tail match defers to the per-arm consistency check;
-    /// otherwise the tail type must be `types_compatible` with the return.
-    /// the tail-match re-record stays in `run`/lowering (it stamps the
-    /// codegen hoist temp); this is diagnostics only.
+    /// return-type *arity* for the body tail (the type judgment moved to the
+    /// funnel with the spine - the tail is checked against the declared return
+    /// by its `Return` expectation in `run`). this catches only the structural
+    /// case the funnel cannot see: a body with no tail *and* no explicit
+    /// `return val;` produces no value despite its declaration
+    /// (`ReturnMissingValue`, anchored on the whole fn block). a tail present
+    /// (any kind) is the funnel's / consistency checks' responsibility.
     fn enforce_return_type(&mut self) {
         let Some(ret) = self.fn_ret else { return };
-        let Some(tail) = self.body.tail else {
-            // no tail and no explicit `return val;`: the body never produces a
-            // value despite its declaration.
-            let has_return = self.body.stmts.iter().any(|(_, s)| match s {
-                Stmt::Expr(e) => matches!(self.body.exprs[*e], Expr::Return(Some(_))),
-                _ => false,
-            });
-            if !has_return {
-                let block_ptr = self.body.fn_block_ptr;
-                let expected = self.types.display(ret).to_string();
-                self.emit_ptr(
-                    block_ptr,
-                    hir::core::TypeError::ReturnMissingValue { expected },
-                );
-            }
-            return;
-        };
-        // a unit tail (an else-less `if`, a tail-less block, a void call) yields
-        // no value for the return; the completeness sweep owns that diagnostic,
-        // so here we just skip the return-type comparison.
-        if self.is_unit(tail) {
+        if self.body.tail.is_some() {
             return;
         }
-        // a value-position tail match: `check_match_arm_consistency` owns the
-        // per-arm reporting against the declared return type.
-        if matches!(self.body.exprs[tail], Expr::Match { .. }) {
-            return;
-        }
-        // an array-literal tail was already re-typed onto the declared return
-        // type at the coercion site, so a matching length compares equal and a
-        // wrong length falls through to the mismatch below.
-        let Some(actual) = self.ty_of(tail) else {
-            return;
-        };
-        if !types_compatible(actual, ret, self.types)
-            && !array_ref_decays_to(ret, actual, self.types)
-        {
+        let has_return = self.body.stmts.iter().any(|(_, s)| match s {
+            Stmt::Expr(e) => matches!(self.body.exprs[*e], Expr::Return(Some(_))),
+            _ => false,
+        });
+        if !has_return {
+            let block_ptr = self.body.fn_block_ptr;
             let expected = self.types.display(ret).to_string();
-            let found = self.types.display(actual).to_string();
-            self.emit_at(
-                tail,
-                None,
-                hir::core::TypeError::ReturnTypeMismatch { expected, found },
+            self.emit_ptr(
+                block_ptr,
+                hir::core::TypeError::ReturnMissingValue { expected },
             );
         }
     }
 
-    /// explicit-return arity/type check (moved from lowering, S2 step b):
-    /// `return expr?;` against the enclosing function's declared return type
-    /// (`self.fn_ret`). covers the three returns clang would reject - a value
-    /// in a void fn, a missing value in a typed fn, a wrong-typed value - plus
-    /// the void-branch `if` leak. arity diagnostics anchor on the whole
-    /// `return`; a type mismatch anchors on the returned value. lenient via
-    /// `types_compatible`, matching the tail check, pending real inference.
+    /// explicit-return *arity* check (the type judgment moved to the funnel with
+    /// the spine - the returned value is checked against the declared return by
+    /// its `Return` expectation, threaded in the `Return` arm of `infer_expr`).
+    /// this owns only the two arity cases clang would reject: a value in a void
+    /// fn, and a missing value in a typed fn. both anchor on the whole `return`.
     fn check_explicit_return(&mut self, id: ExprId, value: Option<ExprId>) {
         let ret_ptr = self.body.source_map.expr.get(id.into()).cloned();
         match (self.fn_ret, value) {
-            (None, None) => {}
+            (None, None) | (Some(_), Some(_)) => {}
             (None, Some(_)) => self.emit_ptr(ret_ptr, hir::core::TypeError::ReturnValueInVoid),
             (Some(expected), None) => {
                 let expected = self.types.display(expected).to_string();
@@ -695,28 +676,6 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     ret_ptr,
                     hir::core::TypeError::ReturnMissingValue { expected },
                 );
-            }
-            (Some(ret), Some(val)) => {
-                // a returned unit value (an else-less `if`, a void call) yields
-                // no value; the completeness sweep owns that diagnostic, so here
-                // we only compare a *known* return value type to the declared one.
-                if self.is_unit(val) {
-                    return;
-                }
-                let Some(actual) = self.ty_of(val) else {
-                    return;
-                };
-                if !types_compatible(actual, ret, self.types)
-                    && !array_ref_decays_to(ret, actual, self.types)
-                {
-                    let expected = self.types.display(ret).to_string();
-                    let found = self.types.display(actual).to_string();
-                    self.emit_at(
-                        val,
-                        ret_ptr,
-                        hir::core::TypeError::ReturnTypeMismatch { expected, found },
-                    );
-                }
             }
         }
     }
@@ -929,16 +888,19 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             Stmt::Let { ty, init, .. } => {
                 let (ty, init) = (*ty, *init);
                 if let Some(init) = init {
-                    self.infer_expr(init);
+                    // the declared type flows down the spine as a `LetDecl`
+                    // expectation: literals adopt its width and a value-position
+                    // match/`if` initializer is restamped onto it (the funnel's
+                    // container restamp, formerly `record_match_result_override`).
+                    // `LetDecl` is adopt-only - the let-init mismatch stays in
+                    // `check_explicit_let_init_type` (Call-init, pending the
+                    // let-init width ruling).
+                    let expected = match ty {
+                        Some(declared) => Expectation::HasType(declared, Cause::LetDecl),
+                        None => Expectation::None,
+                    };
+                    self.infer_expr(init, expected);
                     if let Some(declared) = ty {
-                        self.site_coerce(declared, init);
-                        // mirrors `record_match_result_override`: an
-                        // explicitly typed `let` is authoritative for a
-                        // value-position match initializer (guarded so a void
-                        // match stays untyped for the completeness sweep).
-                        if matches!(self.body.exprs[init], Expr::Match { .. }) {
-                            self.restamp_value_node(init, declared);
-                        }
                         // let-initializer judgments (moved from lowering, S2
                         // step b), against the explicit declared type.
                         let stmt_ptr = self.body.source_map.stmt.get(id.into()).cloned();
@@ -948,7 +910,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 }
             }
             Stmt::Expr(e) => {
-                self.infer_expr(*e);
+                self.infer_expr(*e, Expectation::None);
             }
             // purely compile-time: the value is folded into
             // `body.local_consts`, no expressions to type.
@@ -956,7 +918,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         }
     }
 
-    fn infer_block(&mut self, id: BlockId) -> Option<TypeRef> {
+    fn infer_block(&mut self, id: BlockId, expected: Expectation) -> Option<TypeRef> {
         // same lifetime decouple as `infer_expr`: a `&Body` copy lets the
         // block's stmts be iterated while calling `&mut self`, no `ThinVec`
         // clone.
@@ -966,8 +928,10 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             self.infer_stmt(stmt);
         }
         match tail {
+            // a block is transparent: its value is its tail's, so the
+            // expectation flows straight through (the tail adopts/funnels it).
             Some(t) => {
-                self.infer_expr(t);
+                self.infer_expr(t, expected);
                 self.ty_of(t)
             }
             // a tail-less block ran its statements for effect and completes with
@@ -988,9 +952,16 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         }
     }
 
-    /// type one expression bottom-up, mirroring `lower_expr`'s stamping.
-    /// returns the recorded type (`None` = unstamped, S1 partial contract).
-    fn infer_expr(&mut self, id: ExprId) -> Option<TypeRef> {
+    /// the bidirectional spine: type one expression, with `expected` flowing
+    /// *down* from the site that uses its value (tier 2, TYPECK.md). a
+    /// transparent node (block, `if`, `match`) forwards the expectation to its
+    /// value-producing children; an imposing site (a call argument, a struct
+    /// field) starts a fresh one; an operand position passes `None`. the
+    /// bottom-up type is then funneled through [`Self::expect`], which adopts a
+    /// literal to the expected width, records array decay, and reports a
+    /// site-specific mismatch. returns the type the expression settles on
+    /// (`None` = unstamped).
+    fn infer_expr(&mut self, id: ExprId, expected: Expectation) -> Option<TypeRef> {
         self.results.visited.insert(id);
         // `self.body` is a shared `&Body`; copying it into a local decouples
         // the expression tree's lifetime from `self`, so every arm can borrow
@@ -1003,13 +974,16 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             Expr::Path(res) => self.path_type(res, false),
             Expr::Binary { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (*op, *lhs, *rhs);
-                self.infer_expr(lhs);
-                self.infer_expr(rhs);
+                // operands synthesize bottom-up: the binary's expectation does
+                // not flow into them (M2 makes the operands determine the result
+                // type, not the reverse).
+                self.infer_expr(lhs, Expectation::None);
+                self.infer_expr(rhs, Expectation::None);
                 self.binary_judgments(id, op, lhs, rhs)
             }
             Expr::Unary { op, operand } => {
                 let (op, operand) = (*op, *operand);
-                self.infer_expr(operand);
+                self.infer_expr(operand, Expectation::None);
                 // opaque enums (T035): `-`/`~` on an enum value is arithmetic
                 // and rejected, like the binary operators. the expr keeps the
                 // operand's type below - unused, since a rejected program never
@@ -1050,12 +1024,12 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             }
             Expr::Call { callee, args } => self.infer_call(*callee, args),
             Expr::ArrayLit(elems) => {
+                // elements synthesize bottom-up; a declared element type adopts
+                // them (and runs the L4 per-element judgment) at the funnel, via
+                // `coerce_array_literal` on this node.
                 for &e in elems {
-                    self.infer_expr(e);
+                    self.infer_expr(e, Expectation::None);
                 }
-                // typed as [first-elem; n] when the first element's type is
-                // known; a declared array type re-types it at the coercion
-                // site (`coerce_array_literal` mirror in `site_coerce`).
                 let len = elems.len() as u64;
                 elems
                     .first()
@@ -1064,7 +1038,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             }
             Expr::ArrayRepeat { value, count } => {
                 let (value, count) = (*value, *count);
-                self.infer_expr(value);
+                self.infer_expr(value, Expectation::None);
                 // `count == 0` is the inert placeholder of a failed const
                 // length (a real 0 is rejected upstream): lowering left the
                 // repeat untyped in that case.
@@ -1077,8 +1051,8 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             }
             Expr::Index { base, index } => {
                 let (base, index) = (*base, *index);
-                self.infer_expr(base);
-                self.infer_expr(index);
+                self.infer_expr(base, Expectation::None);
+                self.infer_expr(index, Expectation::None);
                 self.index_judgments(id, base, index);
                 // element type: the base's element/pointee, peeling one
                 // ref/ptr so `r[i]` on `&[T; N]` yields `T`.
@@ -1102,41 +1076,24 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     _ => None,
                 };
                 for f in fields {
-                    let value = f.value;
-                    self.infer_expr(value);
-                    // field values with a known declared field type go
-                    // through the coercion site (the L1 fix's 5th site).
-                    let field_ty = struct_name
+                    // each field value is checked against its declared type by
+                    // the funnel (the `Field` expectation): it adopts a literal
+                    // to the field width and reports `StructFieldTypeMismatch`
+                    // (`P { x: "hi" }` with `int32 x`). a field with no declared
+                    // type (an unknown field, diagnosed elsewhere) synthesizes.
+                    let expected = struct_name
                         .as_ref()
-                        .and_then(|sname| self.field_decl_type(sname, &f.name));
-                    if let Some(ft) = field_ty {
-                        self.site_coerce(ft, value);
-                        // field value type judgment (S3): `P { x: "hi" }` with
-                        // `int32 x` reached clang before (only missing/unknown
-                        // fields were caught). length-mismatched array fields
-                        // surface here too (no field-specific length check).
-                        if let Some(found) = self.ty_of(value)
-                            && !site_assignable(ft, found, self.types)
-                        {
-                            let expected = self.types.display(ft).to_string();
-                            let got = self.types.display(found).to_string();
-                            self.emit_at(
-                                value,
-                                None,
-                                hir::core::TypeError::StructFieldTypeMismatch {
-                                    field: f.name.clone(),
-                                    expected,
-                                    found: got,
-                                },
-                            );
-                        }
-                    }
+                        .and_then(|sname| self.field_decl_type(sname, &f.name))
+                        .map_or(Expectation::None, |ft| {
+                            Expectation::HasType(ft, Cause::Field { name: f.name.clone() })
+                        });
+                    self.infer_expr(f.value, expected);
                 }
                 Some(lit_ty)
             }
             Expr::Field { base, name } => {
                 let base = *base;
-                self.infer_expr(base);
+                self.infer_expr(base, Expectation::None);
                 let base_ty = self.ty_of(base).unwrap_or_else(|| self.types.error_type());
                 // `.len` on an array is reserved for a future `.len()` method;
                 // steer to the `len(x)` intrinsic (lenfieldonarray, relocated
@@ -1148,8 +1105,8 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             }
             Expr::Assign { lhs, rhs, .. } => {
                 let (lhs, rhs) = (*lhs, *rhs);
-                self.infer_expr(lhs);
-                self.infer_expr(rhs);
+                self.infer_expr(lhs, Expectation::None);
+                self.infer_expr(rhs, Expectation::None);
                 // assignment yields unit (`()`), Rust's rule; it is ruled
                 // non-value (S3), so a value-position use is rejected by
                 // `check_value_position_assignments` with its own message.
@@ -1161,8 +1118,13 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 else_branch,
             } => {
                 let (cond, then_branch, else_branch) = (*cond, *then_branch, *else_branch);
-                self.infer_expr(cond);
-                let then_ty = self.infer_block(then_branch);
+                self.infer_expr(cond, Expectation::None);
+                // the expectation flows into both branch tails (re-tagged
+                // `IfBranch`, so a branch literal adopts the expected width); the
+                // per-branch mismatch is `check_if_branch_consistency` against the
+                // `if`'s settled type, not the funnel.
+                let branch_expected = rebind(&expected, Cause::IfBranch);
+                let then_ty = self.infer_block(then_branch, branch_expected.clone());
                 match else_branch {
                     // an else-less `if` completes with unit: the false path
                     // yields no value, so the whole `if` is `()`. a value-yielding
@@ -1173,14 +1135,14 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     // both branches present: the never-absorbing join, so a
                     // diverging branch (`else { return }`) takes the other's type.
                     Some(b) => {
-                        let else_ty = self.infer_block(b);
+                        let else_ty = self.infer_block(b, branch_expected);
                         self.join_opt(then_ty, else_ty)
                     }
                 }
             }
             Expr::Loop { body: loop_body } => {
                 let loop_body = *loop_body;
-                self.infer_block(loop_body);
+                self.infer_block(loop_body, Expectation::None);
                 // a loop that can `break` out completes with unit; one with no
                 // reachable break never returns control, so it is `Never`.
                 if self.loop_has_break(loop_body) {
@@ -1195,17 +1157,22 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             Expr::Return(value) => {
                 let value = *value;
                 if let Some(v) = value {
-                    self.infer_expr(v);
-                    if let Some(ret) = self.fn_ret {
-                        self.site_coerce(ret, v);
-                    }
+                    // the returned value is checked against the declared return
+                    // by the funnel (the `Return` expectation: literal adoption +
+                    // `ReturnTypeMismatch`); `check_explicit_return` keeps only
+                    // the *arity* judgments (a value in a void fn, a missing value).
+                    let expected = match self.fn_ret {
+                        Some(ret) => Expectation::HasType(ret, Cause::Return),
+                        None => Expectation::None,
+                    };
+                    self.infer_expr(v, expected);
                 }
                 self.check_explicit_return(id, value);
                 Some(self.types.never_ty())
             }
             Expr::Ref { operand } => {
                 let operand = *operand;
-                self.infer_expr(operand);
+                self.infer_expr(operand, Expectation::None);
                 let inner = self
                     .ty_of(operand)
                     .unwrap_or_else(|| self.types.error_type());
@@ -1213,7 +1180,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             }
             Expr::Deref { operand } => {
                 let operand = *operand;
-                self.infer_expr(operand);
+                self.infer_expr(operand, Expectation::None);
                 let op_ty = self
                     .ty_of(operand)
                     .unwrap_or_else(|| self.types.error_type());
@@ -1233,7 +1200,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             }
             Expr::Cast { operand, ty } => {
                 let (operand, ty) = (*operand, *ty);
-                self.infer_expr(operand);
+                self.infer_expr(operand, Expectation::None);
                 // cast-lattice judgment (S3): `as` is no longer any-to-any.
                 // scalar<->scalar, pointer<->pointer, and pointer<->integer
                 // convert; an aggregate (array/struct/union) on either side has
@@ -1257,7 +1224,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             }
             Expr::Match { scrut, arms } => {
                 let scrut = *scrut;
-                self.infer_expr(scrut);
+                self.infer_expr(scrut, Expectation::None);
                 // a bare-ident binding arm (`x -> ..`) takes the scrutinee's
                 // type. lowering left these locals untyped (it no longer knows
                 // the scrutinee type, S2C C2); record the type before the arm
@@ -1271,14 +1238,17 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 }
                 // type of the whole match mirrors `if`: the join of the arm
                 // body types, with `Never` arms absorbed so the first
-                // value-yielding arm wins. a `let`/return override re-records it
-                // afterwards (see `infer_stmt` / `run`).
+                // value-yielding arm wins. the expectation flows into each arm
+                // body (re-tagged `MatchArm`, so an arm literal adopts the
+                // expected width); the per-arm mismatch is
+                // `check_match_arm_consistency` against the match's settled type.
+                let arm_expected = rebind(&expected, Cause::MatchArm);
                 let mut arm_type: Option<TypeRef> = None;
                 for arm in arms {
                     if let Some(g) = arm.guard {
-                        self.infer_expr(g);
+                        self.infer_expr(g, Expectation::None);
                     }
-                    self.infer_expr(arm.body);
+                    self.infer_expr(arm.body, arm_expected.clone());
                     arm_type = self.join_opt(arm_type, self.ty_of(arm.body));
                 }
                 arm_type
@@ -1286,7 +1256,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             Expr::SizeOf(_) => Some(self.types.usize_ty()),
             Expr::Len(operand) => {
                 let operand = *operand;
-                self.infer_expr(operand);
+                self.infer_expr(operand, Expectation::None);
                 // `len(x)` requires an array operand (lennotarray, relocated
                 // from lowering at S2C C5). only checked on a place operand, so
                 // a non-place already flagged `LenNotAPlace` in lowering is not
@@ -1309,9 +1279,12 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             }
             Expr::Block(b) => {
                 let b = *b;
-                self.infer_block(b)
+                self.infer_block(b, expected.clone())
             }
         };
+        // record the bottom-up type provisionally, then let the observer see it
+        // (effects read the pre-funnel type, unchanged by the spine) before the
+        // funnel adopts/coerces it against the expectation.
         if let Some(ty) = ty {
             self.record(id, ty);
         }
@@ -1322,7 +1295,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             expr_types: &self.results.expr_types,
         };
         self.obs.visit(id, &body.exprs[id], ty, &cx);
-        ty
+        self.expect(id, ty, expected)
     }
 
     fn infer_call(&mut self, callee: ExprId, args: &[ExprId]) -> Option<TypeRef> {
@@ -1341,40 +1314,22 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     };
                     self.obs.visit(callee, &self.body.exprs[callee], None, &cx);
                 }
-                for &a in args {
-                    self.infer_expr(a);
-                }
-                // coerce each argument against its parameter's declared type.
-                // `self.scope` is a shared `&HIR`; a copy reads the params at
-                // the scope's lifetime while `site_coerce` takes `&mut self` -
-                // no `param_tys` vec to dodge the borrow. extra args (variadic)
-                // have no parameter and are left uncoerced.
+                // each argument flows down with its parameter's declared type as
+                // an `Arg` expectation: the funnel adopts a literal to the
+                // parameter width and reports `ArgTypeMismatch` (swapped or
+                // wrong-typed args). `self.scope` is a shared `&HIR`; reading the
+                // param type before `infer_expr` (which takes `&mut self`) keeps
+                // the borrow short. extra args (variadic) have no parameter and
+                // synthesize uncoerced.
                 let scope = self.scope;
                 for (i, &a) in args.iter().enumerate() {
-                    let Some(param) = scope.functions[fn_id].params.get(i) else {
-                        continue;
+                    let expected = match scope.functions[fn_id].params.get(i) {
+                        Some(param) => {
+                            Expectation::HasType(param.ty, Cause::Arg { index: i + 1 })
+                        }
+                        None => Expectation::None,
                     };
-                    let param_ty = param.ty;
-                    self.site_coerce(param_ty, a);
-                    // argument type judgment (S3): the coerced argument must be
-                    // assignable to the parameter. swapped or wrong-type args
-                    // (`generate_lang` FIXME) were previously accepted - only
-                    // arity was checked.
-                    if let Some(found) = self.ty_of(a)
-                        && !site_assignable(param_ty, found, self.types)
-                    {
-                        let expected = self.types.display(param_ty).to_string();
-                        let found = self.types.display(found).to_string();
-                        self.emit_at(
-                            a,
-                            None,
-                            hir::core::TypeError::ArgTypeMismatch {
-                                index: i + 1,
-                                expected,
-                                found,
-                            },
-                        );
-                    }
+                    self.infer_expr(a, expected);
                 }
                 // a call to a function with no return type yields unit (`()`).
                 self.scope.functions[fn_id]
@@ -1395,7 +1350,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     self.obs.visit(callee, &self.body.exprs[callee], None, &cx);
                 }
                 for &a in args {
-                    self.infer_expr(a);
+                    self.infer_expr(a, Expectation::None);
                 }
                 // printcannotformat (relocated from lowering, S2C C5): an
                 // array/struct/union argument has no `{}` rendering. the first
@@ -1419,9 +1374,9 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             // (callnonfunction, relocated from lowering at S2C C5); the result
             // is poison.
             _ => {
-                let callee_ty = self.infer_expr(callee);
+                let callee_ty = self.infer_expr(callee, Expectation::None);
                 for &a in args {
-                    self.infer_expr(a);
+                    self.infer_expr(a, Expectation::None);
                 }
                 match callee_ty {
                     Some(ty) => match self.types.lookup(ty) {
@@ -1673,56 +1628,136 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
     }
 
     // -----------------------------------------------------------------
-    // the coercion-site mirror (`coerce.rs`). each adjustment lowering once
-    // performed by mutating the tree is reproduced here: literal re-typing as
-    // a stamp, and decay as an entry in the `adjustments` table that MIR reads
-    // (S2C C4 - lowering no longer injects the cast node).
+    // the tier-2 funnel and its coercion mirror (formerly `coerce.rs`). every
+    // found-meets-expected meeting passes through `expect`: it adopts a literal
+    // to the expected width, files the array-decay adjustment MIR reads, and
+    // reports the cause-specific mismatch. the adoptions reproduce lowering's
+    // old tree mutations as stamps; decay is an `adjustments` entry (S2C C4 -
+    // lowering no longer injects the cast node).
     // -----------------------------------------------------------------
 
-    fn site_coerce(&mut self, expected: TypeRef, id: ExprId) {
-        // forward the expectation through transparent value-position nodes -
-        // `if`/`match` branches - so a literal in a branch adopts the expected
-        // width (the downward-propagation the Tier-2 spine generalizes). without
-        // it, `let int64 x = match s { A -> 1, ... }` leaves the `1` at the
-        // `int32` default and (post-leniency-removal) mismatches the int64 the
-        // arm-consistency check expects. after adopting the branches, the node
-        // itself takes the expected type (MIR reads its temp from this).
-        let body = self.body;
-        match &body.exprs[id] {
-            Expr::Match { arms, .. } => {
-                let bodies: Vec<ExprId> = arms.iter().map(|a| a.body).collect();
-                for b in bodies {
-                    self.site_coerce(expected, b);
+    /// the single found-meets-expected funnel - [`Self::infer_expr`]'s tail (the
+    /// tier-2 spine, TYPECK.md). with no expectation the value synthesizes
+    /// unchanged; with one it is coerced onto the expected type
+    /// ([`Self::coerce_to`]) and, when it still cannot satisfy it, the cause's
+    /// mismatch is reported. three rules:
+    ///
+    /// 1. equal / poison / adopted -> the value's settled type.
+    /// 2. an array decay applies -> the adjustment is filed (in `coerce_to`),
+    ///    the value keeps its own `&[T; N]`.
+    /// 3. a mismatch at an atomic `Arg`/`Field`/`Return` site -> the matching
+    ///    `TypeError`. a transparent container (`if`/`match`/block) delegates to
+    ///    the branch/arm consistency checks; the other causes are adopt-only and
+    ///    own their mismatch elsewhere (the let-init check, the consistency checks).
+    fn expect(
+        &mut self,
+        id: ExprId,
+        found: Option<TypeRef>,
+        expected: Expectation,
+    ) -> Option<TypeRef> {
+        let Expectation::HasType(exp, cause) = expected else {
+            return found;
+        };
+        // an `Error` expectation never constrains (poison discipline: no cascade).
+        if type_ref_contains_error(exp, self.types) {
+            return found;
+        }
+        // adopt a literal / divergent value to the expected width, re-type a
+        // value-position container onto it, coerce an array literal, file decay.
+        self.coerce_to(exp, id);
+        let Some(found) = self.ty_of(id) else {
+            // nothing to type (a `Missing` child): adopt the expectation so a
+            // parent reads a concrete slot rather than a hole.
+            return Some(exp);
+        };
+        // a `()` (void) value is the completeness sweep's diagnostic, not a
+        // mismatch; `Error` poisons silently.
+        if matches!(self.types.lookup(found), TypeKind::Unit)
+            || type_ref_contains_error(found, self.types)
+        {
+            return Some(found);
+        }
+        // a transparent container delegates its mismatch to the branch/arm
+        // consistency checks (which compare against its settled type, restamped
+        // just above); a block delegates to its tail (it carried the expectation).
+        if matches!(
+            self.body.exprs[id],
+            Expr::If { .. } | Expr::Match { .. } | Expr::Block(_)
+        ) {
+            return Some(found);
+        }
+        match cause {
+            Cause::Arg { .. } | Cause::Field { .. } | Cause::Return => {
+                if !self.cause_assignable(&cause, exp, found) {
+                    self.emit_mismatch(id, exp, found, &cause);
                 }
-                self.restamp_value_node(id, expected);
-                return;
             }
-            Expr::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                let (tb, eb) = (*then_branch, *else_branch);
-                if let Some(tail) = body.blocks[tb].tail {
-                    self.site_coerce(expected, tail);
-                    self.expect_branch_type(expected, tail);
-                }
-                if let Some(eb) = eb
-                    && let Some(tail) = body.blocks[eb].tail
-                {
-                    self.site_coerce(expected, tail);
-                    self.expect_branch_type(expected, tail);
-                }
-                self.restamp_value_node(id, expected);
-                return;
-            }
-            _ => {}
+            // adopt-only: the mismatch (if any) is owned by a separate judgment
+            // (the let-init check, the branch/arm consistency checks).
+            Cause::LetDecl | Cause::IfBranch | Cause::MatchArm => {}
+        }
+        Some(found)
+    }
+
+    /// coerce one expression onto `expected` (the funnel's adoption step): adopt
+    /// a literal / divergent value to the expected width, re-type a
+    /// value-position `if`/`match` onto it (MIR reads the hoist temp from this),
+    /// coerce an array literal element-wise, and file an array-reference decay.
+    /// the branches / arms / elements were already given the expectation during
+    /// the downward walk; this re-types the container or leaf node itself. a
+    /// block needs no re-type - its value is its tail's, already coerced.
+    fn coerce_to(&mut self, expected: TypeRef, id: ExprId) {
+        if matches!(self.body.exprs[id], Expr::If { .. } | Expr::Match { .. }) {
+            self.restamp_value_node(id, expected);
+            return;
         }
         self.coerce_array_literal(expected, id);
         self.adopt_int_literal(expected, id);
         self.adopt_float_literal(expected, id);
         self.adopt_divergent(expected, id);
         self.record_decay(expected, id);
+    }
+
+    /// whether `found` satisfies `expected` at this cause's site, using that
+    /// site's assignability policy (preserved from the pre-spine per-site
+    /// checks). an argument or field accepts the pointer escapes
+    /// (`site_assignable`: the `&[T; N]` decay, any pointer widening into the
+    /// untyped `ptr`); a return is stricter - the decay but no `ptr` widening.
+    fn cause_assignable(&self, cause: &Cause, expected: TypeRef, found: TypeRef) -> bool {
+        match cause {
+            Cause::Arg { .. } | Cause::Field { .. } => {
+                site_assignable(expected, found, self.types)
+            }
+            Cause::Return => {
+                types_compatible(found, expected, self.types)
+                    || array_ref_decays_to(expected, found, self.types)
+            }
+            // adopt-only causes never reach this check.
+            Cause::LetDecl | Cause::IfBranch | Cause::MatchArm => true,
+        }
+    }
+
+    /// report the cause-specific mismatch `TypeError` for an atomic value that
+    /// could not satisfy its expectation (the funnel's third rule). the
+    /// adopt-only causes never reach here.
+    fn emit_mismatch(&mut self, id: ExprId, expected: TypeRef, found: TypeRef, cause: &Cause) {
+        let expected = self.types.display(expected).to_string();
+        let found = self.types.display(found).to_string();
+        let err: hir::core::TypeError = match cause {
+            Cause::Arg { index } => hir::core::TypeError::ArgTypeMismatch {
+                index: *index,
+                expected,
+                found,
+            },
+            Cause::Field { name } => hir::core::TypeError::StructFieldTypeMismatch {
+                field: name.clone(),
+                expected,
+                found,
+            },
+            Cause::Return => hir::core::TypeError::ReturnTypeMismatch { expected, found },
+            Cause::LetDecl | Cause::IfBranch | Cause::MatchArm => return,
+        };
+        self.emit_at(id, None, err);
     }
 
     /// re-type an `if`/`match` to the coercion-site's expected type so MIR reads
@@ -1739,39 +1774,6 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             }
             _ => {}
         }
-    }
-
-    /// validate a value-position `if`-branch tail against the declared type,
-    /// after `site_coerce` has adopted its literals. a tail that still does not
-    /// match (and is not a valid decay) is a mismatch - e.g. a raw `ptr`
-    /// (`malloc()`) tail meeting an `int32*` slot: the kernel cuts the implicit
-    /// `ptr -> typed pointer` footgun, so the user writes `malloc(...) as int32*`.
-    /// this catches what `check_if_branch_consistency` cannot - branches
-    /// consistent with each *other* but not with the declared type. (match arms
-    /// are covered by `check_match_arm_consistency`, which compares each arm to
-    /// the recorded match type.)
-    fn expect_branch_type(&mut self, expected: TypeRef, tail: ExprId) {
-        let Some(found) = self.ty_of(tail) else { return };
-        // a unit (void) branch tail is the completeness sweep's diagnostic, not
-        // a branch-type mismatch; `Never` is assignable via `site_assignable`.
-        if found == expected
-            || matches!(self.types.lookup(found), TypeKind::Unit)
-            || site_assignable(expected, found, self.types)
-            || type_ref_contains_error(found, self.types)
-            || type_ref_contains_error(expected, self.types)
-        {
-            return;
-        }
-        let exp = self.types.display(expected).to_string();
-        let fnd = self.types.display(found).to_string();
-        self.emit_at(
-            tail,
-            None,
-            hir::core::TypeError::IfBranchTypeMismatch {
-                expected: exp,
-                found: fnd,
-            },
-        );
     }
 
     /// record an array-reference *decay* (`coerce.rs` `maybe_decay` mirror): a
@@ -1837,7 +1839,10 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             _ => return,
         };
         for (i, child) in children.into_iter().enumerate() {
-            self.site_coerce(elem, child);
+            // the element was given no expectation during the walk (the array
+            // literal's element type is only known here); coerce it onto the
+            // declared element type now.
+            self.coerce_to(elem, child);
             // L4 (S3): per-element value judgment against the declared element
             // type (`[1, true, "x"]` against `[int32; 3]`). runs after the
             // coercion so an adopted literal / decayed ref is not falsely
@@ -1958,6 +1963,18 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             &TypeKind::Ref(inner) | &TypeKind::Ptr(inner) => self.lookup_field_type(inner, field),
             _ => self.types.error_type(),
         }
+    }
+}
+
+/// re-tag an expectation with a new cause, keeping its type (`None` stays
+/// `None`). used to forward an expectation into an `if`/`match` branch or arm as
+/// an `adopt-only` cause (`IfBranch`/`MatchArm`): the branch/arm literal adopts
+/// the expected width, while the per-branch mismatch is reported by the
+/// consistency check, not the funnel.
+fn rebind(expected: &Expectation, cause: Cause) -> Expectation {
+    match expected {
+        Expectation::HasType(ty, _) => Expectation::HasType(*ty, cause),
+        Expectation::None => Expectation::None,
     }
 }
 

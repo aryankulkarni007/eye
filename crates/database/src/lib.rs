@@ -44,13 +44,13 @@ use ast::AstNode;
 use diagnostics::Sink;
 use effect::EffectMap;
 use hir::core::{ConstValue, FnId, HIR, HirError, LoweredBody, Text};
-use typeck::TypeckResults;
 use lexer::{Lexed, Lexer, SourceText};
 use mir::core::MirBody;
 use parser::ParseError;
 use rowan::GreenNode;
 use rustc_hash::FxHashMap;
 use syntax::{SyntaxNode, SyntaxNodePtr};
+use typeck::TypeckResults;
 
 // ---------------------------------------------------------------------------
 // salsa inputs

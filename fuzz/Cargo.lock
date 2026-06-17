@@ -28,6 +28,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "boxcar"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36f64beae40a84da1b4b26ff2761a5b895c12adc41dc25aaee1c4f2bbfe97a6e"
+
+[[package]]
 name = "bytes"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -68,6 +74,12 @@ name = "drop_bomb"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9bda8e21c04aca2ae33ffc2fd8c23134f3cac46db123ba97bd9d3f3b8a4a85e1"
+
+[[package]]
+name = "equivalent"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "eye-ast"
@@ -116,10 +128,12 @@ dependencies = [
 name = "eye-hir"
 version = "0.1.0"
 dependencies = [
+ "boxcar",
  "eye-ast",
  "eye-diagnostics",
  "eye-syntax",
  "la-arena",
+ "papaya",
  "rustc-hash 2.1.2",
  "smallvec",
  "smol_str",
@@ -131,6 +145,7 @@ name = "eye-lexer"
 version = "0.1.0"
 dependencies = [
  "eye-diagnostics",
+ "eye-syntax",
  "eye-token",
  "logos",
  "memchr",
@@ -148,6 +163,7 @@ version = "0.1.0"
 dependencies = [
  "eye-ast",
  "eye-hir",
+ "eye-typeck",
  "la-arena",
  "rustc-hash 2.1.2",
  "smallvec",
@@ -177,6 +193,7 @@ version = "0.1.0"
 dependencies = [
  "eye-token",
  "rowan",
+ "smol_str",
  "text-size",
 ]
 
@@ -187,6 +204,18 @@ dependencies = [
  "logos",
  "text-size",
  "thin-vec",
+]
+
+[[package]]
+name = "eye-typeck"
+version = "0.1.0"
+dependencies = [
+ "eye-ast",
+ "eye-diagnostics",
+ "eye-hir",
+ "eye-syntax",
+ "la-arena",
+ "rustc-hash 2.1.2",
 ]
 
 [[package]]
@@ -305,6 +334,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "papaya"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "997ee03cd38c01469a7046643714f0ad28880bcb9e6679ff0666e24817ca19b7"
+dependencies = [
+ "equivalent",
+ "seize",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -374,6 +413,16 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "seize"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b55fb86dfd3a2f5f76ea78310a88f96c4ea21a3031f8d212443d56123fd0521"
+dependencies = [
+ "libc",
+ "windows-sys",
+]
 
 [[package]]
 name = "serde_core"
@@ -473,6 +522,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20064672db26d7cdc89c7798c48a0fdfac8213434a1186e5ef29fd560ae223d6"
 dependencies = [
  "wit-bindgen",
+]
+
+[[package]]
+name = "windows-link"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "windows-sys"
+version = "0.61.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
+dependencies = [
+ "windows-link",
 ]
 
 [[package]]

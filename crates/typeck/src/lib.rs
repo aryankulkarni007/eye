@@ -14,7 +14,6 @@ use diagnostics::Sink;
 use hir::core::{Body, Expr, ExprId, HIR, HirError, TypeInterner, TypeRef};
 use la_arena::ArenaMap;
 use rustc_hash::FxHashSet;
-use syntax::SyntaxNodePtr;
 
 mod infer;
 
@@ -58,31 +57,39 @@ pub enum Adjustment {
     Decay(TypeRef),
 }
 
-/// why an expectation exists (tier 2, TYPECK.md). carried by every
-/// expectation so a mismatch diagnostic is natively two-span: the mismatch
-/// site plus the declaration that imposed the type. rendered from S2 (when
-/// this pass owns user-facing diagnostics); the horizon 2 extension point is
-/// an `Expansion` frame wrapping an inner cause.
+/// why an expectation exists (the tier-2 spine, TYPECK.md). every
+/// `Expectation::HasType` carries one so the funnel (`infer`'s `expect`)
+/// knows which coercion site imposed the type: it selects the matching
+/// `TypeError` variant when a value cannot satisfy the expectation, and that
+/// site's assignability policy.
+///
+/// three variants name an *atomic* site whose funnel owns the mismatch
+/// diagnostic (`Arg`/`Field`/`Return`); the rest are *adopt-only* markers - the
+/// expectation flows down for literal-width adoption but the mismatch, when one
+/// exists, is reported by a separate judgment (the let-init check for
+/// `LetDecl`, the branch/arm consistency checks for `IfBranch`/`MatchArm`).
+/// the doc's far design also threads the imposing declaration's
+/// `SyntaxNodePtr` here for two-span diagnostics; that lands once the mismatch
+/// variants carry a secondary span (the next inference step).
 #[derive(Debug, Clone)]
 pub enum Cause {
-    LetDecl(SyntaxNodePtr),
-    Param {
-        callee: hir::core::Text,
-        idx: u32,
-        decl: SyntaxNodePtr,
-    },
-    ReturnDecl(SyntaxNodePtr),
-    FieldDecl {
-        strukt: hir::core::Text,
-        field: hir::core::Text,
-    },
-    ElemType,
-    /// S1 placeholder: the imposing declaration's pointer is not yet
-    /// threaded from item collection. replaced site-by-site in S2.
-    Unknown,
+    /// `let T x = init`: adoption only. the Call-init mismatch stays in
+    /// `check_explicit_let_init_type` pending the let-init width ruling.
+    LetDecl,
+    /// `f(arg)` against parameter `index` (1-based) -> `ArgTypeMismatch`.
+    Arg { index: usize },
+    /// the fn tail or an explicit `return e` -> `ReturnTypeMismatch`.
+    Return,
+    /// `S { field: v }` against the declared field type -> `StructFieldTypeMismatch`.
+    Field { name: hir::core::Text },
+    /// an `if` branch tail; adoption only. the mismatch is `check_if_branch_consistency`.
+    IfBranch,
+    /// a `match` arm body; adoption only. the mismatch is `check_match_arm_consistency`.
+    MatchArm,
 }
 
-/// a downward-flowing expected type plus its provenance.
+/// a downward-flowing expected type plus its provenance. the spine threads this
+/// through [`infer::InferCtx::infer_expr`]; `None` synthesizes bottom-up.
 #[derive(Debug, Clone)]
 pub enum Expectation {
     None,

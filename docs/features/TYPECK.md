@@ -4,9 +4,10 @@ Status: BUILD IN PROGRESS. Ratified 2026-06-12. S0-S2 built (cutover C1-C5
 complete - lowering no longer types any expression, typeck is the sole type
 source), S3 complete 2026-06-16 (judgments, including M2b strict-width), S4
 effects built, S5 firewall built 2026-06-16, S6 parallel wave built 2026-06-16,
-Unit/Never types built 2026-06-17 (the void rule, below). Remaining: the Tier-2
-expectation spine (downward propagation, below), S7
-row-poly effects - designed, not built. This document is the engineering design
+Unit/Never types built 2026-06-17 (the void rule, below), the Tier-2 expectation
+spine built 2026-06-17 (downward propagation + the unified `expect` funnel,
+below). Remaining: two-span `Cause` diagnostics (the secondary-span render) and
+S7 row-poly effects - designed, not built. This document is the engineering design
 and the ratified inference strategy; status sigils track what exists in the
 working tree. The cast lattice ruling lives in [CAST.md](CAST.md). [EFFECT.md](EFFECT.md) designs the second
 lattice on the same machine. [PARALLEL.md](../design/PARALLEL.md) records the
@@ -53,16 +54,20 @@ retrofit.
 
 ### Tier 1 - the bidirectional spine (always on)
 
-+ built: `infer_expr` walks every `Expr` variant in `typeck/src/infer.rs`;
-  bottom-up synthesis is complete and is the sole type source for MIR
-~ partial: expectations flow down at the coercion *sites* (`site_coerce`:
-  int/float-literal width adoption, array elements, decay, divergent adoption),
-  and `site_coerce` now also forwards the expected type one level through
-  value-position `if`/`match` branches (so branch literals adopt the declared
-  width). The fully unified `infer_expr(id, expected)` + single `expect` funnel
-  (below) - propagation through *every* transparent node, plus two-span `Cause`
-  diagnostics - is NOT yet threaded; that is the remaining Tier-2 spine work,
-  the only piece of in-kernel inference still outstanding.
++ built: `infer_expr(id, expected)` walks every `Expr` variant in
+  `typeck/src/infer.rs`; bottom-up synthesis is complete and is the sole type
+  source for MIR.
++ built (2026-06-17): expectations flow *down* through every transparent node.
+  `infer_expr` and `infer_block` take an `Expectation`; a block forwards it to
+  its tail, an `if`/`match` to each branch/arm (re-tagged `IfBranch`/`MatchArm`
+  by `rebind`), a `return` to its value; an imposing site (let-init, call
+  argument, struct field) starts a fresh one; an operand position passes `None`.
+  the bottom-up type is funneled through the single `expect` (below). this
+  replaced the external `site_coerce` (one-level forwarding) and the scattered
+  per-site mismatch checks.
+~ remaining: two-span `Cause` diagnostics. the `Cause` is threaded and selects
+  the mismatch variant; rendering the imposing declaration's span as a *second*
+  span waits on the mismatch `TypeError` variants carrying one.
 
 ```rust
 fn infer_expr(&mut self, id: ExprId, expected: Expectation) -> TypeRef
@@ -77,49 +82,62 @@ position (against the result type). Every found/expected meeting funnels
 through one judgment point:
 
 ```rust
-fn expect(&mut self, found: TypeRef, expected: Expectation, id: ExprId) -> TypeRef
-// 1. equal (or Error poison either side) -> found
-// 2. decay applies -> record Adjustment::Decay, return expected type
-// 3. mismatch -> T-class diagnostic carrying the cause chain, return Error
+fn expect(&mut self, id: ExprId, found: Option<TypeRef>, expected: Expectation) -> Option<TypeRef>
+// 1. no expectation / Error poison -> found unchanged.
+// 2. coerce_to(exp, id): adopt a literal/divergent value to the expected width,
+//    re-type a value-position if/match onto it, coerce an array literal, file
+//    Adjustment::Decay. the value keeps its own type on a decay.
+// 3. mismatch at an atomic Arg/Field/Return site -> the cause's TypeError. a
+//    transparent container (if/match/block) delegates to the branch/arm
+//    consistency checks; the adopt-only causes (LetDecl/IfBranch/MatchArm) own
+//    their mismatch in a separate judgment.
 ```
 
-`expect` is coerce's successor with the missing third rule: today a
-non-coercing mismatch leaks to per-site checks or to clang; after, nothing
-leaks. No solver, no variables: the frozen kernel resolves entirely in one
+`expect` is coerce's successor with the missing rule, the funnel every
+found/expected meeting passes through. A non-coercing mismatch no longer leaks
+to clang. No solver, no variables: the frozen kernel resolves entirely in one
 walk (explicit signatures, no generics; an unannotated `let` takes its
-initializer's type).
+initializer's type). The funnel keeps the found type on a reported mismatch
+(rather than poisoning to `Error`) so a rejected program's remaining checks
+still see concrete types; a diagnosed program never reaches codegen.
 
 Integer literals: a literal adopts the expected integer type when an
 expectation exists; the `int32` default applies only when none does
 (`let x = 5` stays `int32`). The M1 range sweep moves into the pass and runs
 against the adopted type.
 
-### Tier 2 - provenance-carrying expectations (built day one)
+### Tier 2 - provenance-carrying expectations
 
-+ `Cause` and `Expectation` enums defined in `crates/typeck/src/lib.rs`
-- not yet threaded through `infer_expr` - the walker does not receive or
-  propagate expectations. This is the headline remaining inference work (the
-  full-inference build), not part of any shipped segment
++ `Cause` and `Expectation` defined in `crates/typeck/src/lib.rs`
++ threaded through `infer_expr` (2026-06-17): every `HasType` carries a `Cause`,
+  which the funnel uses to (a) select the mismatch `TypeError` variant and (b)
+  pick that site's assignability policy
+- remaining: the *secondary span* - the `Cause` selects the variant but does not
+  yet carry the imposing declaration's `SyntaxNodePtr`, because the mismatch
+  variants are single-span. carrying it (and rendering it) is the two-span step
 
-An expectation carries *why* it exists:
+An expectation carries *why* it exists. As built, the cause names the site (and
+the data its `TypeError` needs); the doc's far design adds the declaration's
+`SyntaxNodePtr` per variant for the second span:
 
 ```rust
 pub enum Expectation { None, HasType(TypeRef, Cause) }
 
 pub enum Cause {
-    LetDecl(SyntaxNodePtr),
-    Param { callee: Text, idx: u32, decl: SyntaxNodePtr },
-    ReturnDecl(SyntaxNodePtr),
-    FieldDecl { strukt: Text, field: Text, decl: SyntaxNodePtr },
-    ArmConsistency { first_arm: SyntaxNodePtr },
-    ElemType { decl: SyntaxNodePtr },
-    // Horizon 2 extension point, not built now:
-    // Expansion { origin: OriginId, inner: Box<Cause> }
+    LetDecl,                  // adopt-only (let-init check owns the mismatch)
+    Arg { index: usize },     // -> ArgTypeMismatch
+    Return,                   // -> ReturnTypeMismatch
+    Field { name: Text },     // -> StructFieldTypeMismatch
+    IfBranch,                 // adopt-only (if-branch consistency owns it)
+    MatchArm,                 // adopt-only (match-arm consistency owns it)
+    // two-span extension: a SyntaxNodePtr per variant for the imposing decl.
+    // Horizon 2: Expansion { origin: OriginId, inner: Box<Cause> }
 }
 ```
 
-Near payoff: every type mismatch is natively a two-span diagnostic -
-"mismatch here, expected `int32` because of the return type declared there."
+Near payoff (once the second span lands): every type mismatch is natively a
+two-span diagnostic - "mismatch here, expected `int32` because of the return
+type declared there."
 Far payoff (the native-errors-for-injected-features aspiration, MASTERPLAN
 Horizon 2): when the macro engine desugars injected syntax to kernel HIR, an
 origin table wraps causes in `Expansion` frames and a type error inside
@@ -215,7 +233,8 @@ pub fn check_body(scope: &HIR, body: &Body, types: &TypeInterner) -> TypeckResul
   + `check_int_literal_ranges` (M1)
   + `binary_judgments` - array ops, ptr arithmetic, enum arithmetic, float modulo
   + `index_judgments` - ptr index, OOB, negative index
-  + `site_coerce` - coercion at array literals, int/float literal adoption, decay
+  + `expect`/`coerce_to` - coercion at array literals, int/float literal
+    adoption, decay (the spine funnel; was `site_coerce` before 2026-06-17)
   + return/tail checks, value-position match-arm and `if`-branch consistency
   + let-init type + array-init length
   + enum opacity (T035), `LenNotArray`/`LenFieldOnArray`/`PrintCannotFormat`
@@ -463,8 +482,8 @@ database); on-disk persistence stays deferred.
   Tier 1 spine + Tier 2 causes + the Tier 3 seam. The pass re-derives types
   over lowered HIR while lowering still stamps. Shadow harness asserts parity
   (335 workspace tests + corpus regression, all green). `InferObserver` trait
-  + no-op impl built (seam for S4). `Cause`/`Expectation` enums defined but
-  not yet threaded through `infer_expr`.
+  + no-op impl built (seam for S4). `Cause`/`Expectation` enums defined here
+  (threaded through `infer_expr` later, by the 2026-06-17 spine build).
 + **S2 - cutover (BUILT, C1-C5 complete).** step A: MIR reads `TypeckResults`
   (`lower_function` takes it, `mir_type_of` reads it). step B: all judgments
   migrated to `typeck/src/infer.rs` + `check_matches` (tests in
@@ -480,7 +499,7 @@ database); on-disk persistence stays deferred.
   C14) + cast truncation (U4), F1 if-branch consistency (T41), F2
   negation-on-unsigned (T40), F3 float-literal adoption, L4 cross-element (T42),
   `types_compatible` integer-family leniency fully removed (exact-width at
-  arguments/fields/returns, the boundary analogue of M2b; `site_coerce` forwards
+  arguments/fields/returns, the boundary analogue of M2b; the spine forwards
   the expected width into value-position `if`/`match` branches so branch literals
   adopt). Open: tail-expression enforcement in value blocks (the raw-ptr->
   typed-ptr leniency, e.g. `malloc()` into `int32*` - a `ptr`-ergonomics ruling).
@@ -508,9 +527,11 @@ database); on-disk persistence stays deferred.
   infrastructure. See EFFECT.md "Path forward".
 
   Note: the **Tier-2 expectation spine** (downward `Expectation` propagation,
-  the unified `expect` funnel) is the remaining in-kernel inference work and is
-  not numbered as a segment - it is orthogonal to S6/S7 and is the "full type
-  inference" build discussed separately.
+  the unified `expect` funnel) was built 2026-06-17 (not numbered as a segment -
+  orthogonal to S6/S7). `infer_expr(id, expected)` threads an `Expectation`
+  through every transparent node; the funnel adopts/coerces and reports the
+  cause-specific mismatch. The one remaining in-kernel inference piece is the
+  two-span render (the secondary span the `Cause` will carry).
 
 ## Open at build time
 

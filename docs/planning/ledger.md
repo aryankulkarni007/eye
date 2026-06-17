@@ -176,6 +176,26 @@ the rulings.
       `adopt_int_literal`) retypes a float literal to a `float32` expectation at
       the coercion site, so `let float32 f = 1.5` and `[float32; N]` literals type
       consistently. Regression: `float_literal_adopts_expected_width`.
+- [x] **Tier-2 expectation spine - BUILT 2026-06-17.** The headline remaining
+      in-kernel inference work. `infer_expr(id, expected: Expectation)` (and
+      `infer_block`) now thread a downward `Expectation` through every
+      transparent node: a block to its tail, an `if`/`match` to each branch/arm
+      (re-tagged `IfBranch`/`MatchArm` by `rebind`), a `return` to its value;
+      imposing sites (let-init, call arg, struct field) start a fresh one; an
+      operand passes `None`. One `expect` funnel - `infer_expr`'s tail - adopts a
+      literal/divergent value to the expected width (`coerce_to`), files the
+      array decay, and reports the cause-specific mismatch
+      (`ArgTypeMismatch`/`StructFieldTypeMismatch`/`ReturnTypeMismatch`) dispatched
+      on the `Cause`. This replaced `site_coerce` (one-level forwarding) and
+      `expect_branch_type`: the scattered inline arg/field/return mismatch checks
+      fold into the funnel; `check_if_branch_consistency` now compares each branch
+      against the `if`'s settled type (subsuming `expect_branch_type`, so a
+      both-branches-agree-but-wrong-vs-expected `fn -> int32 { if c { 1.0 } else
+      { 2.0 } }` is still caught); the return checks are trimmed to arity-only.
+      No net new rejections (behavior-preserving: 74 typeck + full workspace +
+      corpus green). Open: the two-span render - the `Cause` selects the variant
+      but the secondary span waits on the mismatch `TypeError` variants carrying
+      a declaration `SyntaxNodePtr`. TYPECK.md Tier 1 / Tier 2 updated.
 
 Acceptance corpus for the pass: lang.eye plus the CLEAK reproducers.
 

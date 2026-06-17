@@ -97,7 +97,12 @@ fn main() -> anyhow::Result<()> {
         }
     }
     if !front_diags.is_empty() {
-        diagnostics::render(&source, front_diags.into_diags(), Some(&root), Some(input_path));
+        diagnostics::render(
+            &source,
+            front_diags.into_diags(),
+            Some(&root),
+            Some(input_path),
+        );
         return Err(anyhow::anyhow!("HIR lowering errors"));
     }
 
