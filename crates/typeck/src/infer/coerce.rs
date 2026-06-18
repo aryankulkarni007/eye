@@ -100,7 +100,8 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
     /// site's assignability policy (preserved from the pre-spine per-site
     /// checks). an argument or field accepts the pointer escapes
     /// (`site_assignable`: the `&[T; N]` decay, any pointer widening into the
-    /// untyped `ptr`); a return is stricter - the decay but no `ptr` widening.
+    /// untyped `ptr`); a return is stricter - the decay and the safe `&T -> T*`
+    /// widening, but no `ptr` (void*) widening.
     fn cause_assignable(&self, cause: &Cause, expected: TypeRef, found: TypeRef) -> bool {
         match cause {
             Cause::Arg { .. } | Cause::Field { .. } => {
@@ -109,6 +110,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             Cause::Return => {
                 types_compatible(found, expected, self.types)
                     || array_ref_decays_to(expected, found, self.types)
+                    || ref_widens_to_ptr(expected, found, self.types)
             }
             // adopt-only causes never reach this check.
             Cause::LetDecl | Cause::IfBranch | Cause::MatchArm => true,
@@ -229,6 +231,43 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 && !site_assignable(elem, found, self.types)
             {
                 let expected = self.types.display(elem).to_string();
+                let got = self.types.display(found).to_string();
+                self.emit_at(
+                    child,
+                    None,
+                    hir::core::TypeError::ArrayElementTypeMismatch {
+                        index: i,
+                        expected,
+                        found: got,
+                    },
+                );
+            }
+        }
+    }
+
+    /// whether an expectation imposes an array type. when it does, the array
+    /// literal's elements are judged against the declared element type by
+    /// [`Self::coerce_array_literal`] at the funnel, so the synth-time
+    /// homogeneity check is skipped (each bad element reported once).
+    pub(crate) fn expects_array(&self, expected: &Expectation) -> bool {
+        matches!(
+            expected,
+            Expectation::HasType(t, _) if matches!(self.types.lookup(*t), TypeKind::Array { .. })
+        )
+    }
+
+    /// an array literal has a single element type: every element must agree
+    /// with the first. this is the no-declaration counterpart to
+    /// [`Self::coerce_array_literal`]'s vs-declared judgment - it catches a
+    /// heterogeneous literal in a position with no expected type
+    /// (`let xs = [1, "two"]`), which would otherwise synthesize `[int32; 2]`
+    /// and silently accept the mismatched element.
+    pub(crate) fn check_array_homogeneous(&mut self, elems: &[ExprId], first_ty: TypeRef) {
+        for (i, &child) in elems.iter().enumerate().skip(1) {
+            if let Some(found) = self.ty_of(child)
+                && !site_assignable(first_ty, found, self.types)
+            {
+                let expected = self.types.display(first_ty).to_string();
                 let got = self.types.display(found).to_string();
                 self.emit_at(
                     child,

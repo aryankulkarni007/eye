@@ -92,7 +92,7 @@ semantic lowering out of codegen and makes future backend work
 plausible.
 ──────────────────────────────────────────────────────────────────────────────────────────────────
 Layer Codegen
-Architecture MIR-to-C “dumb printer”; emits declarations, functions, control
+Architecture MIR-to-C “direct printer”; emits declarations, functions, control
 flow, arrays, structs, unions, enums. See crates/codegen/src/core/
 mir_emit.rs:1.
 Key decisions C backend is mechanical; clang does final compilation; main is

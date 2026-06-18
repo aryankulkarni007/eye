@@ -20,7 +20,7 @@ The kernel is mostly built. Recently landed: function pointers (2026-06-05),
 early return (2026-06-04). Floats were already built. Structs, unions, enums,
 fixed arrays (`[T; N]`, `&[T; N]`, `len`), raw pointers, `match` skeleton,
 machine ints, the operator set, and FFI `extern` are all in. The MIR cutover is
-complete: the backend is a MIR to C dumb printer, so the backend boundary needed
+complete: the backend is a MIR to C direct printer, so the backend boundary needed
 for a later native codegen already exists.
 
 What stands between now and a freezable kernel is small and finite. Everything

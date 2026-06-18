@@ -1,4 +1,4 @@
-//! MIR -> c emitter: the dumb printer.
+//! MIR -> C emitter: the direct printer.
 //!
 //! this is the track 2 codegen, the only path since the segment 5 cutover (it
 //! replaced the HIR-walking emitter). it walks a [`MirBody`] and prints c, one

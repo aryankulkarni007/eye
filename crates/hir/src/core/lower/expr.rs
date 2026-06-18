@@ -279,7 +279,7 @@ impl<'a> LoweringCtx<'a> {
                     );
                 }
                 // F3 / S1: a struct literal must name every declared field
-                // exactly once - missing fields leave silent garbage in c,
+                // exactly once - missing fields produce undefined behavior in C,
                 // unknown fields are typos. skipped for positional literals
                 // (no names to match) and unions (handled above).
                 let name_path = {

@@ -1120,6 +1120,38 @@ enum Shape =\n| Circle\n| Rectangle\n| Triangle\n;\n\nmain() {\n    let int32 r 
         );
     }
 
+    /// statement-position boundary (rust-style, no-footgun): a block-like
+    /// expression (`if`/`loop`/`match`) is a complete statement, so a following
+    /// `*`/`-`/`&` starts a new statement instead of folding as an infix
+    /// operator on the block's value. in expression position (a let initializer)
+    /// the operator still binds.
+    #[test]
+    fn block_like_in_statement_position_is_a_complete_statement() {
+        // statement position: `if ... {} * p` is two statements, not a multiply.
+        let stmt = format!(
+            "{:#?}",
+            parse_src("main() {\n    if c { a } else { b } * p;\n}\n").green
+        );
+        assert!(
+            stmt.contains("IfExpr") && stmt.contains("DerefExpr"),
+            "expected the `if` and a `*p` deref statement in:\n{stmt}"
+        );
+        assert!(
+            !stmt.contains("BinExpr"),
+            "the `*` must not fold as multiplication on the block value in:\n{stmt}"
+        );
+
+        // expression position: the same shape folds the `*` as an operand.
+        let expr = format!(
+            "{:#?}",
+            parse_src("main() {\n    let x = if c { a } else { b } * p;\n}\n").green
+        );
+        assert!(
+            expr.contains("BinExpr"),
+            "in a let initializer the `*` must bind as an operator in:\n{expr}"
+        );
+    }
+
     /// missing `}` in match arm list should point to the opening `{`.
     #[test]
     fn missing_match_arms_close_reports_error_at_open_brace() {

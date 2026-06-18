@@ -42,6 +42,32 @@ main() {
     );
 }
 
+/// ref/ptr auto-conversion end-to-end: a `&T` passed into a `T*` parameter
+/// compiles (both are a `T*` in C, no cast) and runs.
+#[test]
+fn ref_widens_to_pointer_and_runs() {
+    let source = "\
+deref(int32* p) -> int32 { *p }
+main() {
+    let int32 x = 42;
+    println(\"{}\", deref(&x));
+}
+";
+    let (out, _) = common::run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "42\n",
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// let-from-init inference end-to-end: untyped `let`s whose initializers
 /// synthesize concrete types compile and run, the inferred types reaching
 /// codegen through typeck's `local_types` (no annotation written).

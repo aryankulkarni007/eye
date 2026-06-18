@@ -33,7 +33,20 @@ pub(crate) fn block(p: &mut Parser, ctx: TextRange) {
             // reserve the arm for a future block-as-expression form.
             let is_block_like = matches!(p.nth0(), T![if] | T![loop] | T![match]);
             let expr_start = p.cursor_range();
-            expr(p);
+            if is_block_like {
+                // statement-position boundary (rust-style, no-footgun): a
+                // block-like expression is a complete statement, so parse only
+                // the `if`/`loop`/`match` via `lhs` (it returns before the infix
+                // pratt loop). a following `*`/`-`/`&` then starts the next
+                // statement instead of folding as an infix operator on the
+                // block's value - `if c {a} else {b} * p` is two statements, not
+                // a multiply. expression position (a let initializer, a call
+                // argument) still goes through the full `expr` parser, where the
+                // block-like form is an operand and the operator binds.
+                lhs(p);
+            } else {
+                expr(p);
+            }
 
             if p.eat(T![;]) {
                 m_stmt.complete(p, SyntaxKind::ExprStmt);

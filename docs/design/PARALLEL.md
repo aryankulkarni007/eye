@@ -102,7 +102,7 @@ To prevent the Type and Effect systems from becoming codependent and un-parallel
 
 - **Phase 0: Registration (The Bootstrap):** Load library definitions and register procedural parsing hooks into the Grammar Registry.
 - **Phase 1: Procedural Parsing:** Convert arbitrary/injected syntax into an "Opaque Token Tree." The compiler doesn't understand the _meaning_ yet, only the _structure_.
-- **Phase 2: Syntax-Directed Desugaring:** A "dumb" structural rewrite that turns Opaque Trees into **Kernel HIR**. This is pure code-to-code substitution. No types are consulted.
+- **Phase 2: Syntax-Directed Desugaring:** A direct structural rewrite that turns Opaque Trees into **Kernel HIR**. This is pure code-to-code substitution. No types are consulted.
 - **Phase 3: The Parallel Brain:** Now that the HIR is purely Kernel-native, spawn $N$ threads to perform Bidirectional Type and Effect Inference in parallel.
 - **Phase 4: Verification/Culling:** If the generated code is semantically invalid, the Inference Engine errors out, mapping the failure back to the original source via **Origin Tracking**.
 

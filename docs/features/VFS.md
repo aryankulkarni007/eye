@@ -128,7 +128,7 @@ block fails (bit rot, tamper, incomplete write):
 2. if the build tool tracks the previous archive version, the block can be
    reconstructed from the prior manifest's block chain (same path, prior hash)
 3. if no prior archive exists, the entry is reported as corrupt — the compiler
-   never serves garbage
+    never serves invalid data
 
 this is what makes the archive **self-healing**: any block can be located in any
 prior version by walking the hash chain backward through the archive lineage.

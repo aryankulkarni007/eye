@@ -15,7 +15,7 @@ fuzz_target!(|data: &[u8]| {
     // phase 1: lex – must not panic.
     let lexed = Lexer::new(&text).tokenize();
 
-    // phase 2: parse – must not panic even on garbage tokens.
+    // phase 2: parse – must not panic even on malformed tokens.
     // the parser is designed to recover from any input; we test
     // that it never unwraps or indexes out of bounds.
     let _parse = parser::parse(&lexed.tokens, &text);

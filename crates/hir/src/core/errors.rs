@@ -280,9 +280,21 @@ pub enum TypeError {
     /// pointer (c `void*`): it has no element type, so `p[i]` cannot be
     /// sized and clang rejects the subscript.
     IndexOnPtr,
+    /// indexing a non-indexable value (`x[i]` where `x` is a scalar, struct,
+    /// union, enum, `()` or `!`). only an array or a pointer/reference has
+    /// elements; a plain value would emit invalid c.
+    IndexOfNonIndexable {
+        found: String,
+    },
     /// dereferencing a value of type `ptr`. it has no pointee type, so `*p`
     /// has no value type; clang rejects the indirection under `-pedantic`.
     DerefOfPtr,
+    /// dereferencing a non-pointer value (`*x` where `x` is not a `&T`/`T*`).
+    /// `*` is the deref operator; a plain value has nothing to indirect through,
+    /// so it would emit invalid c (`(*x)` on a non-pointer).
+    DerefOfNonPointer {
+        found: String,
+    },
     /// arithmetic or bitwise operation on a value of type `ptr` (CLEAK P1).
     /// `void*` arithmetic is a GNU extension, not standard c, and there is no
     /// element size to scale by. comparisons (`==`, `<`, ...) stay allowed.
@@ -736,9 +748,17 @@ impl fmt::Display for TypeError {
                 f,
                 "cannot index `ptr`: `ptr` has no element type; cast to a pointer type first"
             ),
+            TypeError::IndexOfNonIndexable { found } => write!(
+                f,
+                "cannot index `{found}`: it has no elements; only an array or a pointer can be indexed"
+            ),
             TypeError::DerefOfPtr => write!(
                 f,
                 "cannot dereference `ptr`: `ptr` has no pointee type; cast to a pointer type first"
+            ),
+            TypeError::DerefOfNonPointer { found } => write!(
+                f,
+                "cannot dereference `{found}`: it is not a pointer; `*` indirects through a `&T`/`T*`, use `&` to take a value's address"
             ),
             TypeError::ArithmeticOnPtr { op } => write!(
                 f,
@@ -979,7 +999,9 @@ impl Diagnostic for HirError {
                 TypeError::MissingTypeAnnotation { .. } => Code::new(Class::Type, 25),
                 TypeError::CallArityMismatch { .. } => Code::new(Class::Type, 26),
                 TypeError::IndexOnPtr => Code::new(Class::Type, 27),
+                TypeError::IndexOfNonIndexable { .. } => Code::new(Class::Type, 46),
                 TypeError::DerefOfPtr => Code::new(Class::Type, 28),
+                TypeError::DerefOfNonPointer { .. } => Code::new(Class::Type, 45),
                 TypeError::ArithmeticOnPtr { .. } => Code::new(Class::Type, 29),
                 TypeError::IntLiteralOutOfRange { .. } => Code::new(Class::Type, 30),
                 TypeError::StructLitPositional => Code::new(Class::Type, 31),

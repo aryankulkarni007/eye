@@ -64,7 +64,7 @@ fn main_with_any_return_is_accepted() {
 
 /// a bare function name in value position is a function pointer of the
 /// function's signature, not an error (the old `FnAsValue` rejection is gone). a
-/// correctly-typed binding lowers clean.
+/// correctly-typed binding lowers without error.
 #[test]
 fn function_name_as_value_is_accepted() {
     let hir = lower(
@@ -73,7 +73,7 @@ fn function_name_as_value_is_accepted() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "a function name as a value must lower clean; got: {:?}",
+        "a function name as a value must succeed; got: {:?}",
         hir.diagnostics
     );
 }

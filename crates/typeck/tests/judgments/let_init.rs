@@ -224,3 +224,44 @@ main() {
         diags(&hir)
     );
 }
+
+/// an untyped array literal has a single element type: a heterogeneous one is
+/// rejected, not silently typed by its first element. footgun surfaced by
+/// let-from-init (`let xs = [1, "two"]` would otherwise infer `[int32; 2]`). a
+/// declared element type owns this check at the funnel; this covers the
+/// no-expectation path.
+#[test]
+fn untyped_array_literal_must_be_homogeneous() {
+    let bad = lower(
+        "\
+main() {
+    let xs = [1, 2, \"three\"];
+    println(\"{}\", xs[0]);
+}
+",
+    );
+    assert!(
+        diags(&bad).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::ArrayElementTypeMismatch { index: 2, .. })
+        )),
+        "heterogeneous untyped array literal must be rejected: {:?}",
+        diags(&bad)
+    );
+
+    let clean = lower(
+        "\
+main() {
+    let xs = [1, 2, 3];
+    println(\"{}\", xs[0]);
+}
+",
+    );
+    assert!(
+        !diags(&clean)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ArrayElementTypeMismatch { .. }))),
+        "homogeneous untyped array literal must be clean: {:?}",
+        diags(&clean)
+    );
+}

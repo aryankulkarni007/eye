@@ -142,7 +142,7 @@ rust):
   compiler fires up with the full stdlib in memory, decompressed once at init.
 - **self-healing** — on read, each block is verified against its hash. a corrupt
   entry is either reconstructed (if the build tool tracks provenance) or
-  re-fetched. the compiler never silently serves garbage data.
+  re-fetched. the compiler never silently serves corrupt data.
 
 the rust rewrite (designed here, built when the C prototype matures and the zig
 port validates the wire format) will be a `crates/vfs` crate with:

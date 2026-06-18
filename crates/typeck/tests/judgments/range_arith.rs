@@ -398,3 +398,67 @@ main() -> int32 { 0 }
         diags(&hir)
     );
 }
+
+/// `*x` on a non-pointer value (`int32`, a struct, ...) is rejected: `*` is the
+/// deref operator and a plain value has nothing to indirect through, so it would
+/// emit invalid c (the C-brain footgun - you meant `&` address-of). a genuine
+/// `&T`/`T*` deref stays clean.
+#[test]
+fn deref_of_non_pointer_is_rejected() {
+    let bad = lower(
+        "\
+main() {
+    let int32 x = 5;
+    let int32 y = *x;
+    println(\"{}\", y);
+}
+",
+    );
+    assert!(
+        diags(&bad)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::DerefOfNonPointer { .. }))),
+        "deref of a non-pointer must be rejected: {:?}",
+        diags(&bad)
+    );
+
+    let ok = lower(
+        "\
+main() {
+    let int32 x = 5;
+    let &int32 r = &x;
+    let int32 y = *r;
+    println(\"{}\", y);
+}
+",
+    );
+    assert!(
+        !diags(&ok)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::DerefOfNonPointer { .. }))),
+        "deref of a ref must stay clean: {:?}",
+        diags(&ok)
+    );
+}
+
+/// `x[i]` on a non-indexable value (a scalar, struct, ...) is rejected: only an
+/// array or a pointer has elements. an array index stays clean.
+#[test]
+fn index_of_non_indexable_is_rejected() {
+    let bad = lower("main() {\n    let int32 x = 5;\n    let int32 y = x[0];\n    println(\"{}\", y);\n}\n");
+    assert!(
+        diags(&bad)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::IndexOfNonIndexable { .. }))),
+        "indexing a scalar must be rejected: {:?}",
+        diags(&bad)
+    );
+    let ok = lower("main() {\n    let [int32; 3] xs = [1, 2, 3];\n    println(\"{}\", xs[0]);\n}\n");
+    assert!(
+        !diags(&ok)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::IndexOfNonIndexable { .. }))),
+        "indexing an array must stay clean: {:?}",
+        diags(&ok)
+    );
+}

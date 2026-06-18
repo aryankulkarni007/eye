@@ -90,7 +90,7 @@ fn well_formed_program_has_no_diagnostics() {
 }
 
 /// F3 / S1: a struct literal omitting a declared field is an error, naming the
-/// missing field. garbage-in-c otherwise.
+/// missing field. produces undefined behavior in C otherwise.
 #[test]
 fn incomplete_struct_literal_emits_diagnostic() {
     let hir = lower(
@@ -163,7 +163,7 @@ fn array_struct_field_is_accepted() {
     let hir = lower("structure Buf { [int32; 4] data, };\nmain() {}\n");
     assert!(
         diags(&hir).is_empty(),
-        "an array struct field must lower clean; got: {:?}",
+        "an array struct field must succeed; got: {:?}",
         hir.diagnostics
     );
 }
@@ -259,7 +259,7 @@ main() {
 
 /// CLEAK L1 + L2: string decay through the unified coercion point at the two
 /// sites it was missing - struct-literal fields and array-literal elements.
-/// both must lower clean (the decay cast satisfies the declared type).
+/// both must lower without error (the decay cast satisfies the declared type).
 #[test]
 fn string_decay_at_struct_fields_and_array_elements() {
     let hir = lower(

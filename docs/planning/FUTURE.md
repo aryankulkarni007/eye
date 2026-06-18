@@ -20,7 +20,7 @@ HIR lowering lives in [`crates/hir/src/core/lower/`](crates/hir/src/core/lower/)
 HIR -> MIR lowering lives in [`crates/mir/src/lower.rs`](crates/mir/src/lower.rs)
 (control-flow flattening and temp generation); the MIR -> C emitter is
 [`crates/codegen/src/core/mir_emit.rs`](crates/codegen/src/core/mir_emit.rs), a
-dumb printer that makes no semantic decisions. See [`MIR.md`](features/MIR.md).
+direct printer that makes no semantic decisions. See [`MIR.md`](features/MIR.md).
 
 **Not implemented:** separate typechecker pass, multi-file modules, optimizations,
 incremental compilation, non-C backends.

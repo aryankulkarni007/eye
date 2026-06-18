@@ -189,6 +189,20 @@ pub(crate) fn site_assignable(expected: TypeRef, found: TypeRef, types: &TypeInt
     types_compatible(found, expected, types)
         || array_ref_decays_to(expected, found, types)
         || (matches!(types.lookup(expected), TypeKind::RawPtr) && is_pointer_shaped(found, types))
+        || ref_widens_to_ptr(expected, found, types)
+}
+
+/// a safe reference `&T` flows into a raw typed-pointer slot `T*` (same pointee)
+/// at a coercion site without a cast: both are a `T*` in C, and using a
+/// guaranteed-valid reference as a raw pointer is the lossless/safe direction.
+/// the reverse - a raw `T*` into a `&T` slot - fabricates the safety guarantee
+/// and stays gated behind an explicit cast (kernel rule: dangerous direction
+/// gated, safe direction implicit).
+pub(crate) fn ref_widens_to_ptr(expected: TypeRef, found: TypeRef, types: &TypeInterner) -> bool {
+    matches!(
+        (types.lookup(expected), types.lookup(found)),
+        (&TypeKind::Ptr(p), &TypeKind::Ref(r)) if p == r
+    )
 }
 
 /// whether `ty` is a pointer-shaped value (a typed reference/pointer, or the

@@ -39,7 +39,7 @@ arena-backed HIR, and a stateless code generator.
 | `crates/diagnostics` | Shared diagnostic taxonomy (8 classes), `Span`, `Sink`       |
 | `crates/hir`         | Name resolution + arena-allocated HIR + semantic diagnostics |
 | `crates/mir`         | Mid-level IR + HIR -> MIR lowering                           |
-| `crates/codegen`     | MIR -> C emitter (dumb printer)                              |
+| `crates/codegen`     | MIR -> C emitter (direct printer)                            |
 | `crates/lsp`         | `eye-lsp` language server (semantic tokens + parser diags)   |
 | `crates/xtask`       | Codegen helpers (regenerating AST from ungrammar)            |
 | `eyesrc/lang/`       | Feature-demonstration sample programs                        |

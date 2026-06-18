@@ -184,3 +184,59 @@ main() -> int32 { 0 }
         diags(&hir)
     );
 }
+
+/// a safe reference `&T` widens into a raw typed-pointer slot `T*` (same
+/// pointee) at a coercion site - argument, struct field, and return - without a
+/// cast, since both are a `T*` in C and using a valid reference as a raw pointer
+/// is lossless. (#372 ref/ptr auto-conversion, the safe direction.)
+#[test]
+fn ref_widens_to_typed_pointer() {
+    let ok = lower(
+        "\
+structure Box { int32* p, };
+take(int32* p) -> int32 { *p }
+ret(&int32 r) -> int32* { r }
+main() {
+    let int32 x = 5;
+    let int32 a = take(&x);
+    let Box b = Box { p: &x };
+    println(\"{}\", a);
+}
+",
+    );
+    assert!(
+        !diags(&ok).iter().any(|e| matches!(
+            e,
+            HirError::Type(
+                TypeError::ArgTypeMismatch { .. }
+                    | TypeError::StructFieldTypeMismatch { .. }
+                    | TypeError::ReturnTypeMismatch { .. }
+            )
+        )),
+        "&T must widen into a T* slot at arg/field/return: {:?}",
+        diags(&ok)
+    );
+}
+
+/// the reverse stays gated: a raw `T*` does NOT implicitly become a `&T` (that
+/// would fabricate the safety guarantee); it needs an explicit cast.
+#[test]
+fn typed_pointer_does_not_narrow_to_ref() {
+    let bad = lower(
+        "\
+want(&int32 r) -> int32 { *r }
+forward(int32* p) -> int32 { want(p) }
+main() {
+    let int32 x = 5;
+    println(\"{}\", forward(&x));
+}
+",
+    );
+    assert!(
+        diags(&bad)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ArgTypeMismatch { .. }))),
+        "a raw T* into a &T slot must be rejected (needs a cast): {:?}",
+        diags(&bad)
+    );
+}

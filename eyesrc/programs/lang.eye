@@ -330,6 +330,6 @@ main() {
 
     -- FIXED: compiler doesn't error on incorrect args and ordering
     -- and all possible issues with that
-    generate_lang(*lang, *arena, syllable, 10);
+    generate_lang(&lang, &arena, syllable, 10);
     print_lang(lang);
 }

@@ -927,10 +927,23 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
     /// (A4). dynamic indices stay unchecked (runtime safety is deferred).
     pub(crate) fn index_judgments(&mut self, id: ExprId, base: ExprId, index: ExprId) {
         let base_ty = self.ty_of(base);
-        if let Some(ty) = base_ty
-            && matches!(self.types.lookup(ty), TypeKind::RawPtr)
-        {
-            self.emit_at(id, None, hir::core::TypeError::IndexOnPtr);
+        if let Some(ty) = base_ty {
+            match self.types.lookup(ty) {
+                // the untyped `ptr` has no element type (L7).
+                TypeKind::RawPtr => self.emit_at(id, None, hir::core::TypeError::IndexOnPtr),
+                // arrays index (bounds-checked below); a typed pointer/reference
+                // indexes as in c (`p[i]`), no bounds known here.
+                TypeKind::Array { .. } | TypeKind::Ref(_) | TypeKind::Ptr(_) => {}
+                TypeKind::Path(n) if n == "string" => {}
+                // an error operand is already diagnosed - stay silent.
+                TypeKind::Error => {}
+                // a scalar / struct / union / enum / `()` / `!` has no elements;
+                // `x[i]` on it would emit invalid c.
+                _ => {
+                    let found = self.types.display(ty).to_string();
+                    self.emit_at(id, None, hir::core::TypeError::IndexOfNonIndexable { found });
+                }
+            }
         }
         let arr_len = base_ty.and_then(|ty| match self.types.lookup(ty) {
             &TypeKind::Array { len, .. } => Some(len),

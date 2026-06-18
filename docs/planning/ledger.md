@@ -258,7 +258,7 @@ features, not freeze blockers:
       `core/tests/` (mod.rs = 3-line header + 5 helpers lower/diags/
       first_match/MAIN_EYE/SHAPE_DECL + 8 concern modules: arrays/consts/
       format/functions/matches/naming/pointers/structs; children `use
-      super::*`). `typeck/tests/judgments.rs` 1856 -> `tests/judgments/`
+    super::*`). `typeck/tests/judgments.rs` 1856 -> `tests/judgments/`
       (cargo auto-discovers a `<name>/main.rs` dir as the same test
       target; main.rs = header + lower/diags + 7 modules branches/calls/
       casts/let_init/matches/range_arith/returns). hir 76 + judgments 74
@@ -269,7 +269,7 @@ features, not freeze blockers:
       x to the initializer's bottom-up synthesized type (no inference variables -
       the type already exists). 4-point plumbing: (1) lowering `lower/stmt.rs` no
       longer emits T025 for an untyped let (typeck owns it); (2) typeck `infer/
-    mod.rs` Let arm - when the annotation is absent and the pat is `Pat::Bind`,
+  mod.rs` Let arm - when the annotation is absent and the pat is `Pat::Bind`,
       record `local_types[local]` from `infer_expr`'s returned type IF concrete
       (`is_inferrable`: not Error/Unit/Never); (3) MIR `lower/stmt.rs` normal Let
       reads the `local_types` fallback (mirroring `bind_local_to` for match
@@ -285,13 +285,16 @@ features, not freeze blockers:
       found: an untyped `let xs = [1, "two"]` infers `[int32;2]` (heterogeneous
       array literal not element-checked without an expected type) - separate
       array-literal-synthesis hardening, ledgered below.
-- [ ] **Heterogeneous array-literal synthesis unchecked** (footgun, surfaced by
-      let-from-init). Without an expected type, `[1, "two"]` synthesizes its type
-      from the first element (`[int32;2]`) and silently accepts the mismatched
-      `"two"`; with an annotation the per-element judgment (T42
-      `ArrayElementTypeMismatch`, `coerce_array_literal`) catches it. Make the
-      no-expectation array-literal path enforce element homogeneity too (synth
-      first elem, then check the rest agree). Reachable now via `let xs = [..]`.
+- [x] **Heterogeneous array-literal synthesis** FIXED 2026-06-18 (footgun
+      surfaced by let-from-init). The `Expr::ArrayLit` synth arm
+      (`typeck/src/infer/mod.rs`) now runs `check_array_homogeneous` (each
+      element `site_assignable` to the first -> T42 `ArrayElementTypeMismatch`)
+      when no array type is expected (`!self.expects_array(&expected)`); a
+      declared element type still owns the check at the funnel
+      (`coerce_array_literal`), so each bad element is reported exactly once (no
+      double-report on the heterogeneous-AND-declared case). Test
+      `untyped_array_literal_must_be_homogeneous`. typeck 77, clippy clean,
+      corpus 0 new rejects (2 pre-existing XFAIL: lang.eye T024, linkedlist R008).
 - [~] **Salsa structural backdating** (SALSA.md divergence 5). `Memo<T>`
   equality WAS `Arc::ptr_eq` (every re-executed query counts as changed).
   **Signature-firewall half BUILT 2026-06-16 (S5):** `Memo`'s `PartialEq`
@@ -342,15 +345,19 @@ features, not freeze blockers:
       spans at emit time, scan for smart spans only on the error path.
 - [ ] **Parser sync mechanism re-evaluation**: resilient today, but should
       recover to the next valid code without producing rubbish diagnostics.
-- [ ] **Statement-boundary footgun: `if {} * p` parses as multiplication.**
-      A block-like expression (`if`/`loop`/`match`/`{}`) in statement position is
-      not terminated at the closing brace - a following prefix-`*` / `-` / `&`
-      binds as an infix operator on the block's value (`(if c {a} else {b}) * p`)
-      instead of starting a new statement. Surfaced by the unit-type work (a
-      value-less `if` followed by `*p` deref). Rust's rule: a block-like expr in
-      statement position is a complete statement; the next token starts a new one.
-      Decision pending (adopt the Rust statement-expression boundary in
-      `grammar.rs`); no-footgun directive applies.
+- [x] **Statement-boundary footgun: `if {} * p`** FIXED 2026-06-18 (ruled by
+      kernel philosophy: adopt the Rust statement-expression boundary). In
+      statement position the block driver (`grammar/stmt.rs`) now parses a
+      block-like expr (`if`/`loop`/`match`) via `lhs` (which returns before the
+      infix pratt loop) instead of the full `expr`, so a following `*`/`-`/`&`
+      starts the next statement (a deref/neg/ref) rather than folding as an infix
+      operator on the block's value. a pure-infix follow (`+`/`==`/...) becomes an
+      `ExpectedStatement` (rust-correct - not a prefix op). expression position (a
+      let initializer, a call arg) still uses full `expr`, where the block-like
+      form is an operand and the operator binds. Test
+      `block_like_in_statement_position_is_a_complete_statement` (asserts two
+      statements + no `BinExpr` in stmt position; `BinExpr` present in expr
+      position). parser 65, clippy clean, corpus 0 new rejects.
 - [x] **Unit type `()` + Never type `!`** - CLOSED 2026-06-17. Was a cascading
       MIR-ICE gap: a value-less `Expr::If`/`Expr::Loop` typed `None`, which
       reached `mir_type_of` and panicked. Built the full Rust-style pair instead
@@ -369,37 +376,738 @@ features, not freeze blockers:
       `value_position_void_if_is_rejected`, `never_branch_coerces_to_value_branch`,
       e2e `value_position_loop_does_not_panic` (now a clean T024 reject, was a
       silent print-0 footgun).
-- [ ] **Ref (`&T`) / ptr (`T*`) auto-conversion** — decided: `&T` and `T*`
-      should convert automatically in coercion-site positions (argument
-      passing, field init, return). Not a general implicit coercion — a
-      `site_assignable` rule. Not yet implemented. `*lang` → `&lang` hacks in
-      lang.eye reverted; the program should use `&Language` wherever a ref is
-      expected.
+- [x] **Ref (`&T`) / ptr (`T*`) auto-conversion** BUILT 2026-06-18, refined to
+      DIRECTIONAL (the decided "convert automatically" was symmetric; kernel rule
+      = dangerous direction gated, so only the safe direction is implicit).
+      `ref_widens_to_ptr` (`typeck/src/infer/ty.rs`): a `&T` flows into a `T*`
+      slot (same pointee) with no cast - both are a `T*` in C and using a valid
+      reference as a raw pointer is lossless. The reverse (`T*` into `&T`,
+      fabricating the safety guarantee) stays GATED behind an explicit cast.
+      Wired into `site_assignable` (arg/field) and the `Cause::Return` policy in
+      `cause_assignable`; no codegen change (Ref/Ptr already emit identical C).
+      Tests: `ref_widens_to_typed_pointer`, `typed_pointer_does_not_narrow_to_ref`,
+      e2e `ref_widens_to_pointer_and_runs`. typeck 79, clippy clean, corpus 0 new
+      rejects. NOTE lang.eye stays XFAIL: with this rule it now passes typeck once
+      the line-160 void-`if` typo is fixed, but the C backend still fails on its
+      `*lang`/`*arena` deref hacks - fully repairing its pointer model is
+      unvalidatable corpus surgery (no expected output), left as the
+      self-ref/pointer-model gap.
+- [x] **Deref / index of a non-pointer-non-indexable value** FIXED 2026-06-18
+      (footgun surfaced by a design discussion on `&`/`*` semantics; lang.eye's
+      `*arena` where `arena` is a value was the tell). typeck silently accepted
+      `*x`/`x[i]` on a plain value (scalar/struct/...) and emitted invalid c. Now:
+      T45 `DerefOfNonPointer` - the `Expr::Deref` arm (`infer/mod.rs`) rejects an
+      operand that is not `&T`/`T*` (RawPtr stays its own T28 `DerefOfPtr`, Error
+      stays silent). T46 `IndexOfNonIndexable` - `index_judgments`
+      (`infer/judgments.rs`) rejects a base that is not an array / pointer /
+      reference / `string` (the byte-pointer view, indexable like `char*`); a
+      typed `T*`/`&T` still indexes c-style, RawPtr stays T27 `IndexOnPtr`.
+      Directional `&`/`*` model confirmed: `&` = address-of (value -> ref), `*` =
+      deref (ref/ptr -> value); pass a value into a `*struct` param via `&value`
+      (covered by #372 `&T -> T*` widening). Tests
+      `deref_of_non_pointer_is_rejected`, `index_of_non_indexable_is_rejected`.
+      CAUGHT a regression in review: the first index cut rejected `string`
+      (string.eye/caesar.eye) - fixed by allowing `Path("string")`. workspace all
+      green (e2e 73, judgments 81), clippy clean, corpus 0 new rejects.
+
+---
+
+## Architecture analysis (2026-06-18)
+
+Full expanded analysis of four architectural questions, noted for decision
+after the full spec is built.
+
+### 1. MIR — 75% mechanical, 25% essential
+
+MIR is 1,346 lines of lowering + 317 lines of type defs + 1,482 lines of
+mir_emit codegen = **3,145 lines total**. Every HIR Expr variant (24 of them)
+maps to MIR.
+
+**Essential MIR work** (adds structure HIR cannot express): **~350-400 lines**
+- Temp/spill allocation (`lower_operand_raw`) — ~80 lines
+- Short-circuit `&&`/`||` rewritten to control flow (~80 lines)
+- Value-position `if`/`match` in-place lowering (`lower_into`) — ~70 lines
+- Match arm classification + guard lowering — ~60 lines
+- Destructure expansion — ~30 lines
+- Decay materialization — ~20 lines
+
+**Mechanical MIR work** (1:1 mapping HIR→C): **~900-1000 lines**
+- Literal, Path, Binary, Unary, Call, Index, Field, Ref, Deref, Cast, SizeOf,
+  ArrayLit, StructLit, Assign — all emit trivially from HIR
+- Control flow (If, Loop, Break, Continue, Return) — 1:1
+- Let/bindings — 1:1
+
+A HIR→C codegen would absorb the mechanical work inline. Estimated size:
+**~1,770 lines** vs current 3,145. Savings **~1,375 lines (~44%)**.
+
+The cost: less testable (no separate MIR dump/diff), harder to add a second
+backend, evaluation-order correctness inlines with C emit logic.
+
+### 2. Dual database path — every body lowered and typed twice
+
+On a single `eye build`, the pipeline is:
+
+| Query | Fires? | Work |
+|-------|--------|------|
+| `lex` | yes | tokenize |
+| `parse` | yes | parse |
+| `item_scope` | yes | collect items (no bodies) |
+| `lower_fn` (per-fn) | yes × N | lower every body |
+| `typeck_fn` (per-fn) | yes × N | type-check every body |
+| `lowered_file` | **yes** | **re-does item collection + every body lowering + every body typeck** |
+| `mir_map` | yes | MIR-lower every body |
+| `c_code` | yes | emit C |
+
+**`lowered_file` is a full redundant pipeline.** It calls `lower_source_file`
+(which calls `collect_file_scope` + per-body `lower_fn_body`) and `infer_file`
+which re-types every body. On a body-only edit, every per-fn query correctly
+cache-hits for siblings, but `lowered_file` re-executes everything from scratch.
+
+**The architectural fix exists now:** With the S6 lock-free interner, per-fn
+`lower_fn` and `typeck_fn` already intern into the *shared* `item_scope.types`.
+The old "private interner clone" doc comment is stale — handles are comparable
+across bodies. So the whole-file path's only technical reason for existing
+(shared interner) is already guaranteed by the per-fn path.
+
+Fix the query graph to:
+
+```
+SourceFileInput
+└─ lex ─ parse ─ item_scope ─┬─ lower_fn ─ typeck_fn ── typeck_map (new)
+                              │                              │
+                              │                effect_fixpoint (new)
+                              │                              │
+                              └── mir_map ───────────────── c_code
+```
+
+Where `typeck_map` collects per-fn results (cache hits on unedited bodies),
+`effect_fixpoint` reads per-fn atom data, and `c_code` reads them both. This
+eliminates the entire `lowered_file` path from production.
+
+### 3. AST elimination — not worth it
+
+Every `ast::` accessor used in HIR lowering is a thin wrapper:
+
+```
+fn_ast.body() -> Option<Block>
+  syntax.children().find(|n| n.kind() == SyntaxKind::Block)
+    wraps in Block(syntax_node)
+```
+
+The AST is **1827 lines of generated code** + **633 lines of hand-written
+lib.rs** = **2460 lines**. But:
+
+- **For HIR alone**: eliminating it saves ~100 lines and adds ~100 lines of
+  inline raw-rowan traversal. Net wash.
+- **For total deletion**: saves ~2000 lines but every crate duplicates
+  `EXPR_KINDS` slices, `TYPES_KINDS` slices, etc., losing compile-time
+  exhaustiveness. Adding a grammar variant silently falls through raw
+  `matches!` — the AST's `enum Expr { ... }` forces a match-arm to be added.
+
+The rowan pattern (thin AST as typed lens over CST) is standard and correct.
+**This change has negative ROI.**
+
+### 4. Separate batch parser — highest impact, highest effort
+
+A second `parser::parse_batch()` that skips rowan entirely and produces
+`hir::core::HIR` directly would eliminate:
+- The event stream (`Vec<Event>` with tombstone writes)
+- The `GreenNodeBuilder` + rowan `GreenNode` allocation
+- The `SyntaxNode::new_root` + AST extraction
+- The entire `ast::` crate dependency for batch
+
+Estimated saving: the ~60% parse-time allocation (existing perf doc figure).
+
+The rowan parser stays for LSP/dumps unchanged. The batch parser shares the
+same grammar functions but writes to HIR arenas instead of events. Since HIR
+lowering currently reads AST (which reads CST), a direct batch parser would
+write `hir::core::HIR` nodes (items + bodies) directly during recursive
+descent.
+
+**Cost:** two parsers to maintain. Every grammar change needs updates in both.
+The LSP path always has the correct rowan parser; the batch parser is a second
+correctness surface.
 
 ---
 
 ## Performance backlog
 
-- [ ] Rowan `NodeCache` allocation is the main memory-pressure point
+- [ ] **Salsa bypass for batch compile** : The CLI driver creates a fresh
+      `Database` per invocation and routes every phase through 6 salsa-tracked
+      queries (`lex`, `parse`, `item_scope`, `lowered_file`, `mir_map`,
+      `c_code`). Salsa per-query cost: revision tracking, input registration,
+      memo-table insertions, `Memo<T>` Arc wrapping, dependency edge recording,
+      change-detection comparison. In a one-shot compile every query executes
+      exactly once : the tracking infra has zero reuse value. A
+      `compile_direct()` path calling the underlying pure functions directly
+      (`lexer.tokenize → parser.parse → hir::lower_source_file →
+      effect::infer_file → mir::lower_all → codegen::gen_mir`) would bypass
+      all tracking. The building blocks are already public; the sketch is
+      `src/main.rs` routing around `crates/database`. Estimated saving: ~5-10%
+      of pipeline time.
+- [ ] **Pre-size codegen output string** : `gen_mir` builds the C output as a
+      bare `String` with no capacity hint. Append via `write_fmt` may
+      reallocate several times. Either estimate from input size or collect
+      into a `String`-sized `with_capacity` once the C line count is known.
+- [ ] **Rowan `NodeCache` allocation** is the main memory-pressure point
       (flame graph): vendor rowan or pre-reserve, or drop the cache.
-- [ ] Typed arenas per object type (low priority since type interning
-      removed the main hashing bottleneck).
-- [ ] Dense-integer-keyed maps -> `Vec`/arena indexing: `local_map`
+- [ ] **`TypeKind::Fn` clones `Vec<TypeRef>`** at every hard-dep / node
+      collection cycle in typegraph + topo-order. `TypeNode::Fn` stores
+      `params: Vec<TypeRef>` and `Fn` is cloned each time it enters a
+      `FxHashSet<TypeNode>`. Consider interning function-pointer types so the
+      node is a single handle, or storing the `TypeRef` of the whole fn type
+      (which `Function::fn_type` already holds).
+- [ ] **`typegraph.rs` re-walks every body every compile** (A10). `topo_order`
+      and `compute_scc` iterate `hir.bodies` looking for wrapper typedefs.
+      A dirty-tracked or query-cached typegraph would skip redundant walks on
+      body-only edits.
+- [ ] **`effect::infer_file` re-runs the whole-program fixpoint on every
+      compile.** For a single-file compile it is fast (~1 µs), but the SCC
+      condensation and contract checks are pure overhead when the file compiles
+      from scratch anyway. Liftable into the batch bypass.
+- [ ] **Dense-integer-keyed maps -> `Vec`/arena indexing**: `local_map`
       (mir/lower.rs), `string_index` (codegen), `fn_names` (dump) are hash
       maps keyed by dense newtype ids; direct indexing is O(1) with no
       hashing and better locality. Pairs with typed arenas.
+- [ ] **Parser CST always built** : Even on batch compile (no LSP, no dumps),
+      the rowan green tree is constructed for every parse, accounting for ~60%
+      of parse time. NOTE: `ast::SourceFile` is a typed lens over `SyntaxNode`
+      (every accessor calls `support::children(&self.syntax)`), so the AST
+      cannot exist without the CST. Eliminating the CST would require a
+      parallel non-rowan AST type or changing `hir::core` to consume a
+      different input format — both massive. The feasible batch saving here is
+      the **Salsa bypass** above (skip query tracking, not the parse itself),
+      plus fixing the `build_tree` tombstone writes (event.rs:129 overwrites
+      every `Vec<Event>` slot before dropping it).
 - [x] PARALLEL.md sharing: the type interner needs a concurrent structure -
       DONE 2026-06-16 (S6). `TypeInterner` is now lock-free (`boxcar::Vec` +
       `papaya::HashMap`, `&self` intern), so the whole-file per-body walk fans
       out across rayon with no clone. The global _symbol_ table (cross-file)
       still wants the same treatment at the multifile milestone (`lasso`).
-- [ ] `TypeKind::Fn { params, ret }` stores full `Vec<TypeRef>` copies
-      while `Function::fn_type` already holds the interned handle;
-      consider storing only the handle.
+- [ ] **Finer-grained database query graph** : `c_code` depends on
+      `lowered_file` + `mir_map` + `parse` + `lex`. A body edit busts all of
+      them because `lowered_file` has no per-fn granularity. The fix:
+      `c_code` should depend only on `mir_map` + the expression-type seed
+      (already separate). `mir_map` already reads per-fn `typeck_fn` results
+      (memoized). Diagnostic gating should live in `mir_map`, not be re-read
+      from `lex`/`parse` in `c_code`. This would mean a body edit busts only
+      `typeck_fn` (that body) + `mir_map` + `c_code`, not `lowered_file`,
+      `item_scope`, `parse`, or `lex`.
+- [ ] **Remove whole-file `lowered_file` for codegen path** : Split into
+      `lowered_hir` (whole-file, honest for item collection) + per-fn
+      `typeck_fn` (already exist) + `effect_map` (whole-program fixpoint but
+      cheap). `c_code` reads `typeck_fn` results per-fn + the fixpoint,
+      avoiding the redundant whole-file typeck. Requires the typegraph's
+      expression-type seed to work from per-fn `TypeckResults` (it already
+      does: `typeck::expr_type_seed(&checked.typeck)` iterates the
+      existing map).
 
----
+## Code clarity / DRY / data-structure backlog
 
-## Tests / tooling
+- [ ] **`collect.rs` DRY violation** : The duplicate-name check pattern
+      (`hir.items.foo.contains_key(name) || hir.items.bar.contains_key(name)`)
+      repeats identically for struct (lines 330-338), function (412-420),
+      union (454-463), extern fn (541-549), and enum (580-588) collection.
+      Factor into `fn check_duplicate_item(hir: &mut HIR, name: &Text,
+      span: Span, kind: &str)` or similar. The same file also calls
+      `check_c_keyword + check_reserved_file_scope` as a pair at 10 sites
+      : consolidate.
+- [ ] **`LoweringCtx` carries dead state** : `fn_ret: Option<TypeRef>` is set
+      once at body start and read only by the now-deleted `enforce_return_type`
+      (typeck owns return diagnostics since S2). Check and remove.
+- [ ] **`typegraph.rs` `HardDepsVisitor` uses a manual `pointer_stack` Vec**
+      rather than a recursion counter or the natural call-stack. The
+      `visit_ty`/`visit_ty_post` protocol forces storing `under_pointer` state
+      per recursive depth. This is a pattern constraint from the `VisitTypeRef`
+      trait, but pushing/popping auxiliary state on every Ref/Ptr visit is
+      ceremony easily broken by a missing pop. Consider threading a depth
+      parameter through the visit trait, or restructuring `hard_deps` as an
+      iterative walk with an explicit stack of `(TypeRef, bool)` pairs.
+- [ ] **`TypeNode` clones on every graph operation** : `collect_type_nodes`,
+      `topo_order`, and `compute_scc` all clone `TypeNode::Nominal(name)`,
+      `TypeNode::Array { .. }`, and `TypeNode::Fn { params: .. }` repeatedly
+      : into `FxHashSet<TypeNode>` for dedup, into `FxHashMap<TypeNode, usize>`
+      for indexing, into the output `Vec<TypeNode>`. For `Fn` variants this
+      clones `Vec<TypeRef>` (params) each time. A `TypeNode` internment or
+      arena-id-based representation would eliminate these clones.
+- [ ] **`flat_map` + `collect` chains** in the typeck inference walk
+      (`infer_expr` call/array-literal/struct-literal arms) materialize
+      intermediate `Vec`s via `.collect()` when only iteration is needed.
+      Specifically: the call-arg arm collects `args`, `param_tys`; the
+      array-literal arm collects `elems`; the struct-literal arm collects
+      `fields`. All of these are immediately iterated once and dropped.
+      These per-expression-shot allocations are the main allocation pressure
+      in typeck (S2 perf pass fixed some, but this cluster survived).
+- [ ] **`LoweringCtx::resolve` chains 7 sequential `FxHashMap::get` lookups**
+      for every identifier reference. A `NameResolution` struct mapping each
+      name to its resolved kind in one lookup would convert 7 hash probes into
+      one (at the cost of pre-populating it per scope : worth measuring).
+- [ ] **`BodySourceMap` is three separate `ArenaMap`s** (`expr`, `stmt`, `pat`)
+      keyed by raw `Idx<Expr>` etc. These are always accessed together
+      (e.g. source-map lookups after lowering consult all three). A single
+      `enum SourceMapEntry { Expr(SyntaxNodePtr), Stmt(SyntaxNodePtr),
+      Pat(SyntaxNodePtr) }` arena with a unified `Idx` type would simplify
+      the API and improve cache locality.
+- [ ] **`nominal_field_types` allocates a fresh `Vec<TypeRef>` on every call**
+      by mapping `fields.iter().map(|f| hir.fields[f].ty).collect()`.
+      Called from `node_deps` for every nominal-type node in the dependency
+      graph. This vector is immediately iterated and dropped by `hard_deps`.
+      Either cache field types on the `Struct`/`Union` struct, or return an
+      iterator rather than an owned Vec.
+- [ ] **`codegen::core::mir_emit::gen_all` builds a single `String` segment**
+      by appending one function at a time alongside header includes, typedefs,
+      string statics, and the main shim. The type-declaration order is
+      produced by `topo_order` as `Vec<TypeNode>`, which is immediately
+      pattern-matched and formatted. For large programs, pre-computing an
+      estimated output size and using `write!` into a `BufWriter`-style
+      abstraction instead of repeated `write_fmt!` into a growing `String`
+      would reduce reallocation.
+- [ ] **`infer_file` in `effect/src/lib.rs`** no longer needs to be a
+      whole-file function. With the lock-free interner, effect inference
+      can be per-body like typeck is. The fixpoint is the only cross-body
+      step; factor so the LSP's `hir_diagnostics` path can skip it when
+      no effect-relevant change occurred.
+- [ ] **Systematic intermediate `Vec` removal.** Many `collect::<Vec<_>>()`
+      calls allocate only to be immediately iterated once. Strategy per
+      pattern:
+
+      | Pattern | Instances | Fix |
+      |---------|-----------|-----|
+      | `.collect::<Vec<_>>()` then immediate `for`/`iter()` | `infer_expr` call/array/struct arms, `effect/lib.rs:72` (rayon), `codegen/mod.rs:219` (fn ordering) | Direct iterator, no collect |
+      | `.collect::<Vec<_>>().join()` | `effect/lib.rs:224` | `Iterator::intersperse` (Rust 1.80+) |
+      | Hash map keyed by dense arena ID | `codegen/strings.rs:33-34`, `mir/lower.rs` | `Vec` indexed by handle (O(1) no hashing) |
+      | `.to_vec()` on slice | `typeck/coerce.rs:217` | `SmallVec<[T; 4]>` (small arrays avoid heap) |
+      | Fresh `Vec` per hot-loop iteration | `typegraph.rs:317-318,406-407` | Allocate once, `clear()` each iteration |
+      | `Vec<TypeRef>` from field iteration | `typegraph.rs:146` | Accept `&mut Vec` buffer parameter |
+      | Per-field `Vec` in struct validation | `lower/expr.rs:297-332` | One `HashSet<&Text>`, derive both sets |
+      | `Vec<Param>` -> `Vec<TypeRef>` per fn type | `collect.rs:394,522` | `ThinVec<TypeRef>` in `TypeKind::Fn` |
+      | `Vec<String>` for witness trail | `effect/lattice.rs` | Fixed `[&str; 3]` array + counter |
+      | `Sink` clones on every diagnostic path | `main.rs`, `database/lib.rs` passim | `Arc<Sink<T>>` or `&Sink<T>` -> `Vec<Diag>` by reference |
+
+## Granular per-method hot-path audit (2026-06-18)
+
+Every entry below is a specific method/expression-level waste found by
+combing each crate. Ranked by estimated impact.
+
+### A. src/main.rs + crates/database/src/lib.rs : CLI + query layer
+
+- **`main.rs:30` : `text.clone()` double-allocates source text.** `text` is
+  cloned before `SourceText::new(text)`, so the entire file exists as two
+  owned `String`s. Fix: share via `Arc<String>` or restructure to consume.
+- **`main.rs:39,62` : `.clone().into_diags()` on every diagnostic path.**
+  Salsa's `Memo` returns `&Sink`, forcing `.clone()` before `into_diags()`
+  (which takes `self`). Acceptable on error-exit (rare path).
+- **`main.rs:91` : `hir.diagnostics.clone()` clones the entire typed `Sink`.**
+  Could collect into `Vec<Diag>` by ref instead of cloning the typed sink.
+- **`main.rs:96-97` : `checked.typeck[&fn_id].diagnostics.clone()` per fn.**
+  `checked` is dead after line 107 : consume it via `.into_iter()` to avoid
+  clones.
+- **`database/src/lib.rs:287,294` : `file.text(db).to_owned()` clones source
+  text in both `lex` and `parse` queries.** Same file text cloned 3× total
+  (into `SourceFileInput`, then `SourceText` in lex, then again in parse).
+  Fix: `SourceText` should share via `Arc<str>`.
+- **`database/src/lib.rs:337-342, 375-380` : O(n) linear scan over `scope.fns`
+  per fn, repeated in both `lower_fn` and `typeck_fn`.** For N functions,
+  each per-fn query does O(N) work to find `FnId` by `SyntaxNodePtr`.
+  Fix: store `FxHashMap<SyntaxNodePtr, FnId>` in `FileScope`.
+- **`database/src/lib.rs:407-414` : two redundant passes over `scope.fns`.**
+  First for lowering diagnostics, second for typeck diagnostics. Each
+  constructs `StableFnId` anew. Merge into one pass.
+- **`backend.rs:15` : unconditional `.to_owned()` of generated C string.**
+  Only needed when `format` is true. Conditionalize.
+
+### B. crates/parser/src/ : parser
+
+- **`grammar/stmt.rs:98-107,163-169` : dead code: `#[allow(dead_code)]` on
+  `fn stmt()` and `fn expr_stmt()`.** Neither is called; the `block` loop
+  inlines the dispatch. Delete both (13 lines + two `#[allow]` attrs).
+- **`grammar/expr.rs:103-108` : `p.nth0()` called twice in `expr_bp`.**
+  The peeked token is re-read after binding-power extraction. Fix: store
+  in a local `op` variable.
+- **`grammar/expr.rs:112-129` : duplicated `matches!` on assignment ops.**
+  `infix_binding_power()` already matched the same operator set. Return
+  `InfixOp { l_bp, r_bp, kind: SyntaxKind }` from `infix_binding_power`
+  to eliminate the second 11-arm match.
+- **`lib.rs:161` : `self.tokens.len() - 1` underflows on empty input.**
+  Latent panic. Guard with `if self.tokens.is_empty() { return TextRange::default(); }`.
+- **`grammar/items.rs:277-287` : unnecessary `open()` + `abandon()` pair
+  on empty enum body.** Writes two events then immediately tombstones one.
+  Guard with `had_first_variant` check before opening.
+- **`lib.rs:222` : `as u32` truncation on `diagnostics.len()`.** Use
+  `u32::try_from(...).expect(...)`.
+
+### C. crates/hir/src/core/lower/ : HIR lowering (hot path)
+
+- **`expr.rs:261-268, 285-292` : `types.lookup(ty)` computed twice for the
+  same `TypeRef`, name cloned twice.** Fix: compute once before the branch.
+- **`expr.rs:679-682` : `Vec<ast::Expr>` collected only for `.len()` + `[0]`.**
+  For call-arg arity check, every argument is heap-allocated into a `Vec`
+  solely to check count ≠ 1 and index `args[0]`. Fix: use `.count()` + `.next()`.
+- **`expr.rs:297-332` : struct-literal validation allocates `Vec<Text>` +
+  two separate `FxHashSet`s.** One `Vec` of declared names, one `HashSet`
+  for `field_names`, then a *second* `HashSet` from the same `Vec`. Fix:
+  build one `FxHashSet<&Text>` and compute missing/unknown from it.
+- **`fn_body.rs:65` : `lowered_block.stmts.clone()` clones entire `ThinVec`
+  per function body.** The block was just allocated in the arena. Fix: write
+  directly into `ctx.body.block` / `ctx.body.tail` without routing through
+  a `Block` arena entry.
+- **`collect.rs:319-321, 570-572` : `contains_key` + `insert` double hash
+  lookup per field/variant.** Fix: `entry().or_insert()`.
+- **`collect.rs:597` : `Vec<ast::Variant>` collected only for error-path
+  indexing.** Fix: `zip` lowered variants with AST iterator.
+- **`collect.rs:394, 522` : `Vec<TypeRef>` allocated from `SmallVec<Param>`
+  per fn type.** `TypeKind::Fn` stores `Vec<TypeRef>`. Fix: change to
+  `ThinVec<TypeRef>` to avoid the intermediate conversion.
+- **`expr.rs:404-410, 474-480` : const-name extraction duplicated across
+  `AssignExpr` and `RefExpr` arms.** Fix: extract into helper `fn const_name(&self, e: ExprId)`.
+- **`body.rs:361` : `Hash` derived on `Literal` but never used as a key.**
+  Remove `Hash` derive.
+- **`collect.rs:86` : zero-capacity `FxHashMap` placeholder allocates map
+  metadata.** Fix: use `&[]` sentinel or `Option`.
+
+### D. crates/typeck/src/infer/ : typechecking walker
+
+- **`infer/mod.rs:638-642` : `Vec<(ExprId, &str)>` collected then immediately
+  iterated.** In the `println` argument check, `args.iter().skip(1).filter_map().collect()`
+  creates a `Vec` only to loop over it. Fix: emit directly in the filter_map.
+- **`infer/coerce.rs:216-219` : `elems.to_vec()` on array-literal coercion.**
+  Clones every element of the array into a new `Vec` to break borrow on
+  `self.body`. Fix: use `SmallVec<[ExprId; 4]>`.
+- **`infer/coerce.rs:286-289` : `adopt_int_literal` does interner lookup
+  before cheap body-expr check.** For *every* expression at coercion, it
+  calls `types.lookup()` (hash + string match) when the expression isn't
+  even a literal 99% of the time. Fix: check `self.body.exprs[id]` first.
+- **`infer/mod.rs:345` : `n.clone()` of struct name per struct literal.**
+  Clones the entire `Text` out of the interner just to read it. Fix: use
+  `&Text` reference.
+- **`infer/mod.rs:531` : `arm_expected.clone()` per match arm.**
+  `Expectation::clone()` may clone `Cause::Field { name: Text }`. Fix:
+  take `&Expectation` and clone only at the fork point.
+
+### E. crates/effect/src/ : effect system
+
+- **`lib.rs:72` : `hir.functions.iter().collect::<Vec<_>>().into_par_iter()`.
+  Intermediate `Vec` from full function map.** Standard rayon pattern but
+  allocates per file. Minor.
+- **`lib.rs:221-225` : `Vec<String>` allocated only for `.join(" -> ")`.**
+  3-element witness trail formatted into individual `String`s then joined.
+  Fix: `Iterator::intersperse` or manual fold.
+- **`lib.rs:291` : `chain.insert(0, name.clone())` is O(n) per call for
+  deep call chains.** Fix: push to end, reverse at base case, or use
+  `VecDeque::push_front`.
+- **`lib.rs:311-321` : per-function `FxHashSet` for callee dedup in fixpoint.**
+  For functions with few callees, HashSet allocation dominates the small
+  work. Fix: sorted `SmallVec` + dedup.
+- **`judge.rs:100-106` : `cx.scope.functions[*fid]` indexed twice.**
+  Fix: bind to `let func = &cx.scope.functions[*fid];`.
+- **`judge.rs:100` : duplicate `FnId` entries in `callees` Vec.** Same fn
+  called N times stores N copies. Fix: use `FxHashSet<FnId>` internally.
+- **`lib.rs:149-153, 305-309` : duplicate `FxHashMap<FnId, usize>` index
+  built in both `check_contracts` and `run_fixpoint`.** Build once, pass
+  as parameter.
+- **`lattice.rs:106-120` : `describe()` allocates heap `Vec` for ≤3 static
+  `&str` items.** Fix: match on bits directly or use fixed `[&str; 3]`.
+
+### F. crates/mir/src/lower/ : MIR lowering
+
+- **`stmt.rs:31-32` : `Vec<(Text, HirLocalId)>` collected only to hand to
+  `lower_let_destructure`, which immediately iterates. Fix: pass iterator.**
+- **`stmt.rs:116` : `base.clone()` inside per-destructure-field loop.**
+  The base `Place` is loop-invariant. Fix: clone once outside loop.
+
+### G. crates/codegen/src/core/ : C codegen
+
+- **`mir_emit/mod.rs:219-235` : two intermediate `Vec<FnId>` allocations.**
+  Collected extern fns and defined fns into separate `Vec`s then immediately
+  iterated. Fix: inline the iteration without collect.
+- **`mir_emit/expr.rs:421,423` : `n.clone()` of `&Text` from interner, then
+  immediately borrowed via `&struct_name`. Fix: use `&Text` reference.**
+- **`mir_emit/expr.rs:390` : `place.clone()` for cache key on every
+  `place_type` call.** Deep `Place` tree cloned speculatively for memoization;
+  if hit rate is low, the clone cost dominates. Verify hit rate.
+- **`mir_emit/expr.rs:224-229` : `decode_string_literal(s)` called again
+  in `gen_string_statics` for same strings.** Fix: cache decoded bytes in
+  the string table.
+
+### H. crates/codegen/src/core/typegraph.rs : type dependency graph
+
+- **`typegraph.rs:146-162` : `nominal_field_types` allocates fresh `Vec<TypeRef>`
+  per call.** Fix: accept `&mut Vec<TypeRef>` buffer and extend.
+- **`typegraph.rs:317-318, 406-407` : per-node fresh `Vec` + `HashSet`
+  allocations in `topo_order` and `compute_scc`.** For N nodes, 2N heap
+  allocations. Fix: allocate once, clear each iteration.
+- **`typegraph.rs:75-78` : `params.clone()` (entire `Vec<TypeRef>`) for every
+  Fn type node.** `TypeRef` is `Copy` but the Vec allocation per node adds up.
+  Fix: consider `ThinVec` or interning.
+- **`typegraph.rs:508-518` : `cyclic_nodes` builds full graph then filters
+  to a set.** Double work. Fix: add method on `SccInfo` yielding cyclic
+  nodes as iterator.
+
+### I. crates/diagnostics/src/ : diagnostic infrastructure
+
+- **`lib.rs:203` : `into_diags` takes `Sink<T>` by value, forcing clones
+  at every call site.** Change to accept `&Sink<T>` and push into caller's
+  `Vec<Diag>` to allow zero-copy error paths. (Applies to `main.rs:39,62,91`
+  and `database/lib.rs:408,414`.)
+
+## Iterator / collection misuse patterns
+
+All found by combing every file for non-idiomatic or wasteful iterator and
+collection access patterns.
+
+### `.nth(0)` instead of `.next()`
+
+- **`crates/ast/src/generated.rs:1107,1134,1161,1239,1269,1703`** : 6 AST
+  accessor methods use `support::children(&self.syntax).nth(0)`. `.next()`
+  is the canonical way to get the first element of an iterator. Fix: change
+  to `.next()` (same semantics, clearer intent, no skipping logic overhead).
+- **`crates/xtask/src/main.rs:219-222`** : root cause: the code generator
+  produces `nth(#idx)` for all indexed fields, including `idx == 0`. Fix
+  the template to emit `.next()` when `idx == 0`.
+
+### `.len() == 0` / `.len() > 0` instead of `.is_empty()`
+
+- **`crates/lexer/src/interner.rs:92`** : `self.len() == 0` used in
+  `Interner::is_empty()`. The explicit method body is fine, but `self.len()`
+  is O(1) here so this is stylistic.
+- **`crates/lexer/src/source.rs:108`** : `self.source.len() == 0` in
+  `SourceText::is_empty()`. Same as above (stylistic).
+
+### `.to_vec()` on `&[T]`
+
+- **`crates/typeck/src/infer/coerce.rs:217`** : `elems.to_vec()` on the
+  slice of array-literal elements. Clones every `ExprId` into a new heap
+  `Vec` only to break the borrow on `self.body`. For a large literal this
+  allocates N elements. Fix: `SmallVec<[ExprId; 4]>` so small arrays avoid
+  the heap.
+
+### `for i in 0..xs.len()` (C-style index loop) vs `for x in xs`
+
+- **`crates/parser/src/event.rs:129`** : `for i in 0..events.len()` then
+  indexes `events[i]`. This is legitimate (the algorithm needs random access
+  with `std::mem::replace`), so no change. Noted as the only C-style index
+  loop in the hot path.
+
+### `.collect::<Vec<_>>().into_par_iter()` : intermediate `Vec`
+
+- **`crates/effect/src/lib.rs:72`** : `hir.functions.iter().collect::<Vec<_>>()
+  .into_par_iter()`. The `collect` allocates a `Vec` of every function entry
+  to fan out. Standard rayon pattern but pays the allocation. Consider
+  `par_iter()` on the underlying collection if it supports it, or accept
+  as a known cost.
+
+### Redundant Text clones from the type interner
+
+- **`crates/codegen/src/core/mir_emit/expr.rs:421,423`** : `n.clone()` where
+  `n` is `&Text`. The clone is immediately borrowed back on the next line.
+  Fix: use the `&Text` reference directly.
+- **`crates/typeck/src/infer/ty.rs:170`** : same pattern in the `byte_pun`
+  helper: `TypeKind::Path(n) => Some(n.clone())` to compare via string.
+  Compare via `n.as_str()` instead.
+- **`crates/typeck/src/infer/mod.rs:345`** : struct literal name cloned via
+  `TypeKind::Path(n) => Some(n.clone())`. Use the reference.
+- **`crates/hir/src/core/lower/expr.rs:264,288`** : `types.lookup(ty)` name
+  cloned twice in the cast-check arm. Already flagged in the granular audit.
+
+### `.clone()` on every diagnostic emit path
+
+- **`crates/database/src/lib.rs:409,413,421`** : `.extend(lower_fn(...)
+  .lowered.diagnostics.clone())`, `.extend(typeck_fn(...).diagnostics
+  .clone())`, `.extend(checked.effect_diagnostics.clone())`. Each clone
+  copies every diagnostic entry. Fix: consume the results since they are
+  not reused.
+
+### `.collect::<Vec<_>>().join()` : intermediate `Vec<String>`
+
+- **`crates/effect/src/lib.rs:224`** : `format!("\`{n}\`").collect::<Vec<_>>()
+  .join(" -> ")`. Allocates a `Vec<String>` (heap per element) only to join.
+  Fix: `Iterator::intersperse` or manual fold. (Already flagged.)
+
+### `.to_owned()` on source text copied per query
+
+- **`crates/database/src/lib.rs:287,294`**, **`crates/lsp/src/highlight/
+  mod.rs:113,134,153,215`**, **`crates/lsp/src/server/notifications.rs:67`**,
+  **`crates/lsp/src/server/requests.rs:35`** : all call
+  `file.text(db).to_owned()` to produce an owned `String` for `SourceText`.
+  The file text is already owned somewhere in salsa's storage. Share via
+  `Arc<str>` to avoid the N+1 copies (one per query that reads it).
+
+### Unnecessary `match` on known-constant values
+
+- **`crates/effect/src/judge.rs:118-125`** : `atom_index(atom)` called
+  inside a `for atom in [Atom::Io, Atom::Ffi, Atom::State]` loop, where
+  `atom_index` is just a hardcoded `match { Io => Some(0), Ffi => Some(1),
+  State => Some(2), _ => None }`. For the three live atoms the indices are
+  known at compile time. Fix: use literal indices `[(0, Atom::Io), (1,
+  Atom::Ffi), (2, Atom::State)]`.
+
+### `unwrap_or(Default::default())` could be `unwrap_or_default()`
+
+No instances found in the hot path (codebase already uses
+`unwrap_or_default()` idiomatically).
+
+### `.chars().next()` (fine : no simpler alternative)
+
+- **`crates/token/src/lib.rs:308,325,334`** and **`crates/lexer/src/
+  lib.rs:118`** and **`crates/hir/src/core/lower/const_eval.rs:384`** : all
+  use `chars().next()` to peek the first char of a `&str`. This is the
+  canonical API (no `str::first_char()` exists). No change needed.
+
+### `.as_slice().last()` : unnecessary qualification
+
+No instances found.
+
+### `.map(|x| x.clone()).collect()` instead of `.cloned().collect()`
+
+- **`crates/hir/src/core/lower/expr.rs:300`** : `.map(|&fid| self.hir
+  .fields[fid].name.clone())`. Not a simple `.cloned()` case (the map
+  dereferences `fid` and projects a field), so this is legitimate.
+
+### Double `.clone()` chain
+
+- **`crates/hir/src/core/lower/const_eval.rs:228`** : `self.memo
+  .insert(name.clone(), value.clone())` clones both key and value.
+  If `memo` is a `HashMap<Text, ConstValue>`, the insert will clone
+  the key anyway if not found. The double clone is justified (need
+  ownership for the insert, key/value not reused). Context-dependent.
+
+### `.extend(collection.clone())` : cloning entire collections
+
+- **`crates/database/src/lib.rs:409,413,421`** : see above.
+- **`crates/typeck/tests/judgments/main.rs:29`** : `hir.diagnostics
+  .extend(typeck[&fn_id].diagnostics.clone())`. In tests: acceptable.
+
+### `use std::collections::HashMap` vs `FxHashMap`
+
+No instances found (codebase consistently uses `FxHashMap`/`FxHashSet`
+from `rustc_hash`).
+
+### `Result::ok()` vs `match`
+
+No idiomatic issues found (Result handling is clean).
+
+## Industry cross-references (2026-06-18)
+
+Research into production compiler techniques (TinyCC, rustc, GCC, Clang,
+LCC, LLVM) cross-referenced against Eye's architecture. Each entry cites
+the industry precedent and maps it to Eye's current design.
+
+### CST-free parse for batch (NOT viable with current AST design)
+
+- **TinyCC** generates machine code in a single pass. **LCC** (20 KLOC) uses
+  its own AST, not a CST.
+- **Eye constraint (important)**: The `ast::SourceFile` type is a *lens* over
+  a rowan `SyntaxNode` — `ast::Item::FnDef(f)` calls `f.name()`, `f.body()`,
+  etc., each of which walks `SyntaxNode` children via `support::children()`.
+  No CST = no AST = HIR lowering has nothing to consume. Skipping the CST
+  would require a parallel non-rowan AST type or changing `hir::core` to
+  accept a different input format. Both are prohibitively large changes.
+- **Revised verdict**: Keep rowan for the LSP (incremental reparsing needs
+  green-tree diffs). For batch, the existing `build_tree` tombstone writes
+  are a real cost (writes to every `Vec<Event>` slot before dropping it) but
+  the CST itself is not avoidable without an AST redesign. The real batch
+  parse saving is the **Salsa bypass** (entry above): skip the query tracking
+  overhead, not the parse itself.
+
+### Salsa query bypass for batch (rustc `-Z no-query-cache`)
+
+- **rustc** has `-Z no-query-cache` for debugging, but always runs through
+  the query system even for `cargo build --release`. rustc's queries are
+  **much finer-grained** (per-item `type_of`, `predicates_of`) than Eye's
+  (per-file `lowered_file`, per-fn `typeck_fn`), so the per-query overhead
+  is proportionally smaller. Eye's 6 coarse queries mean the tracking
+  infrastructure (revision counter, memo table, dependency edge record, Arc
+  wrap, change-detect comparison) is pure overhead on every batch compile.
+- **Verdict**: Eye's "bypass for batch" (already in performance backlog) is
+  uniquely well-suited because queries are coarse. No production compiler
+  has this exact problem because none uses Salsa-level tracking for 6
+  queries. The fix is a `compile_direct()` function that calls the
+  underlying pure functions.
+
+### Arena allocation everywhere (compiler consensus)
+
+- **LLVM, rustc, GCC, TCC, LCC** all use arena/bump allocation as the
+  primary allocation strategy for IR nodes. Rustc's `ArenaAllocator` and
+  `rustc_arena` provide bump-allocated `Vec`-like containers. LLVM's
+  `BumpPtrAllocator` is used throughout. **Protobuf arenas** showed 2-5x
+  allocation speed. **LCC** uses arenas for every tree node.
+- **Eye analogue**: `TypedArena` in HIR/MIR is the right pattern and is
+  already in use. The gap is that many *intermediate* data structures
+  (diagnostics Sink entries, typegraph `Vec`s per node, inference
+  per-expression `Vec` collects) still use heap `Vec`/`String`. Extending
+  arena allocation to these would eliminate per-element allocation overhead.
+- **Specific targets**: `Sink<T>` entries (diagnostic arena for the
+  compile-session lifetime); `typegraph.rs` per-node `raw` Vecs (reuse
+  arena); `infer_expr` throwaway `Vec`s (arena-allocate these or use
+  `SmallVec` on the stack).
+
+### Zero-copy diagnostic pipeline (Clang model)
+
+- **Clang** builds `Diagnostic` objects incrementally without cloning.
+  Diagnostics are stored in a `DiagnosticEngine` that owns the entries.
+  The driver reads them by reference. No clone-from-memo pattern exists.
+- **Eye analogue**: the pattern throughout the hot path (`main.rs:39,62,91`,
+  `database/lib.rs:409,413,421`) is `.clone().into_diags()`. Every
+  diagnostic sink is cloned behind a `Memo` reference. Fix: change
+  `into_diags` to accept `&Sink<T>` and push into a caller-owned
+  `Vec<Diag>`, or make the driver collect diagnostics by reference.
+  Alternatively, make `Sink` `Copy`-cheap via an internal `Arc<Vec<T>>`.
+
+### Preallocated codegen output (GCC/LLVM buffer model)
+
+- **GCC** and **LLVM** both preallocate output buffers based on estimated
+  size. LLVM's `raw_ostream` uses a `SmallVector<char, 256>` that grows
+  geometrically but starts with a reasonable capacity. GCC's `print-tree`
+  etc precompute line counts.
+- **Eye analogue**: `codegen::core::mir_emit::gen_all` writes into a bare
+  `String` with no capacity hint. For a 1000-line C output this reallocates
+  ~10-12 times (doubling strategy). Pre-estimating from `hir.functions.len()
+  * avg_lines_per_function + type_declarations` and calling
+  `String::with_capacity` would eliminate these reallocation cycles.
+
+### Name resolution caching (rustc Resolver pattern)
+
+- **rustc** runs name resolution as a dedicated pass (`Resolver`) that
+  produces a `ResolveResult` with every name mapped to its `DefId`. The
+  HIR lowering context reads from this pre-computed map rather than doing
+  per-name sequential lookups.
+- **Eye analogue**: `LoweringCtx::resolve` (ctx.rs:151-176) does 7
+  sequential `FxHashMap::get` calls per identifier. While Eye's name
+  spaces are simpler than Rust's (no traits, no generics, no modules), the
+  pattern still does 7 probes per ident reference. A pre-computed
+  `FxHashMap<Text, Resolution>` per scope would reduce this to one probe.
+
+### MIR bypass for simple functions (TCC/LCC direct codegen)
+
+- **TCC** generates code per-statement without an IR. **LCC** uses a
+  shared `IR` node tree but generates code for each function independently.
+  Neither has a CFG-based MIR equivalent.
+- **Eye analogue**: functions without control flow (simple getters,
+  wrappers, const initializers) could skip MIR lowering entirely. The
+  codegen already has `gen_function` which could directly consume HIR for
+  simple cases. This is a micro-optimization but costs little to implement:
+  a `fn is_trivial(&self) -> bool` on `Body` that checks for no branches,
+  and a direct `hir_to_c` path in codegen.
+
+### Effect inference fixpoint optimization (dataflow analysis precedent)
+
+- **LLVM's `AAResults`** and **GCC's `dataflow`** both use worklist-based
+  fixpoint algorithms with early-exit when the lattice stops changing.
+- **Eye analogue**: `effect::run_fixpoint` already uses SCC condensation
+  + worklist, which is the standard algorithm. The waste is in building
+  the same `FxHashMap<FnId, usize>` index twice (`check_contracts` and
+  `run_fixpoint` both compute it). Fix: compute once, pass as parameter.
+
+### Generated AST accessors: nth(0) vs next() (Rust API convention)
+
+- **Rust API guidelines** (and Clippy lint `iterator_nth_zero`) specify
+  that `.next()` is preferred over `.nth(0)` because `.next()` is more
+  idiomatic and may be slightly more efficient (avoids the `nth` default
+  implementation's `nth` -> `next` delegation via `advance_by`).
+- **Eye analogue**: `crates/xtask/src/main.rs:219-222` generates
+  `support::children(&self.syntax).nth(#idx)` for all indexed fields.
+  When `idx == 0`, this should emit `.next()` instead. 6 generated
+  accessors currently emit `nth(0)`.
 
 - [ ] Error-message tests: e2e only checks successful execution; add tests
       asserting specific diagnostics for malformed programs at the driver
@@ -437,6 +1145,19 @@ Every in-source issue marker, so none float free of the ledger:
 ---
 
 ## Completed
+
+### 2026-06-18: T046 latent bug - string indexing rejected
+
+The `string` type alias (`&uint8`) was interned as `TypeKind::Path("string")` —
+a plain path name, not a structural `Ref(uint8)`. The typeck `index_judgments`
+match only allowed indexing on `Array`, `Ref`, and `Ptr` structural variants;
+the `_` catch-all emitted T046 (`IndexOfNonIndexable`) for any `Path` type,
+including `string`. Two e2e tests (`string_eye_byte_array_refs`,
+`caesar_eye_string_decay_and_ffi`) were silently broken.
+
+Fix: `crates/typeck/src/infer/judgments.rs:937` — added
+`TypeKind::Path(n) if n == "string" => {}` to the indexing-ok match arm.
+All tests green (75 hir, 81 typeck, 73 e2e), clippy clean.
 
 ### 2026-06-16: S6 parallel wave - lock-free interner + whole-file fan-out
 

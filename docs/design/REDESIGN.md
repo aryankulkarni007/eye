@@ -10,7 +10,7 @@ concrete pipeline plan grounded in the current code.
   shared `diagnostics` crate. See [`DIAGNOSTICS.md`](features/DIAGNOSTICS.md).
 - **Track 2 - MIR: BUILT** (cutover complete). HIR -> MIR lowering moved
   control-flow flattening and temp/hoist generation out of codegen; codegen is a
-  dumb MIR -> C printer. The `check_unhoisted_matches` ban (I3) is deleted, so
+  direct MIR -> C printer. The `check_unhoisted_matches` ban (I3) is deleted, so
   nested value-position match compiles. See [`MIR.md`](features/MIR.md).
 - **Track 3 - Typeck split: DESIGNED, NOT BUILT.** Lifting the inline `check_*`
   and type stamping out of lowering into a pass over frozen HIR. See
@@ -61,7 +61,7 @@ Checked against source, not inferred:
 
 ```
 [Lexer + AST]  ->  [HIR]  ->  [Inference]  ->  [MIR]  ->  [Codegen]
- black box         pure        side table      flat IR    dumb emitter
+  black box         pure        side table      flat IR    direct emitter
  (settled)         resolved,   keyed by        target     MIR -> text
                    desugared   ExprId          neutral
 ```
@@ -81,7 +81,7 @@ Checked against source, not inferred:
    flattening and temp generation (the hoisting currently in codegen). This is
    the layer that absorbs the work the HIR and codegen do at the same time
    today.
-5. Codegen: dumb emitter. Walks MIR and prints C text. No decisions.
+5. Codegen: direct emitter. Walks MIR and prints C text. No decisions.
 
 ## Invariants
 

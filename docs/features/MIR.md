@@ -13,7 +13,7 @@ and the `EYE_MIR` flag are deleted; MIR is the only path.
   and a general direct `Call`.
 - Segment 4: the full expression surface (`Unary`/`Index`/`Field`/`ArrayLit`/
   `StructLit`/`Ref`/`Deref`/`Cast` + place projections) in `mir::lower`, the
-  dumb-printer emitter (struct/union/array-wrapper typedefs, `.data[]` vs
+  direct-printer emitter (struct/union/array-wrapper typedefs, `.data[]` vs
   `->data[]` indexing, `.`/`->` field access, a total `place_type` recovery, and
   per-`LocalId` local naming so same-block shadows cannot collide), and the
   `&&`/`||` short-circuit rewrite (lowered to control flow, REDESIGN I5).
@@ -43,7 +43,7 @@ Today codegen walks the HIR `Body` directly and makes semantic decisions:
 matches into `_matchN` temps, and `check_unhoisted_matches`
 (`crates/hir/src/core/lower/stmt.rs:275`) bans the positions codegen cannot
 hoist. MIR removes both. A dedicated HIR -> MIR lowering pass flattens control
-flow and generates temps; codegen becomes a dumb printer over MIR.
+flow and generates temps; codegen becomes a direct printer over MIR.
 
 ## The acid test (REDESIGN I3)
 
@@ -180,7 +180,7 @@ extensibility seam lives one layer up at the AST→HIR boundary; the macro engin
 rewrites extension patterns into known kernel forms before MIR sees them. This
 preserves the mechanical-walk property across the entire backend.
 
-## Codegen over MIR (the dumb printer)
+## Codegen over MIR (the direct printer)
 
 Each MIR construct maps to one C form, no decisions:
 

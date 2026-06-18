@@ -26,7 +26,7 @@ xtask       ──▶ generates crates/ast/src/generated.rs   (off to the side)
 | `eye-ast`      | `crates/ast/src/lib.rs` + `generated.rs` + `eye.ungram`   | typed views over the CST                                             |
 | `eye-hir`      | `crates/hir/src/core/` + `core/lower/`                    | `HIR`, `lower_source_file`, name resolution, `expr_types`, diags     |
 | `eye-mir`      | `crates/mir/src/{core,lower}.rs`                          | MIR schema (`core.rs`); `lower_function` HIR → MIR (`lower.rs`)      |
-| `eye-codegen`  | `crates/codegen/src/core/{mir_emit,arrays,types}.rs`     | `gen_mir`, MIR → C string (dumb printer)                            |
+| `eye-codegen`  | `crates/codegen/src/core/{mir_emit,arrays,types}.rs`     | `gen_mir`, MIR → C string (direct printer)                           |
 | `eye-diagnostics` | `crates/diagnostics/src/lib.rs`                        | shared `Diagnostic` trait, `Span`, `Severity`, `Code`, `Sink`       |
 | `xtask`        | `crates/xtask/src/main.rs`                                | `cargo xtask codegen` - regenerates `ast/generated.rs`             |
 | `eye`          | `src/main.rs`                                             | driver: lex → parse → lower → mir-emit → clang                       |
@@ -71,7 +71,7 @@ HIR                      hir    - lower_source_file (collect → lower bodies)
 MIR                      mir    - lower_function: control-flow flattening,
   │                                temp/hoist generation, short-circuit rewrite
   ▼
-C source                 codegen - gen_mir (mir_emit.rs), a dumb MIR → C printer
+C source                 codegen - gen_mir (mir_emit.rs), a direct MIR → C printer
   │
   ▼
 native binary            eye driver - clang link, optional clang-format
@@ -255,7 +255,7 @@ Rules:
 Since the MIR cutover the back end is two stages, not one. All semantic
 decisions (control-flow flattening, temp generation, value-position hoisting,
 short-circuit rewriting) live in **HIR -> MIR lowering**; the C backend is a
-**dumb printer** that walks MIR and makes no decisions. A new construct is lowered
+**direct printer** that walks MIR and makes no decisions. A new construct is lowered
 in `mir`, then printed in `codegen`.
 
 | Crate / file | Owns |

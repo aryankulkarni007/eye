@@ -295,10 +295,17 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     self.infer_expr(e, Expectation::None);
                 }
                 let len = elems.len() as u64;
-                elems
-                    .first()
-                    .and_then(|&first| self.ty_of(first))
-                    .map(|elem| self.types.intern(TypeKind::Array { elem, len }))
+                let elem_ty = elems.first().and_then(|&first| self.ty_of(first));
+                // with no array expectation to check against (e.g. an untyped
+                // `let xs = [1, "two"]`), enforce element homogeneity here so a
+                // heterogeneous literal is rejected, not silently typed by its
+                // first element. a declared element type owns this at the funnel.
+                if !self.expects_array(&expected)
+                    && let Some(first_ty) = elem_ty
+                {
+                    self.check_array_homogeneous(elems, first_ty);
+                }
+                elem_ty.map(|elem| self.types.intern(TypeKind::Array { elem, len }))
             }
             Expr::ArrayRepeat { value, count } => {
                 let (value, count) = (*value, *count);
@@ -450,16 +457,28 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     .unwrap_or_else(|| self.types.error_type());
                 // classify with a copy result so the `&self.types` borrow ends
                 // before the `&mut self` emit / interner write (no typekind clone).
-                let (inner, is_raw_ptr) = match self.types.lookup(op_ty) {
-                    &TypeKind::Ref(inner) | &TypeKind::Ptr(inner) => (Some(inner), false),
+                let inner = match self.types.lookup(op_ty) {
+                    &TypeKind::Ref(inner) | &TypeKind::Ptr(inner) => Some(inner),
+                    // `string` is `&uint8` (a byte pointer) and is dereferenceable.
+                    TypeKind::Path(n) if n == "string" => {
+                        Some(self.types.uint8_ty())
+                    }
                     // the untyped `ptr` has no pointee type to deref (L7/P1).
-                    TypeKind::RawPtr => (None, true),
-                    // other non-pointers poison silently (diagnosed upstream).
-                    _ => (None, false),
+                    TypeKind::RawPtr => {
+                        self.emit_at(id, None, hir::core::TypeError::DerefOfPtr);
+                        None
+                    }
+                    // an error operand is already diagnosed - stay silent.
+                    TypeKind::Error => None,
+                    // a non-pointer value has nothing to indirect through; `*x`
+                    // on it would emit invalid c. reject it (the C-brain footgun:
+                    // deref where you meant `&` address-of, or a plain value).
+                    _ => {
+                        let found = self.types.display(op_ty).to_string();
+                        self.emit_at(id, None, hir::core::TypeError::DerefOfNonPointer { found });
+                        None
+                    }
                 };
-                if is_raw_ptr {
-                    self.emit_at(id, None, hir::core::TypeError::DerefOfPtr);
-                }
                 Some(inner.unwrap_or_else(|| self.types.error_type()))
             }
             Expr::Cast { operand, ty } => {

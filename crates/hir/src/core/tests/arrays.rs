@@ -123,9 +123,9 @@ fn len_through_reference_is_accepted() {
     );
 }
 
-/// array of pointers lowers clean.
+/// array of pointers lowers without error.
 #[test]
-fn array_of_pointers_lowers_clean() {
+fn array_of_pointers_succeeds() {
     let hir = lower(
         "\
 extern {
@@ -139,7 +139,7 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "array of pointers must lower clean: {:?}",
+        "array of pointers must succeed: {:?}",
         diags(&hir)
     );
 }

@@ -73,7 +73,7 @@ To resolve the structural debt permanently, the compiler layout must explicitly 
 
 1. **High-Level IR (HIR):** Pure, stable, and completely backend-agnostic. It represents the language's core syntax and features. The **Type Checker** interacts with this layer exclusively as a _read-only validator_, filling static type slots without altering the tree structure.
 2. **Mid-Level IR (MIR):** The imperative bridge. A dedicated lowering pass transforms the pure HIR into a flat, linearized sequence of target-friendly primitives (e.g., variable declarations, explicit switches, flat assignments, jumps). **All variable hoisting and desugaring occur here.**
-3. **Codegen (Backend):** A completely dumb translation black box. It accepts a linearized sequence of MIR instructions and mechanically translates them directly into raw C text.
+3. **Codegen (Backend):** A direct translation black box. It accepts a linearized sequence of MIR instructions and mechanically translates them directly into raw C text.
 
 ---
 

@@ -47,14 +47,14 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "sizeof for named types must lower clean: {:?}",
+        "sizeof for named types must succeed: {:?}",
         diags(&hir)
     );
 }
 
-/// `as` casts between numeric types lower clean (widening, narrowing, int↔float).
+/// `as` casts between numeric types lower without error (widening, narrowing, int↔float).
 #[test]
-fn numeric_as_casts_lower_clean() {
+fn numeric_as_casts_succeed() {
     let hir = lower(
         "\
 main() {
@@ -70,14 +70,14 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "numeric as casts must lower clean: {:?}",
+        "numeric as casts must succeed: {:?}",
         diags(&hir)
     );
 }
 
-/// `as` casts between `ptr` and typed pointers lower clean.
+/// `as` casts between `ptr` and typed pointers lower without error.
 #[test]
-fn pointer_as_casts_lower_clean() {
+fn pointer_as_casts_succeed() {
     let hir = lower(
         "\
 extern {
@@ -93,14 +93,14 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "pointer as casts must lower clean: {:?}",
+        "pointer as casts must succeed: {:?}",
         diags(&hir)
     );
 }
 
-/// typed pointer arithmetic lowers clean.
+/// typed pointer arithmetic lowers without error.
 #[test]
-fn typed_pointer_arithmetic_lowers_clean() {
+fn typed_pointer_arithmetic_succeeds() {
     let hir = lower(
         "\
 extern {
@@ -115,14 +115,14 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "typed pointer arithmetic must lower clean: {:?}",
+        "typed pointer arithmetic must succeed: {:?}",
         diags(&hir)
     );
 }
 
-/// typed pointer dereference lowers clean.
+/// typed pointer dereference lowers without error.
 #[test]
-fn typed_pointer_deref_lowers_clean() {
+fn typed_pointer_deref_succeeds() {
     let hir = lower(
         "\
 extern {
@@ -136,14 +136,14 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "typed pointer dereference must lower clean: {:?}",
+        "typed pointer dereference must succeed: {:?}",
         diags(&hir)
     );
 }
 
-/// `&` reference on a variable lowers clean.
+/// `&` reference on a variable lowers without error.
 #[test]
-fn ref_on_var_lowers_clean() {
+fn ref_on_var_succeeds() {
     let hir = lower(
         "\
 main() {
@@ -156,14 +156,14 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "ref on var must lower clean: {:?}",
+        "ref on var must succeed: {:?}",
         diags(&hir)
     );
 }
 
-/// multiple pointer indirection (`int32** pp`) lowers clean.
+/// multiple pointer indirection (`int32** pp`) lowers without error.
 #[test]
-fn multiple_pointer_indirection_lowers_clean() {
+fn multiple_pointer_indirection_succeeds() {
     let hir = lower(
         "\
 extern {
@@ -179,14 +179,14 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "multiple pointer indirection must lower clean: {:?}",
+        "multiple pointer indirection must succeed: {:?}",
         diags(&hir)
     );
 }
 
-/// `*(&x)` round-trip (deref of ref to a place) lowers clean.
+/// `*(&x)` round-trip (deref of ref to a place) lowers without error.
 #[test]
-fn deref_of_ref_roundtrip_lowers_clean() {
+fn deref_of_ref_roundtrip_succeeds() {
     let hir = lower(
         "\
 main() {
@@ -198,14 +198,14 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "deref of ref round-trip must lower clean: {:?}",
+        "deref of ref round-trip must succeed: {:?}",
         diags(&hir)
     );
 }
 
-/// `sizeof` in a nested expression (e.g. `sizeof(int32) + 1`) lowers clean.
+/// `sizeof` in a nested expression (e.g. `sizeof(int32) + 1`) lowers without error.
 #[test]
-fn sizeof_in_expression_lowers_clean() {
+fn sizeof_in_expression_succeeds() {
     let hir = lower(
         "\
 main() {
@@ -216,14 +216,14 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "sizeof in expression must lower clean: {:?}",
+        "sizeof in expression must succeed: {:?}",
         diags(&hir)
     );
 }
 
-/// compound assignment with pointer arithmetic lowers clean.
+/// compound assignment with pointer arithmetic lowers without error.
 #[test]
-fn pointer_compound_assignment_lowers_clean() {
+fn pointer_compound_assignment_succeeds() {
     let hir = lower(
         "\
 extern {
@@ -238,14 +238,14 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "pointer compound assignment must lower clean: {:?}",
+        "pointer compound assignment must succeed: {:?}",
         diags(&hir)
     );
 }
 
-/// deref assignment (`*p = val`) through a typed pointer lowers clean.
+/// deref assignment (`*p = val`) through a typed pointer lowers without error.
 #[test]
-fn deref_assignment_lowers_clean() {
+fn deref_assignment_succeeds() {
     let hir = lower(
         "\
 extern {
@@ -260,7 +260,7 @@ main() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "deref assignment must lower clean: {:?}",
+        "deref assignment must succeed: {:?}",
         diags(&hir)
     );
 }

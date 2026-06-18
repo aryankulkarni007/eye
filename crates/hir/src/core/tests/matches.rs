@@ -83,7 +83,7 @@ fn match_qualified_unknown_variant_diagnosed() {
     );
 }
 
-// a `let` struct destructure binding every field lowers cleanly.
+// a `let` struct destructure binding every field succeeds.
 #[test]
 fn destructure_binds_all_fields() {
     let src = "\
@@ -272,7 +272,7 @@ fn match_in_ternary_branch_is_accepted() {
     );
     assert!(
         diags(&hir).is_empty(),
-        "value-position ternary match must lower clean, got: {:?}",
+        "value-position ternary match must succeed, got: {:?}",
         hir.diagnostics
     );
 }
