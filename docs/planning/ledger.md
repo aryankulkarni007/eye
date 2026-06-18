@@ -528,6 +528,443 @@ descent.
 The LSP path always has the correct rowan parser; the batch parser is a second
 correctness surface.
 
+### 5. `TypeKind::Path("string")` representation — latent bug generator
+
+`string` is interned as `TypeKind::Path("string")` — a flat name, not the
+structural `TypeKind::Ref(uint8_ty)` that it semantically represents. Every
+judgment that matches on structural pointer types (`Ref`/`Ptr`/`RawPtr`) must
+also remember to handle `Path("string")` or silently reject valid code.
+
+**Evidence:** two bugs found in one session (T046 indexing, T028 deref). The
+same blind spot exists in every judgment that matches TypeKind and has a
+catch-all error arm. The `cast_class` path is lenient-by-coincidence
+(`Unknown` → `cast_allowed` returns `true`).
+
+**Why it was done this way:** `TypeInterner::new()` interns all primitive names
+uniformly as `TypeKind::Path(name)`. `string` is just one entry in the name
+list. Making it structural would require either (a) a special case at intern
+time, or (b) a post-intern normalization pass.
+
+**Fix: intern `string` structurally.** At `TypeInterner::new()`, instead of
+`this.intern(TypeKind::Path(Text::from("string")))`, compute `let uint8 =
+this.intern(TypeKind::Path(Text::from("uint8"))); let string =
+this.intern(TypeKind::Ref(uint8));`. The display name "string" would need
+preserving — add a `display_overrides: FxHashMap<TypeRef, &'static str>` map
+(or overload `Debug` for `TypeKind::Ref` when the pointee is `uint8`/`char`).
+The `array_ref_decays_to` check in `ty.rs` already handles `Path("string")` as
+a decay target; change it to match `Ref(uint8)` instead. This eliminates an
+entire class of latent bug at its root.
+
+**Cost:** the decay check changes, the `Path("string")` special case in
+judgments disappears, and the `string` display name needs a fallback. Low
+effort, moderate impact.
+
+### 6. Lowering/typeck split — was the cutover worth it?
+
+**Current state:** Lowering produces untyped HIR; typeck is a separate pass
+that walks HIR and produces `TypeckResults` (expr_types, adjustments,
+local_types). Communication is through a side table. This required the S1-S6
+migration campaign (shadow oracle, C1-C5 coordinated flip, PARITY markers, A3
+fallback concerns).
+
+**Why this way:** The split enables incremental typeck (per-fn `typeck_fn`
+salsa queries cache-hit on unedited bodies), clean separation of structural
+lowering from semantic analysis, and the potential to swap type inference
+strategy without touching lowering.
+
+**Question the premise:** For a sealed-body inference model where every
+function is checked independently, rerunning typeck on an unedited body is
+~1µs. The incremental win of memoization is noise at this scale. The *real*
+win of the split is that typeck owns the type judgments — not that it can be
+memoized.
+
+**What if lowering produced typed HIR directly?** Like rustc's AST→HIR
+lowering, which stamps expression types during lowering. The HIR body would
+carry `expr_types` as part of its construction. No `TypeckResults` side table.
+No MIR `mir_type_of` indirection. No shadow oracle period.
+
+**Counterpoint:** The split forced a clean API between lowering and type
+checking. The `TypeckResults` table is the explicit, documented contract. If
+types were stamped inline in lowering, the boundary would be blurred —
+lowering would need access to the type checker, creating a circular dependency.
+Rustc avoids this by... doing exactly that (rustc's lowering calls into type
+inference). Rustc's HIR is typed.
+
+**Verdict:** The cutover was necessary because the original design *did* have
+inline stamping, and extracting it was the right call for correctness (the
+stamping had bugs). But the cost was extreme relative to the benefit. The
+lesson is architectural hygiene pays off, but deferred architectural work
+compounds interest.
+
+### 7. Salsa query database — necessary complexity or premature infrastructure?
+
+**Current state:** The database crate wraps 6 file-level and N per-fn Salsa
+queries. The CLI creates a fresh database per invocation (one-shot, no reuse).
+The LSP keeps the database alive across requests for incremental recomputation.
+
+**Why Salsa:** Incremental compilation — a keystroke in a body re-runs only
+that body's typeck. LSP integration — Salsa's revision tracking maps directly
+to LSP diagnostics changes. Memoization between requests.
+
+**Question it:**
+- **One-shot cost:** Every `eye build` allocates a Salsa `Database` (which is a
+  Storage handle bump + per-query memo table allocations), registers source
+  input, runs 6+N tracked queries, then drops everything. The memo tables and
+  Arc-wrapped `Memo<T>` entries are written exactly once and never read again.
+  The granular hot-path audit estimates ~5-10% overhead. A `compile_direct()`
+  bypass (already in the performance backlog) addresses this, proving the
+  design acknowledges the waste.
+- **LSP benefit:** At ~57µs per full compile (58-line program), even 10x scale
+  (~570µs) is within LSP response time budgets. The incremental granularity
+  Salsa provides (per-fn vs per-file) saves microseconds on a milliseconds-scale
+  operation. Is the complexity of Salsa — SALSA.md divergence document, `MemoEq`
+  trait, signature firewall (S5), `Storage` handle threading, `#[salsa::query]`
+  macro invocations across crates — worth sub-millisecond savings?
+- **What's the alternative?** A simple compile cache: parse + lower + type +
+  codegen into a struct. On change (detected by file modification time or
+  content hash), recompile the whole file. LSP diagnostics come from the cached
+  result. No query tracking, no revision counter, no memo tables. The per-fn
+  granularity (which Salsa was needed for) is unnecessary at this scale.
+- **SALSA.md divergences:** 5 documented divergences from idiomatic Salsa
+  (structural backdating, shared type interner, per-database snapshots,
+  fork-on-write diagnostics, the bypass path). Each divergence is a workaround
+  for Salsa's assumptions that don't fit Eye's architecture. This is the
+  strongest signal that Salsa is the wrong tool.
+- **Growth path:** If the language goes multi-file, Salsa's per-file query
+  granularity becomes valuable (a change in file A only re-types dependents).
+  But multi-file is far in the future, and the VFS milestone is still
+  unstarted. Eye is incurring Salsa complexity now for a future need that may
+  or may not materialize.
+
+**Verdict:** Salsa is over-engineered for the current single-file scale. The
+complexity cost (SALSA divergences, S5 firewall, crate dependencies, query
+macro overhead) exceeds the incremental benefit for a ~57µs compile. The batch
+bypass path is an admission that the query infrastructure is overhead. The LSP
+could use a simple content-hash cache with no query tracking.
+
+### 8. MIR — what does it actually buy?
+
+**Current state:** MIR is a structured IR (If/Loop/Switch, not CFG) sitting
+between HIR and C codegen. 3,145 lines. MIR lowering handles spills,
+short-circuit rewrite, value-position control flow lowering, match arm
+classification, and decay materialization. Codegen reads MIR and produces C.
+
+**Why MIR:** Abstraction layer — codegen doesn't know about HIR's match
+expressions, string decay, array literal retyping, etc. Optimization surface —
+MIR is where CFG analysis, constant folding, and dead code elimination would
+live. Second backend boundary — if C is ever replaced, MIR is the shared
+interface.
+
+**Question every claim:**
+- **Optimization surface:** MIR-OPT was built and **fully reverted**. CFG-based
+  MIR (A7) is a backlog item with no scheduled implementation. No MIR
+  optimization exists today. The "optimization surface" argument is entirely
+  hypothetical.
+- **Second backend:** No plans exist for anything other than C. WebAssembly,
+  direct machine code, and LLVM IR are not on any roadmap. The "second backend"
+  argument is also hypothetical.
+- **Abstraction:** The abstraction is real — codegen uses `RValue::Use`,
+  `RValue::BinaryOp`, `RValue::Cast`, not `Expr::Binary`, `Expr::Cast`. But
+  75% of MIR lowering is mechanical 1:1 mapping. The 25% that is genuinely
+  structural (spills, short-circuit, value-position lowering, match
+  classification, decay) could be absorbed into HIR lowering or codegen
+  directly.
+- **What does the 25% buy that makes the 75% worth it?** Evaluation-order
+  correctness (C respects left-to-right for comma operators but not for function
+  arguments; MIR's temp spilling guarantees order). Match lowering (HIR's match
+  with guards, exhaustiveness, and nested patterns is complex; MIR linearises
+  it). These are real — but they could be done as a HIR→HIR transformation
+  (match lowering pass) + codegen-side temp management, without a full MIR IR.
+- **Testability:** MIR dump/diff is useful for debugging, but e2e tests (which
+  run the compiled C and check stdout) catch the same bugs. The `mir_dump`
+  snapshot tests are rarely the first line of defense — they're usually updated
+  after a behavior-preserving refactor, not after a bug fix.
+
+**HIR→C alternative:** A codegen that walks HIR directly, managing a temp
+stack for evaluation-order spills and applying decays + match lowering inline.
+Estimated size: ~1,770 lines vs current 3,145. Savings: ~1,375 lines (44%).
+Cost: codegen knows about HIR's full complexity (match, decay, etc.).
+
+**Verdict:** The 75% mechanical overhead is a real carrying cost. The 25%
+essential work is valuable but doesn't require a separate IR. The optimization
+and second-backend arguments are speculative. If the goal is to ship a working
+compiler, HIR→C is simpler. If the goal is a platform for optimization
+research, MIR is the right investment.
+
+### 9. Sealed-body inference — principle or constraint?
+
+**Current model:** No inference facts cross function boundaries. No inference
+variables, no unification. The bidirectional expectation spine threads
+top-down `Expectation` through transparent nodes; leaves synthesize types
+bottom-up. Tier 2 adds `Cause`-chaining for diagnostic provenance.
+
+**Why this model:** Embarrassingly parallel (S6 fan-out across bodies).
+Incremental (body edit re-types one body). Simple — no constraint solving, no
+HM variables. Precise diagnostics (Cause chains name the exact argument/field).
+
+**Question the constraints:**
+- **No inference variables means limited inference.** The only "inference" is
+  literal adoption (int/float literals take the expected type). `let x = 1`
+  gives x type `int32` (the int default). `let y = x` gives y type `int32`
+  (from x, which happens to be known). `let z = id(x)` where `id` is
+  `fn(T) -> T` would need generics (not in the language) **and** inference
+  variables. The sealed-body + no-variable model means adding generics would
+  require either inference variables (breaking the model) or fully explicit
+  type annotations (like `fn id[T](x: T) -> T` — no inference at call sites).
+- **The Expectation spine is ~500 lines of plumbing.** Every `infer_expr` call
+  threads an `Expectation`. Every transparent node (block, if, match, return)
+  rethreads it with `rebind`. The Cause enum has a variant for every diagnostic
+  context. This displaces what would be a handful of constraint variables.
+- **Sealed bodies prevent inter-procedural inference.** A function's return
+  type is exactly its declared signature — never inferred from the body. A
+  function's parameter types are never refined from call sites. This is
+  consistent with Eye's philosophy (explicit types at boundaries) but it IS a
+  constraint, not a law of nature.
+- **Parallelism is genuine.** The S6 fan-out across bodies works because sealed
+  bodies have no shared inference state. But how much does this matter? At the
+  current scale (~50 functions, ~57µs compile), parallel typeck saves ~20µs.
+  Even at 1000 functions, the savings is ~400µs. At what scale does this matter?
+- **The Cause infrastructure is elegant but incomplete.** The ledger lists
+  "two-span render" as open work — the secondary span isn't rendered yet. The
+  elaborate Cause chain (Return → Field → Arg) is built but only the primary
+  span is displayed. The payoff is still pending.
+
+**Verdict:** The sealed-body model is a principled choice that simplifies
+parallelism and incremental computation at the cost of inference power. It's
+consistent with Eye's explicit-typing culture. The real question is whether
+the inference constraints (no HM, no cross-function inference) will block
+future language features (generics, higher-kinded types, etc.). If yes, the
+model needs a Tier 3 (body-local unification) escape hatch — which is
+explicitly mentioned in TYPECK.md but not built.
+
+### 10. Effect system — differentiating feature or complexity sink?
+
+**Current state:** Effect lattice (io/ffi/state), per-body atom collection
+fused with typeck walk, whole-program fixpoint (Tarjan SCC + condensation),
+exact-match annotation contracts, witness trails. Separate crate with 3 source
+files + 16 tests.
+
+**Why effects:** Eye's differentiating feature. Compile-time tracking of I/O,
+FFI, and state mutation. Exact-match contracts mean a function declared
+`pure fn foo()` is compiler-verified to perform no I/O, no FFI, and no state
+mutation. Witness trails explain *why* a function has an effect.
+
+**Question the ROI:**
+- **What does exact-match buy?** If you declare `io fn foo()` and the compiler
+  infers `{io}`, the annotation is redundant (both agree). If you declare
+  `pure fn foo()` and the compiler infers `{io}`, the compiler rejects it.
+  This is a safety net: annotations are enforced, not just documentation. But
+  the enforcement is only as useful as the annotation coverage — unannotated
+  functions are never checked (no default "must be pure" rule).
+- **Whole-program fixpoint complexity.** The call graph, SCC condensation, and
+  transitive effect propagation are ~200 lines of code. The fixpoint runs in
+  ~1µs. This is not expensive. But it IS complexity that only exists for effects.
+- **Witness trails.** "The `io` effect comes from a call to `println` (via
+  `reporter`)" — this is genuinely useful for understanding why a function
+  has an effect. But the witness trail is only shown on the error path (when a
+  contract is violated). For correct programs (the common case), the trail is
+  never displayed. The value is on the error path only.
+- **Fusion with typeck** means the effect observer runs during the typeck walk.
+  This is zero additional traversals. The observer API is minimal (3 call
+  sites in the typeck walker). The fusion cost is in maintenance: every typeck
+  change must consider the effect observer.
+- **8 reserved atoms** (alloc, panic, diverge) are listed but unused. The
+  lattice has 8 bits, only 3 are live. The reserved atoms add complexity to
+  the display, parsing, and validation code without any operational value.
+- **Growth path:** Row-polymorphic effects (S7) would add effect variables for
+  precise higher-order effect tracking. This is the natural extension but adds
+  significant complexity (effect variables, unification, row typing). S7 is
+  explicitly listed as "not started" with an S6 dependency.
+
+**Verdict:** Effects are genuinely differentiating and the implementation is
+well-architected (fused walk, single traversal, fixpoint after). But the value
+prop depends on annotation culture — if users don't annotate their functions,
+the effect system is silent and provides no value. The 8 reserved atoms and
+the unimplemented S7 extension suggest the system was designed for a future
+that may not arrive. The costs (maintenance, complexity, crate dependency) are
+real and ongoing.
+
+### 11. Codegen as C string building — what's the ceiling?
+
+**Current design:** `gen_mir` appends C text to a `String` via `write_fmt!`.
+No LLVM, no assembly, no intermediate representation. The output is compiled
+by clang/gcc with no optimization flags. The strict-C gate enforces standards
+compliance.
+
+**Why C:** Simplicity — string building is the most direct path to an
+executable. Debuggability — the generated C is human-readable. Portability —
+any platform with a C99 compiler works. No LLVM dependency — faster builds,
+no version management.
+
+**Question the ceiling:**
+- **Performance:** Eye programs run at clang -O0 speed. For the raytracer,
+  floodfill, and sieve benchmarks, this is ~2-10x slower than -O2. The compiler
+  emits no `restrict`, no `inline`, no alignment hints, no vectorization
+  pragmas. Every pointer access goes through a `_tN` temp. The user accepted
+  spilled C as the default (readable-C mode is backlog), but the performance
+  gap is semantic, not cosmetic.
+- **Feature envelope:** Every language feature needs a C analogue. Features
+  that don't map to C — guaranteed tail calls, garbage collection, stackful
+  coroutines, exceptions, arbitrary-precision integers, dynamic dispatch — are
+  either impossible or require a runtime library. The `extern` mechanism
+  delegates to C for anything outside the envelope. This means Eye's growth
+  is bounded by C's expressiveness.
+- **Optimization wall:** Without an IR, there's no place for optimizations.
+  Constant folding is done in HIR const-eval. Dead code elimination, inlining,
+  loop unrolling, and alias analysis would need a new IR (LLVM or CFG-MIR).
+  The CFG-MIR item (A7) is backlog with no timeline.
+- **C is not a portable assembly.** C has implementation-defined behavior
+  (int size, char signedness, struct padding, etc.), and Eye's generated C
+  depends on clang's x86-64 interpretation. Porting to ARM, wasm, or a
+  different C compiler would surface latent assumptions. The strict-C gate
+  catches clang-specific issues but doesn't guarantee portability.
+- **Build chain dependency:** The compiler doesn't produce executables — it
+  produces `.c` files. Users need clang/gcc installed. This is a reasonable
+  dependency for now but means Eye can't be a self-contained tool.
+- **Growth path to LLVM:** If the project decides to use LLVM, it would need to
+  either (a) emit LLVM IR from MIR (which doesn't exist in LLVM-compatible
+  form), or (b) replace the codegen backend entirely. Both are large projects.
+  The current C backend would become a fallback or be dropped.
+
+**Verdict:** C codegen is the right choice for a kernel-phase language
+exploration — it minimizes build dependencies and keeps the compiler simple.
+But it creates a hard ceiling on performance (clang -O0), feature
+expressiveness (C-compatible only), and optimization potential (no IR). The
+question is whether Eye will ever need to break through this ceiling. If the
+goal is a research/teaching language, C codegen is fine. If the goal is a
+production language, LLVM or direct machine code is inevitable.
+
+### 12. Single-file compilation — dead end or foundation?
+
+**Current state:** Every `.eye` file compiles independently. No imports, no
+modules, no linking. `extern` declarations interface with C. The VFS/source
+manager is an unstarted backlog item.
+
+**Why single-file:** Simplicity — no module system means no cross-file name
+resolution, no build system, no linker invocations. The LSP only has one file
+to track. Tests are self-contained `.eye` files.
+
+**Question the sustainability:**
+- **Is Eye viable without multi-file?** Real programs of any significant size
+  need multiple files. A 5000-line file is unwieldy. Libraries (standard or
+  third-party) need a module system. The entire corpus fits in single files
+  only because the language is new and the programs are small.
+- **Every architectural decision assumes single-file.** The Salsa database is
+  keyed by `SourceFile`. The `HIR` struct is per-file. The `item_scope`
+  collects items from one file. Type resolution looks in one `HIR.items`.
+  Effect inference is a whole-program fixpoint over one file's functions.
+  Multi-file changes every one of these.
+- **The VFS backlog item is the prerequisite.** "Load source text once, serve
+  every consumer; groundwork for multi-file compilation." It's listed under
+  "Architecture / infrastructure backlog" with no priority and no assignee.
+- **The `StableFnId` abstraction is already in place.** It was built for the
+  S5 signature firewall and the per-fn `typeck_fn` query. The entity exists
+  but the multi-file plumbing (how to resolve a `StableFnId` across files)
+  doesn't.
+- **Amount of work:** Multi-file touches every crate. The parser (multiple
+  files to parse). The item collector (cross-file collections). Type resolution
+  (cross-file type lookup). The effect system (cross-file fixpoint). Codegen
+  (linking multiple `.c` files or producing a single output). The LSP (multiple
+  open files, cross-file references). The CLI (multiple input files + output
+  executable). This is the single largest feature the language could add.
+
+**Verdict:** Single-file is fine for exploration but unsustainable for growth.
+The multi-file milestone is the point where Eye either becomes a real language
+or remains a toy. The current architecture (per-file queries, `StableFnId`,
+the HIR/typeck abstraction) is reasonable scaffolding for multi-file — none of
+the existing abstractions would need to be replaced. But the amount of work is
+daunting and there's no clear plan or timeline.
+
+### 13. Freeze-before-typeck sequencing — architectural debt lessons
+
+**The sequence:** Build the language with inline type stamping in lowering.
+Freeze the kernel (declare all non-typeck bugs closed). Then extract typeck
+from lowering into a separate pass. This was Horizon 1: S1 (shadow oracle),
+S2 (migrate judgments), S2C cutover (C1-C5), S3 (new judgments), S4 (effects),
+S5 (firewall), S6 (parallel).
+
+**Why this sequence:** The exploratory phase needed a working compiler fast to
+validate the language design. Typeck was the most complex and risky change, so
+it was deferred. The freeze created a stable base before the risky refactoring.
+
+**Question the cost:**
+- **The typeck cutover (C1-C5) was the most expensive single refactoring in the
+  project's history.** Days of work, a shadow oracle (100+ lines of comparison
+  logic), PARITY markers at every judgment site, a coordinated multi-step flip
+  (each C1-C5 had its own revert risk), and the shadow oracle's eventual
+  deletion. The granular audit mentions 4 source files modified across 5
+  crates for the C5 irreversible flip alone.
+- **What if typeck had been built first?** If lowering had never stamped types,
+  the shadow oracle would never have been needed. The entire S1-S6 migration
+  would have been unnecessary. The "typeck is the sole type authority" was the
+  destination — the project spent enormous effort migrating from a design that
+  was known to be temporary.
+- **The counter-argument is about exploration speed.** Building a working
+  compiler first validated that the language *could* compile to correct C.
+  Finding bugs (M2 mixed-width narrowing, L4 array element type checking, the
+  string decay gap, etc.) required a running compiler that produced real
+  output. If the team had designed the perfect type system first, they would
+  have discovered the same bugs later, against a more rigid architecture.
+- **The real lesson is about deferral cost.** The typeck cutover was deferred
+  from the initial design, and the cost of deferring was the S1-S6 migration.
+  The question for future architectural decisions is: what is the next typeck-
+  scale refactoring, and should it be deferred or done early? Multi-file is
+  the obvious candidate. If it's deferred, the project will pay the same
+  migration tax when it's eventually built.
+
+**Verdict:** The freeze-before-typeck sequencing was a rational tradeoff
+(exploration speed vs architectural purity) that incurred predictable
+deferred cost. The total cost (S1-S6 + cutover) was probably worth it — the
+exploratory phase produced a validated language design. But the experience
+should inform future sequencing: multi-file (the next big architectural change)
+should be done early if it's ever going to be done at all.
+
+### 14. Diagnostic architecture — 3 sinks, 9 classes, manual codes
+
+**Current state:** Three diagnostic sinks (lowering, typeck, effect) merged at
+the driver level. 9 error classes (Lex, Parse, Resolve, Const, TypeError,
+Effect, generic Error, etc.). Manual error code assignment (T037-T046,
+E001-E002, C013-C014). Two-span render is designed (Cause enum) but not fully
+implemented (secondary span SyntaxNodePtr not yet carried).
+
+**Why this design:** Separation of concerns — each pass owns its diagnostics.
+Explicit error codes make tests precise (assert on T046, not on a string
+match). The Cause chain captures diagnostic provenance for two-span rendering.
+
+**Question the patterns:**
+- **Three sinks cloned at every merge.** The granular audit flags
+  `database/lib.rs:409,413,421` — each sink is cloned before extending into
+  the merged result. An `Arc<Sink>` or a `&Sink → Vec<Diag>` by-reference
+  collect would eliminate these clones. The current pattern is known-bad and
+  documented.
+- **9 classes with overlapping domains.** A type error in a const context: is
+  it T-class (TypeError) or C-class (ConstError)? The `ConstValueOutOfRange`
+  (C013) is a type error (value doesn't fit declared type) but lives in C-class.
+  The `ArrayElementTypeMismatch` (T042) is a type error in an array literal.
+  The boundary between T-class and C-class is fuzzy.
+- **Manual error code assignment is fragile.** Two developers adding
+  diagnostics simultaneously could assign the same code. There's no central
+  registry or assignment authority. The ledger's source-comment register
+  cross-references FIXMEs but doesn't catalog error codes. The current
+  highest T-code is T046 (indexing non-indexable), C014 (const type mismatch),
+  E002 (effect mismatch). A collision is unlikely but unguarded.
+- **Two-span render is designed but unbuilt.** The Cause enum carries the
+  diagnostic provenance (`Cause::Field { field, cause }`, `Cause::Arg { index,
+  cause }`, etc.) but the actual two-span rendering (primary span + secondary
+  span pointing to the declaration) is listed as open work. The elaborate
+  Cause infrastructure is built for a feature that doesn't fully exist yet.
+- **The `Sink<T>` type is `Vec<T>` in a trench coat.** It's not arena-
+  allocated (every diagnostic is a heap allocation). It's not `Copy`-cheap
+  (clone clones every entry). It's not integrated with the type interner
+  (diagnostic types are display strings, not TypeRef handles that could be
+  resolved lazily).
+
+**Verdict:** The diagnostic architecture is serviceable but has known
+deficiencies (clone costs, unbuilt two-span render, fuzzy class boundaries)
+that the ledger explicitly tracks. The Cause infrastructure is ahead of its
+consumers. The cloning pattern is the most immediate fix (swap `clone()` for
+by-reference collect).
+
 ---
 
 ## Performance backlog
@@ -604,17 +1041,20 @@ correctness surface.
 
 ## Code clarity / DRY / data-structure backlog
 
-- [ ] **`collect.rs` DRY violation** : The duplicate-name check pattern
-      (`hir.items.foo.contains_key(name) || hir.items.bar.contains_key(name)`)
-      repeats identically for struct (lines 330-338), function (412-420),
-      union (454-463), extern fn (541-549), and enum (580-588) collection.
-      Factor into `fn check_duplicate_item(hir: &mut HIR, name: &Text,
-      span: Span, kind: &str)` or similar. The same file also calls
-      `check_c_keyword + check_reserved_file_scope` as a pair at 10 sites
-      : consolidate.
-- [ ] **`LoweringCtx` carries dead state** : `fn_ret: Option<TypeRef>` is set
-      once at body start and read only by the now-deleted `enforce_return_type`
-      (typeck owns return diagnostics since S2). Check and remove.
+- [x] **`collect.rs` DRY violation** FIXED 2026-06-18 (clarity sweep). The 6
+      duplicate-name checks (struct/function/union/opaque/extern-fn/enum) - which
+      were NOT identical, each `||`-chaining a different namespace subset - now
+      call one `ItemScope::name_in_use(&name)` (`items.rs`) that checks ALL item
+      namespaces. Cleaner AND more correct (a name is unique across every
+      namespace, no-footgun); verified behavior-safe (full suite + corpus, 0 new
+      rejects). The `check_c_keyword + check_reserved_file_scope` pair (6 sites:
+      global/struct/function/union/enum/variant, identical args) ALSO consolidated
+      into one `check_file_scope_name`; the c-keyword-only sites (fields, opaque
+      type, reserved-exempt extern fn) call `check_c_keyword` directly.
+- [x] **`LoweringCtx` carries dead state** FIXED 2026-06-18 (clarity sweep).
+      `fn_ret: Option<TypeRef>` was written (init + per-body set) but never read
+      (return diagnostics moved to typeck at S2). Removed all 3 sites (field decl
+      `lower/mod.rs`, init `ctx.rs`, assignment `fn_body.rs`).
 - [ ] **`typegraph.rs` `HardDepsVisitor` uses a manual `pointer_stack` Vec**
       rather than a recursion counter or the natural call-stack. The
       `visit_ty`/`visit_ty_post` protocol forces storing `under_pointer` state
@@ -623,6 +1063,9 @@ correctness surface.
       ceremony easily broken by a missing pop. Consider threading a depth
       parameter through the visit trait, or restructuring `hard_deps` as an
       iterative walk with an explicit stack of `(TypeRef, bool)` pairs.
+      (DEFERRED from the 2026-06-18 clarity sweep: a visitor-trait restructure
+      that touches codegen typedef ordering - not a mechanical/behavior-safe
+      change, belongs with the typegraph rework, not a clarity pass.)
 - [ ] **`TypeNode` clones on every graph operation** : `collect_type_nodes`,
       `topo_order`, and `compute_scc` all clone `TypeNode::Nominal(name)`,
       `TypeNode::Array { .. }`, and `TypeNode::Fn { params: .. }` repeatedly
@@ -855,15 +1298,13 @@ combing each crate. Ranked by estimated impact.
 All found by combing every file for non-idiomatic or wasteful iterator and
 collection access patterns.
 
-### `.nth(0)` instead of `.next()`
+### `.nth(0)` instead of `.next()` - x FIXED 2026-06-18 (clarity sweep)
 
-- **`crates/ast/src/generated.rs:1107,1134,1161,1239,1269,1703`** : 6 AST
-  accessor methods use `support::children(&self.syntax).nth(0)`. `.next()`
-  is the canonical way to get the first element of an iterator. Fix: change
-  to `.next()` (same semantics, clearer intent, no skipping logic overhead).
-- **`crates/xtask/src/main.rs:219-222`** : root cause: the code generator
-  produces `nth(#idx)` for all indexed fields, including `idx == 0`. Fix
-  the template to emit `.next()` when `idx == 0`.
+- x **`crates/xtask/src/main.rs`** : root-cause fixed - the `gen_struct`
+  accessor template now emits `.next()` when `pos == 0`, `.nth(n)` otherwise.
+  `cargo xtask codegen` regenerated `generated.rs`: a clean 6-line diff (the 6
+  first-child accessors `nth(0)` -> `next()`), nothing else, grammar was in sync.
+  Verified workspace + corpus green.
 
 ### `.len() == 0` / `.len() > 0` instead of `.is_empty()`
 
@@ -898,16 +1339,20 @@ collection access patterns.
 
 ### Redundant Text clones from the type interner
 
-- **`crates/codegen/src/core/mir_emit/expr.rs:421,423`** : `n.clone()` where
-  `n` is `&Text`. The clone is immediately borrowed back on the next line.
-  Fix: use the `&Text` reference directly.
-- **`crates/typeck/src/infer/ty.rs:170`** : same pattern in the `byte_pun`
-  helper: `TypeKind::Path(n) => Some(n.clone())` to compare via string.
-  Compare via `n.as_str()` instead.
-- **`crates/typeck/src/infer/mod.rs:345`** : struct literal name cloned via
-  `TypeKind::Path(n) => Some(n.clone())`. Use the reference.
-- **`crates/hir/src/core/lower/expr.rs:264,288`** : `types.lookup(ty)` name
-  cloned twice in the cast-check arm. Already flagged in the granular audit.
+(x = cleaned 2026-06-18 clarity sweep; verified workspace + corpus green.)
+- x **`crates/codegen/src/core/mir_emit/expr.rs`** : `field_type` is a read-only
+  `&mut self`, so `&self.hir.types` and `&self.hir.items` coexist - the
+  `struct_name` clone was pointless ceremony, now a `&Text`.
+- x **`crates/typeck/src/infer/ty.rs`** : `byte_pun` closure returns
+  `Option<&str>` (`n.as_str()`), comparing directly - no clone.
+- x **`crates/hir/src/core/lower/expr.rs`** : the struct-literal arm computed the
+  type name TWICE (`name_union`, `name_path`, identical) - merged into one
+  `lit_name`, one clone (the clone is needed: it releases the `self.types`
+  borrow for the `self.hir`/`self.emit` reads below).
+- ~ **`crates/typeck/src/infer/mod.rs`** : the struct-literal `struct_name` clone
+  is KEPT - the ledger mis-flagged it; the clone deliberately releases the
+  `self.types` borrow so the later `&mut self` walk can run (a `&Text` would not
+  outlive it).
 
 ### `.clone()` on every diagnostic emit path
 
@@ -1157,7 +1602,9 @@ including `string`. Two e2e tests (`string_eye_byte_array_refs`,
 
 Fix: `crates/typeck/src/infer/judgments.rs:937` — added
 `TypeKind::Path(n) if n == "string" => {}` to the indexing-ok match arm.
-All tests green (75 hir, 81 typeck, 73 e2e), clippy clean.
+Same blind spot found and fixed in the deref judgment at `infer/mod.rs:463`
+— `string` now resolves to `uint8_ty()` on dereference. All tests green
+(75 hir, 81 typeck, 73 e2e), clippy clean. Analysis in item 5 below.
 
 ### 2026-06-16: S6 parallel wave - lock-free interner + whole-file fan-out
 

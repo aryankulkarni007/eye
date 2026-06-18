@@ -418,9 +418,9 @@ impl<'a> MirGen<'a> {
         let base_ty = self.place_type(mir, base);
         let types = &self.hir.types;
         let struct_name = match types.lookup(base_ty) {
-            TypeKind::Path(n) => n.clone(),
+            TypeKind::Path(n) => n,
             TypeKind::Ref(inner) | TypeKind::Ptr(inner) => match types.lookup(*inner) {
-                TypeKind::Path(n) => n.clone(),
+                TypeKind::Path(n) => n,
                 _ => return self.error_ty,
             },
             _ => return self.error_ty,
@@ -429,13 +429,13 @@ impl<'a> MirGen<'a> {
             .hir
             .items
             .structs
-            .get(&struct_name)
+            .get(struct_name)
             .and_then(|&id| self.hir.structs[id].field_index.get(name).copied())
             .or_else(|| {
                 self.hir
                     .items
                     .unions
-                    .get(&struct_name)
+                    .get(struct_name)
                     .and_then(|&id| self.hir.unions[id].field_index.get(name).copied())
             });
         match field_id {

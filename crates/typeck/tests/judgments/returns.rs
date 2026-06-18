@@ -16,7 +16,7 @@ main() { println(\"{}\", bad()); }
     assert!(
         diags(&hir).iter().any(|e| matches!(
             e,
-            HirError::Type(TypeError::ReturnTypeMismatch { expected, found })
+            HirError::Type(TypeError::ReturnTypeMismatch { expected, found, .. })
                 if *expected == "int32" && *found == "Color"
         )),
         "expected return-type-mismatch diag, got: {:?}",

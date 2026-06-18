@@ -28,12 +28,6 @@ pub(super) fn lower_fn_with(
 ) -> FnLowerOut {
     let mut ctx = LoweringCtx::new(scope, &scope.types, const_values, interner);
 
-    // return type for checking explicit `return` statements. `main` is an
-    // ordinary function here: the c entry point (`int main` + `return 0`) is a
-    // backend concern emitted as a shim, not a language rule, so a bare void
-    // `main()` has return type `None` like any other void function.
-    ctx.fn_ret = scope.functions[fn_id].ret;
-
     if let Some(block) = fn_ast.body() {
         // lower_block will push its own scope. we need parameters to be
         // visible inside that scope, so push a scope first, add params,

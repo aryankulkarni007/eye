@@ -25,7 +25,6 @@ impl<'a> LoweringCtx<'a> {
             body: Body::default(),
             scopes: super::Scopes::new(),
             diagnostics: Sink::new(),
-            fn_ret: None,
             const_values,
             interner,
         }

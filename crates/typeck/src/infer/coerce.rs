@@ -65,7 +65,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             return Some(found);
         }
         match cause {
-            Cause::Arg { .. } | Cause::Field { .. } | Cause::Return => {
+            Cause::Arg { .. } | Cause::Field { .. } | Cause::Return { .. } => {
                 if !self.cause_assignable(&cause, exp, found) {
                     self.emit_mismatch(id, exp, found, &cause);
                 }
@@ -107,7 +107,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             Cause::Arg { .. } | Cause::Field { .. } => {
                 site_assignable(expected, found, self.types)
             }
-            Cause::Return => {
+            Cause::Return { .. } => {
                 types_compatible(found, expected, self.types)
                     || array_ref_decays_to(expected, found, self.types)
                     || ref_widens_to_ptr(expected, found, self.types)
@@ -124,17 +124,23 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         let expected = self.types.display(expected).to_string();
         let found = self.types.display(found).to_string();
         let err: hir::core::TypeError = match cause {
-            Cause::Arg { index } => hir::core::TypeError::ArgTypeMismatch {
+            Cause::Arg { index, decl } => hir::core::TypeError::ArgTypeMismatch {
                 index: *index,
                 expected,
                 found,
+                decl: decl.clone(),
             },
-            Cause::Field { name } => hir::core::TypeError::StructFieldTypeMismatch {
+            Cause::Field { name, decl } => hir::core::TypeError::StructFieldTypeMismatch {
                 field: name.clone(),
                 expected,
                 found,
+                decl: decl.clone(),
             },
-            Cause::Return => hir::core::TypeError::ReturnTypeMismatch { expected, found },
+            Cause::Return { decl } => hir::core::TypeError::ReturnTypeMismatch {
+                expected,
+                found,
+                decl: decl.clone(),
+            },
             Cause::LetDecl | Cause::IfBranch | Cause::MatchArm => return,
         };
         self.emit_at(id, None, err);

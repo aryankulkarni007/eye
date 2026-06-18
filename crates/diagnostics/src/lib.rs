@@ -51,6 +51,16 @@ pub enum Span {
     Ptr(SyntaxNodePtr),
 }
 
+/// two spans compare by the byte range they cover (a `SyntaxNodePtr` carries its
+/// range, so this needs no tree). manual because rowan's typed `SyntaxNodePtr`
+/// is not `Eq`; lets diagnostics that carry an optional decl span stay `Eq`.
+impl PartialEq for Span {
+    fn eq(&self, other: &Self) -> bool {
+        self.text_range() == other.text_range()
+    }
+}
+impl Eq for Span {}
+
 impl Span {
     /// the byte range this span covers, resolving a pointer if needed.
     pub fn text_range(&self) -> TextRange {

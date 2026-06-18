@@ -173,6 +173,8 @@ pub fn infer_body_effects(
     types: &TypeInterner,
 ) -> EffectResult {
     let mut judge = EffectJudge::default();
-    typeck::check_body_with(scope, body, fn_ret, types, &mut judge);
+    // effect-only path: the type results (and so the return-mismatch secondary
+    // span) are discarded, so the decl span is irrelevant here.
+    typeck::check_body_with(scope, body, fn_ret, None, types, &mut judge);
     judge.into_result()
 }

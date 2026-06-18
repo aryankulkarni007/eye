@@ -123,8 +123,7 @@ pub(super) fn collect_globals(
             continue;
         };
         let name: Text = text(g.name(), interner);
-        check_c_keyword(hir, &name, "global", name_span(g.name(), g.syntax()));
-        check_reserved_file_scope(hir, &name, "global", name_span(g.name(), g.syntax()));
+        check_file_scope_name(hir, &name, "global", name_span(g.name(), g.syntax()));
         let ty = match g.ty() {
             Some(t) => lower_recorded_type(hir, &t, const_values, typed_decls),
             None => hir.types.error_type(),
@@ -249,6 +248,16 @@ fn check_reserved_file_scope(hir: &mut HIR, name: &Text, what: &'static str, spa
     }
 }
 
+/// the two file-scope name checks a declared item's name must pass: it is
+/// emitted verbatim into C, so it may be neither a C keyword (R010) nor a
+/// compiler-reserved name (R014). struct/union fields, opaque type names, and
+/// extern fns (which name a real libc symbol, so are reserved-exempt) only run
+/// `check_c_keyword` directly.
+fn check_file_scope_name(hir: &mut HIR, name: &Text, what: &'static str, span: Span) {
+    check_c_keyword(hir, name, what, span.clone());
+    check_reserved_file_scope(hir, name, what, span);
+}
+
 /// anchor a diagnostic on an item's name token when present, falling back to the
 /// whole item node. a name conflict is about the name, so the underline should
 /// sit on it rather than the entire declaration.
@@ -301,8 +310,7 @@ pub(super) fn collect_items(
             ast::Item::GlobalDef(_) => {}
             ast::Item::StructDef(s) => {
                 let name: Text = text(s.name(), interner);
-                check_c_keyword(hir, &name, "struct", name_span(s.name(), s.syntax()));
-                check_reserved_file_scope(hir, &name, "struct", name_span(s.name(), s.syntax()));
+                check_file_scope_name(hir, &name, "struct", name_span(s.name(), s.syntax()));
                 let field_count = s.field_list().map(|fl| fl.fields().count()).unwrap_or(0);
                 let mut fields = SmallVec::new();
                 let mut field_index =
@@ -315,7 +323,12 @@ pub(super) fn collect_items(
                             Some(t) => lower_recorded_type(hir, &t, const_values, typed_decls),
                             None => hir.types.error_type(),
                         };
-                        let field_id = hir.fields.alloc(Field { name: fname, ty });
+                        let span = Span::from(SyntaxNodePtr::new(f.syntax()));
+                        let field_id = hir.fields.alloc(Field {
+                            name: fname,
+                            ty,
+                            span,
+                        });
                         if !field_index.contains_key(&hir.fields[field_id].name) {
                             field_index.insert(hir.fields[field_id].name.clone(), field_id);
                         }
@@ -327,10 +340,7 @@ pub(super) fn collect_items(
                     fields,
                     field_index,
                 });
-                if hir.items.structs.contains_key(&name)
-                    || hir.items.functions.contains_key(&name)
-                    || hir.items.consts.contains_key(&name)
-                {
+                if hir.items.name_in_use(&name) {
                     hir.diagnostics.emit(
                         name_span(s.name(), s.syntax()),
                         HirError::Resolve(ResolveError::DuplicateItem { name: name.clone() }),
@@ -340,8 +350,7 @@ pub(super) fn collect_items(
             }
             ast::Item::FnDef(f) => {
                 let name: Text = text(f.name(), interner);
-                check_c_keyword(hir, &name, "function", name_span(f.name(), f.syntax()));
-                check_reserved_file_scope(hir, &name, "function", name_span(f.name(), f.syntax()));
+                check_file_scope_name(hir, &name, "function", name_span(f.name(), f.syntax()));
                 let mut params = SmallVec::new();
                 if let Some(pl) = f.param_list() {
                     for param_ast in pl.params() {
@@ -371,12 +380,17 @@ pub(super) fn collect_items(
                         params.push(Param {
                             name: pname,
                             ty: pty,
+                            span: Span::from(SyntaxNodePtr::new(param_ast.syntax())),
                         });
                     }
                 }
-                let ret = f
-                    .ret_type()
-                    .map(|t| lower_recorded_type(hir, &t, const_values, typed_decls));
+                let ret_ast = f.ret_type();
+                let ret_span = ret_ast
+                    .as_ref()
+                    .map(|t| Span::from(SyntaxNodePtr::new(t.syntax())));
+                let ret = ret_ast
+                    .as_ref()
+                    .map(|t| lower_recorded_type(hir, t, const_values, typed_decls));
                 // `main` is the program entry point. the c backend wraps it in
                 // an `int main(void)` shim that calls it with no arguments and
                 // adapts whatever it returns to the process exit code. any
@@ -403,16 +417,14 @@ pub(super) fn collect_items(
                     name: name.clone(),
                     params,
                     ret,
+                    ret_span,
                     body: None,
                     is_extern: false,
                     variadic: false,
                     fn_type,
                     declared_effects,
                 });
-                if hir.items.functions.contains_key(&name)
-                    || hir.items.structs.contains_key(&name)
-                    || hir.items.consts.contains_key(&name)
-                {
+                if hir.items.name_in_use(&name) {
                     hir.diagnostics.emit(
                         name_span(f.name(), f.syntax()),
                         HirError::Resolve(ResolveError::DuplicateItem { name: name.clone() }),
@@ -425,8 +437,7 @@ pub(super) fn collect_items(
             // separate arena + scope namespace.
             ast::Item::UnionDef(u) => {
                 let name: Text = text(u.name(), interner);
-                check_c_keyword(hir, &name, "union", name_span(u.name(), u.syntax()));
-                check_reserved_file_scope(hir, &name, "union", name_span(u.name(), u.syntax()));
+                check_file_scope_name(hir, &name, "union", name_span(u.name(), u.syntax()));
                 let field_count = u.field_list().map(|fl| fl.fields().count()).unwrap_or(0);
                 let mut fields = SmallVec::new();
                 let mut field_index =
@@ -439,7 +450,12 @@ pub(super) fn collect_items(
                             Some(t) => lower_recorded_type(hir, &t, const_values, typed_decls),
                             None => hir.types.error_type(),
                         };
-                        let field_id = hir.fields.alloc(Field { name: fname, ty });
+                        let span = Span::from(SyntaxNodePtr::new(f.syntax()));
+                        let field_id = hir.fields.alloc(Field {
+                            name: fname,
+                            ty,
+                            span,
+                        });
                         if !field_index.contains_key(&hir.fields[field_id].name) {
                             field_index.insert(hir.fields[field_id].name.clone(), field_id);
                         }
@@ -451,11 +467,7 @@ pub(super) fn collect_items(
                     fields,
                     field_index,
                 });
-                if hir.items.structs.contains_key(&name)
-                    || hir.items.unions.contains_key(&name)
-                    || hir.items.functions.contains_key(&name)
-                    || hir.items.consts.contains_key(&name)
-                {
+                if hir.items.name_in_use(&name) {
                     hir.diagnostics.emit(
                         name_span(u.name(), u.syntax()),
                         HirError::Resolve(ResolveError::DuplicateItem { name: name.clone() }),
@@ -476,11 +488,7 @@ pub(super) fn collect_items(
                             let name: Text = text(et.name(), interner);
                             check_c_keyword(hir, &name, "type", name_span(et.name(), et.syntax()));
                             let opaque_id = hir.opaques.alloc(OpaqueType { name: name.clone() });
-                            if hir.items.opaques.contains_key(&name)
-                                || hir.items.structs.contains_key(&name)
-                                || hir.items.unions.contains_key(&name)
-                                || hir.items.enums.contains_key(&name)
-                            {
+                            if hir.items.name_in_use(&name) {
                                 hir.diagnostics.emit(
                                     name_span(et.name(), et.syntax()),
                                     HirError::Resolve(ResolveError::DuplicateItem {
@@ -510,13 +518,18 @@ pub(super) fn collect_items(
                             params.push(Param {
                                 name: pname,
                                 ty: pty,
+                                span: Span::from(SyntaxNodePtr::new(param_ast.syntax())),
                             });
                         }
                         variadic = pl.variadic().is_some();
                     }
-                    let ret = ef
-                        .ret_type()
-                        .map(|t| lower_recorded_type(hir, &t, const_values, typed_decls));
+                    let ret_ast = ef.ret_type();
+                    let ret_span = ret_ast
+                        .as_ref()
+                        .map(|t| Span::from(SyntaxNodePtr::new(t.syntax())));
+                    let ret = ret_ast
+                        .as_ref()
+                        .map(|t| lower_recorded_type(hir, t, const_values, typed_decls));
                     let fn_type = {
                         let p: &[Param] = &params;
                         let param_tys: Vec<TypeRef> = p.iter().map(|p| p.ty).collect();
@@ -530,6 +543,7 @@ pub(super) fn collect_items(
                         name: name.clone(),
                         params,
                         ret,
+                        ret_span,
                         body: None,
                         is_extern: true,
                         variadic,
@@ -538,10 +552,7 @@ pub(super) fn collect_items(
                         // extern call is always `ffi` by construction).
                         declared_effects: Vec::new(),
                     });
-                    if hir.items.functions.contains_key(&name)
-                        || hir.items.structs.contains_key(&name)
-                        || hir.items.consts.contains_key(&name)
-                    {
+                    if hir.items.name_in_use(&name) {
                         hir.diagnostics.emit(
                             name_span(ef.name(), ef.syntax()),
                             HirError::Resolve(ResolveError::DuplicateItem { name: name.clone() }),
@@ -552,16 +563,14 @@ pub(super) fn collect_items(
             }
             ast::Item::EnumDef(e) => {
                 let name: Text = text(e.name(), interner);
-                check_c_keyword(hir, &name, "enum", name_span(e.name(), e.syntax()));
-                check_reserved_file_scope(hir, &name, "enum", name_span(e.name(), e.syntax()));
+                check_file_scope_name(hir, &name, "enum", name_span(e.name(), e.syntax()));
                 let variant_count = e.variants().count();
                 let mut variants = SmallVec::new();
                 let mut variant_index =
                     FxHashMap::with_capacity_and_hasher(variant_count, FxBuildHasher);
                 for v in e.variants() {
                     let vname = text(v.name(), interner);
-                    check_c_keyword(hir, &vname, "enum variant", name_span(v.name(), v.syntax()));
-                    check_reserved_file_scope(
+                    check_file_scope_name(
                         hir,
                         &vname,
                         "enum variant",
@@ -577,10 +586,7 @@ pub(super) fn collect_items(
                     variants,
                     variant_index,
                 });
-                if hir.items.structs.contains_key(&name)
-                    || hir.items.functions.contains_key(&name)
-                    || hir.items.consts.contains_key(&name)
-                {
+                if hir.items.name_in_use(&name) {
                     hir.diagnostics.emit(
                         name_span(e.name(), e.syntax()),
                         HirError::Resolve(ResolveError::DuplicateItem { name: name.clone() }),

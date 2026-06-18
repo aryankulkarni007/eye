@@ -17,7 +17,7 @@
 
 use std::fmt;
 
-use diagnostics::{Class, Code, Diagnostic};
+use diagnostics::{Class, Code, Diagnostic, Span};
 
 use crate::core::Text;
 
@@ -126,6 +126,8 @@ pub enum TypeError {
     ReturnTypeMismatch {
         expected: String,
         found: String,
+        /// the fn's return-type annotation span, for the secondary label.
+        decl: Option<Span>,
     },
     /// `return;` with no value in a function that declares a return type.
     ReturnMissingValue {
@@ -171,6 +173,8 @@ pub enum TypeError {
         index: usize,
         expected: String,
         found: String,
+        /// the callee parameter's declaration span, for the secondary label.
+        decl: Option<Span>,
     },
     /// a struct- or union-literal field initialized with a value of the wrong
     /// type (`P { x: "hello" }` where `x` is `int32`). missing/unknown fields
@@ -179,6 +183,8 @@ pub enum TypeError {
         field: Text,
         expected: String,
         found: String,
+        /// the struct field's declaration span, for the secondary label.
+        decl: Option<Span>,
     },
     /// an assignment (`x = y`, `x += y`) used where a value is expected - a
     /// `let` initializer, an argument, a condition, an operand, a
@@ -605,7 +611,7 @@ impl fmt::Display for TypeError {
                 f,
                 "match arm type mismatch: expected {expected}, this arm produces {found}"
             ),
-            TypeError::ReturnTypeMismatch { expected, found } => write!(
+            TypeError::ReturnTypeMismatch { expected, found, .. } => write!(
                 f,
                 "return type mismatch: function returns {expected}, but this produces {found}"
             ),
@@ -647,6 +653,7 @@ impl fmt::Display for TypeError {
                 index,
                 expected,
                 found,
+                ..
             } => write!(
                 f,
                 "argument {index} type mismatch: expected {expected}, got {found}"
@@ -655,6 +662,7 @@ impl fmt::Display for TypeError {
                 field,
                 expected,
                 found,
+                ..
             } => write!(
                 f,
                 "field `{field}` type mismatch: expected {expected}, got {found}"
@@ -1060,6 +1068,30 @@ impl Diagnostic for HirError {
             HirError::Effect(EffectError::EffectMismatch {
                 witness: Some(w), ..
             }) => vec![std::borrow::Cow::Owned(w.clone())],
+            _ => Vec::new(),
+        }
+    }
+
+    /// the secondary "declared here" span on a type-mismatch: the imposing
+    /// declaration (a callee parameter, a struct field, a return type) the value
+    /// failed to satisfy, for the two-span diagnostic (TYPECK.md, tier 2).
+    fn secondary_labels(&self) -> Vec<(Span, std::borrow::Cow<'static, str>)> {
+        use std::borrow::Cow;
+        let labelled = |decl: &Option<Span>, label: &'static str| {
+            decl.clone()
+                .map(|s| vec![(s, Cow::Borrowed(label))])
+                .unwrap_or_default()
+        };
+        match self {
+            HirError::Type(TypeError::ArgTypeMismatch { decl, .. }) => {
+                labelled(decl, "parameter declared here")
+            }
+            HirError::Type(TypeError::StructFieldTypeMismatch { decl, .. }) => {
+                labelled(decl, "field declared here")
+            }
+            HirError::Type(TypeError::ReturnTypeMismatch { decl, .. }) => {
+                labelled(decl, "return type declared here")
+            }
             _ => Vec::new(),
         }
     }

@@ -60,6 +60,7 @@ HIR {
                     name: "main",
                     params: [],
                     ret: None,
+                    ret_span: None,
                     body: Some(
                         BodyId(
                             Idx::<Body>(0),

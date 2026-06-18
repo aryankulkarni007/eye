@@ -37,6 +37,9 @@ pub(crate) struct InferCtx<'a, O> {
     pub(crate) body: &'a Body,
     pub(crate) types: &'a TypeInterner,
     pub(crate) fn_ret: Option<TypeRef>,
+    /// the return-type annotation span, for the `ReturnTypeMismatch` secondary
+    /// label. only read when `fn_ret` is `Some`.
+    pub(crate) fn_ret_span: Option<diagnostics::Span>,
     pub(crate) results: TypeckResults,
     pub(crate) obs: &'a mut O,
 }
@@ -46,6 +49,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         scope: &'a HIR,
         body: &'a Body,
         fn_ret: Option<TypeRef>,
+        fn_ret_span: Option<diagnostics::Span>,
         types: &'a TypeInterner,
         obs: &'a mut O,
     ) -> Self {
@@ -58,6 +62,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             // to `None` here makes the explicit unit return behave identically to
             // the implicit void one across every return/tail judgment.
             fn_ret: fn_ret.filter(|&t| t != types.unit_ty()),
+            fn_ret_span,
             results: TypeckResults::default(),
             obs,
         }
@@ -76,7 +81,12 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             // consistency checks; the tail-vs-return mismatch through the funnel;
             // the *arity* (a body that yields no value) through `enforce_return_type`.
             let expected = match self.fn_ret {
-                Some(ret) => Expectation::HasType(ret, Cause::Return),
+                Some(ret) => Expectation::HasType(
+                    ret,
+                    Cause::Return {
+                        decl: self.fn_ret_span.clone(),
+                    },
+                ),
                 None => Expectation::None,
             };
             self.infer_expr(tail, expected);
@@ -354,9 +364,15 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     // type (an unknown field, diagnosed elsewhere) synthesizes.
                     let expected = struct_name
                         .as_ref()
-                        .and_then(|sname| self.field_decl_type(sname, &f.name))
-                        .map_or(Expectation::None, |ft| {
-                            Expectation::HasType(ft, Cause::Field { name: f.name.clone() })
+                        .and_then(|sname| self.field_decl(sname, &f.name))
+                        .map_or(Expectation::None, |fld| {
+                            Expectation::HasType(
+                                fld.ty,
+                                Cause::Field {
+                                    name: f.name.clone(),
+                                    decl: Some(fld.span.clone()),
+                                },
+                            )
                         });
                     self.infer_expr(f.value, expected);
                 }
@@ -433,7 +449,12 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     // `ReturnTypeMismatch`); `check_explicit_return` keeps only
                     // the *arity* judgments (a value in a void fn, a missing value).
                     let expected = match self.fn_ret {
-                        Some(ret) => Expectation::HasType(ret, Cause::Return),
+                        Some(ret) => Expectation::HasType(
+                    ret,
+                    Cause::Return {
+                        decl: self.fn_ret_span.clone(),
+                    },
+                ),
                         None => Expectation::None,
                     };
                     self.infer_expr(v, expected);
@@ -607,9 +628,13 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 let scope = self.scope;
                 for (i, &a) in args.iter().enumerate() {
                     let expected = match scope.functions[fn_id].params.get(i) {
-                        Some(param) => {
-                            Expectation::HasType(param.ty, Cause::Arg { index: i + 1 })
-                        }
+                        Some(param) => Expectation::HasType(
+                            param.ty,
+                            Cause::Arg {
+                                index: i + 1,
+                                decl: Some(param.span.clone()),
+                            },
+                        ),
                         None => Expectation::None,
                     };
                     self.infer_expr(a, expected);
@@ -752,8 +777,9 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
     }
 
     /// the declared type of `name`'s field `field`, struct or union.
-    fn field_decl_type(&self, name: &Text, field: &Text) -> Option<TypeRef> {
-        self.scope
+    fn field_decl(&self, name: &Text, field: &Text) -> Option<&hir::core::Field> {
+        let fid = self
+            .scope
             .items
             .structs
             .get(name)
@@ -764,8 +790,8 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     .unions
                     .get(name)
                     .and_then(|&uid| self.scope.unions[uid].field_index.get(field).copied())
-            })
-            .map(|fid| self.scope.fields[fid].ty)
+            })?;
+        Some(&self.scope.fields[fid])
     }
 
     /// field access type: struct/union member through auto-deref, error
@@ -775,7 +801,8 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         // across the recursive / `field_decl_type` calls - no `TypeKind` clone.
         match self.types.lookup(base_ty) {
             TypeKind::Path(name) => self
-                .field_decl_type(name, field)
+                .field_decl(name, field)
+                .map(|f| f.ty)
                 .unwrap_or_else(|| self.types.error_type()),
             &TypeKind::Ref(inner) | &TypeKind::Ptr(inner) => self.lookup_field_type(inner, field),
             _ => self.types.error_type(),

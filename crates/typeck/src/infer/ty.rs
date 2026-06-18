@@ -167,11 +167,11 @@ pub(crate) fn array_ref_decays_to(declared: TypeRef, found: TypeRef, types: &Typ
 /// `char` and `uint8` (a string literal's element type vs a C `char*`).
 pub(crate) fn byte_pun(a: TypeRef, b: TypeRef, types: &TypeInterner) -> bool {
     let name = |t: TypeRef| match types.lookup(t) {
-        TypeKind::Path(n) => Some(n.clone()),
+        TypeKind::Path(n) => Some(n.as_str()),
         _ => None,
     };
     matches!(
-        (name(a).as_deref(), name(b).as_deref()),
+        (name(a), name(b)),
         (Some("char"), Some("uint8")) | (Some("uint8"), Some("char"))
     )
 }

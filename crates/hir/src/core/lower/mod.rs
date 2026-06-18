@@ -56,13 +56,6 @@ pub struct LoweringCtx<'a> {
     pub(super) body: Body,
     pub(super) scopes: Scopes,
     pub(super) diagnostics: Sink<HirError>,
-    /// the enclosing function's declared return type, used to coerce return
-    /// values against the declared type as they are lowered (the coercion
-    /// point). `None` for a void function. `main` is ordinary here (its c
-    /// `int` entry point is a backend shim, not a language rule), so a void
-    /// `main()` carries `None` like any void function. the return arity/type
-    /// *diagnostics* live in typeck (S2 step b).
-    pub(super) fn_ret: Option<TypeRef>,
     /// the folded value of every top-level `const`, so a body-position array
     /// length (`let [int32; SIZE] xs`) can resolve a const count.
     pub(super) const_values: &'a FxHashMap<Text, ConstValue>,

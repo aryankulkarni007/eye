@@ -240,3 +240,63 @@ main() {
         diags(&bad)
     );
 }
+
+/// the two-span diagnostic (TYPECK.md tier 2): a type mismatch at a coercion
+/// site carries the imposing declaration's span (`decl`) for the secondary
+/// "declared here" label. covers the argument (parameter decl), struct field,
+/// and return-type sites.
+#[test]
+fn type_mismatch_carries_declaration_span() {
+    // argument: the callee parameter's decl span.
+    let arg = lower(
+        "\
+take(int32 x) -> int32 { x }
+main() {
+    let bool b = true;
+    take(b);
+}
+",
+    );
+    assert!(
+        diags(&arg).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::ArgTypeMismatch { decl: Some(_), .. })
+        )),
+        "ArgTypeMismatch must carry the parameter decl span: {:?}",
+        diags(&arg)
+    );
+
+    // struct field: the field's decl span.
+    let field = lower(
+        "\
+structure P { int32 x, };
+main() {
+    let P p = P { x: true };
+}
+",
+    );
+    assert!(
+        diags(&field).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::StructFieldTypeMismatch { decl: Some(_), .. })
+        )),
+        "StructFieldTypeMismatch must carry the field decl span: {:?}",
+        diags(&field)
+    );
+
+    // return: the return-type annotation span.
+    let ret = lower(
+        "\
+f() -> int32 { true }
+main() {}
+",
+    );
+    assert!(
+        diags(&ret).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::ReturnTypeMismatch { decl: Some(_), .. })
+        )),
+        "ReturnTypeMismatch must carry the return-type decl span: {:?}",
+        diags(&ret)
+    );
+}

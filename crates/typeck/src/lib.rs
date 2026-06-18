@@ -68,20 +68,29 @@ pub enum Adjustment {
 /// expectation flows down for literal-width adoption but the mismatch, when one
 /// exists, is reported by a separate judgment (the let-init check for
 /// `LetDecl`, the branch/arm consistency checks for `IfBranch`/`MatchArm`).
-/// the doc's far design also threads the imposing declaration's
-/// `SyntaxNodePtr` here for two-span diagnostics; that lands once the mismatch
-/// variants carry a secondary span (the next inference step).
+/// the imposing-site causes (`Arg`/`Field`/`Return`) carry the declaration's
+/// span (`decl`) for the secondary "declared here" label on the two-span
+/// diagnostic the funnel emits.
 #[derive(Debug, Clone)]
 pub enum Cause {
     /// `let T x = init`: adoption only. the Call-init mismatch stays in
     /// `check_explicit_let_init_type` pending the let-init width ruling.
     LetDecl,
-    /// `f(arg)` against parameter `index` (1-based) -> `ArgTypeMismatch`.
-    Arg { index: usize },
-    /// the fn tail or an explicit `return e` -> `ReturnTypeMismatch`.
-    Return,
-    /// `S { field: v }` against the declared field type -> `StructFieldTypeMismatch`.
-    Field { name: hir::core::Text },
+    /// `f(arg)` against parameter `index` (1-based) -> `ArgTypeMismatch`. `decl`
+    /// = the callee parameter's declaration span.
+    Arg {
+        index: usize,
+        decl: Option<diagnostics::Span>,
+    },
+    /// the fn tail or an explicit `return e` -> `ReturnTypeMismatch`. `decl` =
+    /// the return-type annotation span.
+    Return { decl: Option<diagnostics::Span> },
+    /// `S { field: v }` against the declared field type ->
+    /// `StructFieldTypeMismatch`. `decl` = the field's declaration span.
+    Field {
+        name: hir::core::Text,
+        decl: Option<diagnostics::Span>,
+    },
     /// an `if` branch tail; adoption only. the mismatch is `check_if_branch_consistency`.
     IfBranch,
     /// a `match` arm body; adoption only. the mismatch is `check_match_arm_consistency`.
@@ -141,9 +150,10 @@ pub fn check_body(
     scope: &HIR,
     body: &Body,
     fn_ret: Option<TypeRef>,
+    fn_ret_span: Option<diagnostics::Span>,
     types: &TypeInterner,
 ) -> TypeckResults {
-    check_body_with(scope, body, fn_ret, types, &mut ())
+    check_body_with(scope, body, fn_ret, fn_ret_span, types, &mut ())
 }
 
 /// check every defined function in a lowered file, interning any new types
@@ -157,7 +167,13 @@ pub fn check_file(hir: &HIR) -> rustc_hash::FxHashMap<hir::core::FnId, TypeckRes
         let Some(body_id) = function.body else {
             continue;
         };
-        let results = check_body(hir, &hir.bodies[body_id], function.ret, &hir.types);
+        let results = check_body(
+            hir,
+            &hir.bodies[body_id],
+            function.ret,
+            function.ret_span.clone(),
+            &hir.types,
+        );
         out.insert(fn_id, results);
     }
     out
@@ -168,8 +184,9 @@ pub fn check_body_with<O: InferObserver>(
     scope: &HIR,
     body: &Body,
     fn_ret: Option<TypeRef>,
+    fn_ret_span: Option<diagnostics::Span>,
     types: &TypeInterner,
     obs: &mut O,
 ) -> TypeckResults {
-    infer::InferCtx::new(scope, body, fn_ret, types, obs).run()
+    infer::InferCtx::new(scope, body, fn_ret, fn_ret_span, types, obs).run()
 }

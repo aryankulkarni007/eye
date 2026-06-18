@@ -138,6 +138,30 @@ impl SourceText {
         }
     }
 
+    /// converts a zero-based line + zero-based UTF-16 column (the LSP position
+    /// encoding) to a byte offset - the inverse of [`Self::line_col_utf16`]. a
+    /// column past the line's end clamps to the line end; an out-of-range line
+    /// clamps to end-of-source. used by the hover handler to resolve a cursor
+    /// position to an expression.
+    pub fn offset_utf16(&self, line: u32, col_utf16: u32) -> TextSize {
+        let len = self.source.len();
+        let Some(&line_start) = self.lstart.get(line as usize) else {
+            return TextSize::new(len as u32);
+        };
+        let line_end = self.lstart.get(line as usize + 1).copied().unwrap_or(len);
+        let target = col_utf16 as usize;
+        let mut u16_seen = 0usize;
+        let mut byte = line_start;
+        for ch in self.as_str()[line_start..line_end].chars() {
+            if u16_seen >= target {
+                break;
+            }
+            u16_seen += ch.len_utf16();
+            byte += ch.len_utf8();
+        }
+        TextSize::new(byte as u32)
+    }
+
     /// the source text a [`TextRange`] covers, or `None` if it is out of
     /// bounds or not on `char` boundaries.
     pub fn slice(&self, range: TextRange) -> Option<&str> {

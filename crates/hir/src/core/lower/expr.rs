@@ -258,15 +258,15 @@ impl<'a> LoweringCtx<'a> {
                 // a union literal sets exactly one member (overlapping
                 // storage). more than one would silently overwrite; zero
                 // leaves the value uninitialized.
-                let name_union = {
-                    let types = &self.types;
-                    if let TypeKind::Path(name) = types.lookup(ty) {
-                        Some(name.clone())
-                    } else {
-                        None
-                    }
+                // the literal's type name, one owned copy (releasing the
+                // `self.types` borrow for the `self.hir` / `self.emit` reads
+                // below). drives both the union field-count check and the
+                // struct field-completeness check.
+                let lit_name: Option<Text> = match self.types.lookup(ty) {
+                    TypeKind::Path(name) => Some(name.clone()),
+                    _ => None,
                 };
-                if let Some(ref name) = name_union
+                if let Some(ref name) = lit_name
                     && self.hir.items.unions.contains_key(name)
                     && fields.len() != 1
                 {
@@ -282,16 +282,8 @@ impl<'a> LoweringCtx<'a> {
                 // exactly once - missing fields produce undefined behavior in C,
                 // unknown fields are typos. skipped for positional literals
                 // (no names to match) and unions (handled above).
-                let name_path = {
-                    let types = &self.types;
-                    if let TypeKind::Path(name) = types.lookup(ty) {
-                        Some(name.clone())
-                    } else {
-                        None
-                    }
-                };
                 if !saw_positional
-                    && let Some(ref name) = name_path
+                    && let Some(ref name) = lit_name
                     && let Some(&sid) = self.hir.items.structs.get(name)
                 {
                     let declared: Vec<Text> = self.hir.structs[sid]

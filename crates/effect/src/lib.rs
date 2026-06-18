@@ -78,6 +78,7 @@ fn collect_results(hir: &HIR) -> (FxHashMap<FnId, TypeckResults>, Vec<(FnId, Eff
                     hir,
                     &hir.bodies[body_id],
                     function.ret,
+                    function.ret_span.clone(),
                     &hir.types,
                     &mut judge,
                 );

@@ -214,11 +214,17 @@ fn gen_accessors(fields: &[Field]) -> TokenStream {
             .collect();
         let m = format_ident!("{}", f.label.clone().unwrap_or_else(|| snake(ty)));
         if same.len() > 1 {
-            let idx = same.iter().position(|&j| j == i).unwrap();
-            let idx = proc_macro2::Literal::usize_unsuffixed(idx);
+            let pos = same.iter().position(|&j| j == i).unwrap();
+            // the first same-typed child is `.next()`; later ones `.nth(n)`.
+            let accessor = if pos == 0 {
+                quote! { support::children(&self.syntax).next() }
+            } else {
+                let idx = proc_macro2::Literal::usize_unsuffixed(pos);
+                quote! { support::children(&self.syntax).nth(#idx) }
+            };
             out.extend(quote! {
                 pub fn #m(&self) -> Option<#ty_id> {
-                    support::children(&self.syntax).nth(#idx)
+                    #accessor
                 }
             });
         } else {

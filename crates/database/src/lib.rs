@@ -379,6 +379,7 @@ pub fn typeck_fn<'db>(db: &'db dyn salsa::Database, fn_id: StableFnId<'db>) -> M
         .map(|(id, _)| *id)
         .expect("StableFnId ptr is a collected function");
     let fn_ret = scope.scope.functions[arena_id].ret;
+    let fn_ret_span = scope.scope.functions[arena_id].ret_span.clone();
 
     // no interner clone (S6): `lower_fn` interned this body's types into the
     // shared `item_scope` interner, and `typeck_fn` reads/interns through the
@@ -391,6 +392,7 @@ pub fn typeck_fn<'db>(db: &'db dyn salsa::Database, fn_id: StableFnId<'db>) -> M
         &scope.scope,
         &lowered.lowered.body,
         fn_ret,
+        fn_ret_span,
         &scope.scope.types,
     ))
 }

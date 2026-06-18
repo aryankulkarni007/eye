@@ -6,8 +6,9 @@ source), S3 complete 2026-06-16 (judgments, including M2b strict-width), S4
 effects built, S5 firewall built 2026-06-16, S6 parallel wave built 2026-06-16,
 Unit/Never types built 2026-06-17 (the void rule, below), the Tier-2 expectation
 spine built 2026-06-17 (downward propagation + the unified `expect` funnel,
-below). Remaining: two-span `Cause` diagnostics (the secondary-span render) and
-S7 row-poly effects - designed, not built. This document is the engineering design
+below), let-from-init inference built 2026-06-18, two-span `Cause` diagnostics
+built 2026-06-18 (the secondary "declared here" label renders). Remaining: S7
+row-poly effects (designed, not built). LSP hover built 2026-06-18. This document is the engineering design
 and the ratified inference strategy; status sigils track what exists in the
 working tree. The cast lattice ruling lives in [CAST.md](CAST.md). [EFFECT.md](EFFECT.md) designs the second
 lattice on the same machine. [PARALLEL.md](../design/PARALLEL.md) records the
@@ -73,9 +74,13 @@ retrofit.
   that fallback. T025 `MissingTypeAnnotation` now fires only for a value-less
   init (`()`/`!` - nothing to bind). this is annotation-omission, distinct from
   the Tier-2 CHECKING spine.
-~ remaining: two-span `Cause` diagnostics. the `Cause` is threaded and selects
-  the mismatch variant; rendering the imposing declaration's span as a *second*
-  span waits on the mismatch `TypeError` variants carrying one.
++ built (2026-06-18): two-span `Cause` diagnostics. the imposing-site causes
+  (`Arg`/`Field`/`Return`) carry the declaration's span (`decl`); the mismatch
+  `TypeError` variants carry it too and override `Diagnostic::secondary_labels`,
+  so a mismatch renders the primary span plus a secondary "parameter/field/return
+  type declared here" label. the decl spans live on the HIR signature (`Param`/
+  `Field` gained `span`, `Function` gained `ret_span`); the signature digest is
+  text-based, so the firewall is unaffected.
 
 ```rust
 fn infer_expr(&mut self, id: ExprId, expected: Expectation) -> TypeRef
@@ -120,9 +125,9 @@ against the adopted type.
 + threaded through `infer_expr` (2026-06-17): every `HasType` carries a `Cause`,
   which the funnel uses to (a) select the mismatch `TypeError` variant and (b)
   pick that site's assignability policy
-- remaining: the *secondary span* - the `Cause` selects the variant but does not
-  yet carry the imposing declaration's `SyntaxNodePtr`, because the mismatch
-  variants are single-span. carrying it (and rendering it) is the two-span step
++ built (2026-06-18): the *secondary span* - `Arg`/`Field`/`Return` carry the
+  declaration's `decl: Option<Span>`, the funnel forwards it into the mismatch
+  variant, and `secondary_labels` renders it as the "declared here" label
 
 An expectation carries *why* it exists. As built, the cause names the site (and
 the data its `TypeError` needs); the doc's far design adds the declaration's
@@ -346,10 +351,14 @@ diagnostic and records `Error` - it never leaves a hole. Consequences:
   enforcement is a place/storage judgment over resolution, not a type
   judgment; it works pre-typeck and gains nothing from moving. Already
   in lowering, not duplicated in typeck.
-~ **LSP consumers.** The per-fn `typeck_fn(StableFnId)` query is BUILT (S2
-  step D) and feeds `hir_diagnostics` per fn. NOT YET built: the LSP hover
-  handler reading `TypeckResults.expr_types` (deferred, user: "LSP integration
-  last"); no hover/inlay surface exists yet.
++ **LSP consumers.** The per-fn `typeck_fn(StableFnId)` query is BUILT (S2
+  step D) and feeds `hir_diagnostics` per fn. The hover handler is BUILT
+  2026-06-18 (`crates/lsp/src/server/requests.rs`, `textDocument/hover`): a
+  cursor position resolves to a byte offset (`SourceText::offset_utf16`, the
+  inverse of `line_col_utf16`), `hover_type` finds the innermost
+  `body.source_map.expr` range covering it, and reads that expr's type from the
+  fn's `TypeckResults.expr_types` (rendered via the interner). inlay hints are a
+  later surface; no inlay yet.
 
 ## Salsa wiring and the signature firewall
 

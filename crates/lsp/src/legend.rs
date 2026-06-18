@@ -59,6 +59,7 @@ pub fn server_capabilities() -> ServerCapabilities {
                 ..Default::default()
             },
         )),
+        hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         ..Default::default()
     }
 }

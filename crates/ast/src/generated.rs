@@ -1104,7 +1104,7 @@ impl AstNode for ArrayRepeat {
 }
 impl ArrayRepeat {
     pub fn value(&self) -> Option<Expr> {
-        support::children(&self.syntax).nth(0)
+        support::children(&self.syntax).next()
     }
     pub fn count(&self) -> Option<Expr> {
         support::children(&self.syntax).nth(1)
@@ -1131,7 +1131,7 @@ impl AstNode for IndexExpr {
 }
 impl IndexExpr {
     pub fn base(&self) -> Option<Expr> {
-        support::children(&self.syntax).nth(0)
+        support::children(&self.syntax).next()
     }
     pub fn index(&self) -> Option<Expr> {
         support::children(&self.syntax).nth(1)
@@ -1158,7 +1158,7 @@ impl AstNode for BinExpr {
 }
 impl BinExpr {
     pub fn lhs(&self) -> Option<Expr> {
-        support::children(&self.syntax).nth(0)
+        support::children(&self.syntax).next()
     }
     pub fn rhs(&self) -> Option<Expr> {
         support::children(&self.syntax).nth(1)
@@ -1236,7 +1236,7 @@ impl AstNode for AssignExpr {
 }
 impl AssignExpr {
     pub fn lhs(&self) -> Option<Expr> {
-        support::children(&self.syntax).nth(0)
+        support::children(&self.syntax).next()
     }
     pub fn rhs(&self) -> Option<Expr> {
         support::children(&self.syntax).nth(1)
@@ -1266,7 +1266,7 @@ impl IfExpr {
         support::child(&self.syntax)
     }
     pub fn then_branch(&self) -> Option<Block> {
-        support::children(&self.syntax).nth(0)
+        support::children(&self.syntax).next()
     }
     pub fn else_branch(&self) -> Option<Block> {
         support::children(&self.syntax).nth(1)
@@ -1700,7 +1700,7 @@ impl AstNode for PathPat {
 }
 impl PathPat {
     pub fn qualifier(&self) -> Option<NameRef> {
-        support::children(&self.syntax).nth(0)
+        support::children(&self.syntax).next()
     }
     pub fn name(&self) -> Option<NameRef> {
         support::children(&self.syntax).nth(1)

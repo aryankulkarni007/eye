@@ -81,6 +81,9 @@ pub struct Variant {
 pub struct Field {
     pub name: Text,
     pub ty: TypeRef,
+    /// the field declaration's source span, for the secondary "field declared
+    /// here" label on a `StructFieldTypeMismatch` (the two-span diagnostic).
+    pub span: diagnostics::Span,
 }
 
 #[derive(Debug)]
@@ -88,6 +91,9 @@ pub struct Function {
     pub name: Text,
     pub params: SmallVec<[Param; 4]>,
     pub ret: Option<TypeRef>,
+    /// the return-type annotation's source span (`None` for a void fn), for the
+    /// secondary "return type declared here" label on a `ReturnTypeMismatch`.
+    pub ret_span: Option<diagnostics::Span>,
     /// body lives in its own arena keyed by [`FnId`] on [`HIR`].
     pub body: Option<BodyId>,
     /// `true` for a signature declared in an `extern` block: no body, emitted
@@ -116,6 +122,9 @@ pub struct Function {
 pub struct Param {
     pub name: Text,
     pub ty: TypeRef,
+    /// the parameter declaration's source span, for the secondary "parameter
+    /// declared here" label on an `ArgTypeMismatch` (the two-span diagnostic).
+    pub span: diagnostics::Span,
 }
 
 /// an opaque FFI type declared as `type Name;` in an `extern` block: a named
@@ -143,4 +152,20 @@ pub struct ItemScope {
     /// sharing a variant name is a hard error at decl time (recorded as a
     /// diagnostic), so a successful lookup here is always unambiguous.
     pub variants: FxHashMap<Text, (EnumId, u32)>,
+}
+
+impl ItemScope {
+    /// whether `name` already names a declared item in any item namespace - the
+    /// duplicate-item test shared by every collection site (a name is unique
+    /// across all namespaces, the no-footgun rule). variant names live in their
+    /// own `variants` namespace and are not consulted here.
+    pub fn name_in_use(&self, name: &Text) -> bool {
+        self.functions.contains_key(name)
+            || self.structs.contains_key(name)
+            || self.unions.contains_key(name)
+            || self.enums.contains_key(name)
+            || self.consts.contains_key(name)
+            || self.globals.contains_key(name)
+            || self.opaques.contains_key(name)
+    }
 }
