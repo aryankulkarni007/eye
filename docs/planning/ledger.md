@@ -218,8 +218,8 @@ features, not freeze blockers:
 
 ## Architecture / infrastructure backlog
 
-- [~] **Massive-file split** (maintainability; all 6 production files DONE
-      2026-06-18, only optional tier-2 test-file splits remain). Split
+- [x] **Massive-file split** (maintainability; all 6 production files + both
+      tier-2 test files DONE 2026-06-18). Split
       every oversized source file into concern-named module dirs, following the
       repo precedent (`crates/hir/src/core/lower/`, `crates/codegen/src/core/`):
       a concern dir + `mod.rs` (struct + `mod` decls + driver) and child files
@@ -264,8 +264,15 @@ features, not freeze blockers:
             SourceFile) + lib.rs (LexError/Lexed/Lexer). All moved items already
             `pub`; re-exported. 21 lexer green + Interner doctest, clippy clean.
             UNCOMMITTED.
-      - [ ] (tier-2, optional) test files: `hir/src/core/tests.rs` 2008,
-            `typeck/tests/judgments.rs` 1856
+      - [x] (tier-2) test files 2026-06-18. `hir/src/core/tests.rs` 2008 ->
+            `core/tests/` (mod.rs = 3-line header + 5 helpers lower/diags/
+            first_match/MAIN_EYE/SHAPE_DECL + 8 concern modules: arrays/consts/
+            format/functions/matches/naming/pointers/structs; children `use
+            super::*`). `typeck/tests/judgments.rs` 1856 -> `tests/judgments/`
+            (cargo auto-discovers a `<name>/main.rs` dir as the same test
+            target; main.rs = header + lower/diags + 7 modules branches/calls/
+            casts/let_init/matches/range_arith/returns). hir 76 + judgments 74
+            green, clippy clean. UNCOMMITTED.
       - x EXCLUDED: `ast/src/generated.rs` 1827 (xtask codegen output).
       - -> after the split: refresh TYPECK.md `infer.rs` path refs; then the
             let-from-init inference build (below) + the two-span render.

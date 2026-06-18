@@ -1,0 +1,175 @@
+use super::*;
+
+// ---- let-initializer judgments: explicit type, array length, void value
+// (moved from hir tests with the S2 step-b let-check migration) ----
+
+/// an explicitly typed `let` whose call initializer has the wrong result type
+/// is diagnosed.
+#[test]
+fn explicit_let_initializer_type_mismatch_is_diagnosed() {
+    let hir = lower(
+        "\
+answer() -> int32 {
+    42
+}
+
+main() {
+    let string x = answer();
+}
+",
+    );
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::LetTypeMismatch { expected, got })
+                if *expected == "string" && *got == "int32"
+        )),
+        "expected explicit let mismatch diagnostic, got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// an initializer whose type is unknown (an unresolved call) must not cascade
+/// into a spurious let-type mismatch.
+#[test]
+fn explicit_let_unknown_initializer_type_does_not_diagnose_mismatch() {
+    let hir = lower(
+        "\
+main() {
+    let int32 x = unknown();
+}
+",
+    );
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::LetTypeMismatch { .. }))),
+        "unknown initializer type should not cascade into mismatch: {:?}",
+        diags(&hir)
+    );
+}
+
+/// an `if` used as a value must yield a value on every path. an else-less `if`
+/// as a `let` initializer is rejected (it leaves the binding uninitialized when
+/// the condition is false), while a diverging branch (`{ return; }`) is allowed
+/// because it never falls through.
+#[test]
+fn else_less_if_in_value_position_rejected() {
+    let reject = lower(
+        "\
+main() {
+    let bool c = false;
+    let int32 x = if c { 5 };
+    println(\"{}\", x);
+}
+",
+    );
+    assert!(
+        diags(&reject)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::VoidValueInValuePosition))),
+        "expected VoidValueInValuePosition, got: {:?}",
+        diags(&reject)
+    );
+
+    // a diverging then-branch is fine: the `else` supplies the value.
+    let ok = lower(
+        "\
+pick(int32 c) -> int32 {
+    let int32 x = if c < 0 { return 99; } else { 2 };
+    x
+}
+main() { println(\"{}\", pick(5)); }
+",
+    );
+    assert!(
+        diags(&ok).is_empty(),
+        "diverging then-branch must be clean, got: {:?}",
+        diags(&ok)
+    );
+}
+
+/// a typed array binding must initialize exactly the declared number of
+/// elements. c accepts short initializers and zero-fills the rest; eye reports
+/// the mismatch explicitly.
+#[test]
+fn array_decl_initializer_len_mismatch_emits_diagnostic() {
+    let hir = lower(
+        "\
+main() {
+    let [int32; 3] xs = [1, 2];
+}
+",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ArrayInitLenMismatch { .. }))),
+        "expected ArrayInitLenMismatch, got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// S3 struct-field value judgment: a field initialized with the wrong type is
+/// rejected (`P { x: "hi" }` with `int32 x` reached clang before; only
+/// missing/unknown fields were caught).
+#[test]
+fn struct_field_value_type_mismatch_is_rejected() {
+    let hir = lower(
+        "\
+structure Point { int32 x, int32 y, }
+
+main() {
+    let Point p = Point { x: \"hi\", y: 2 };
+}
+",
+    );
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::StructFieldTypeMismatch { field, expected, .. })
+                if field.as_str() == "x" && expected == "int32"
+        )),
+        "expected StructFieldTypeMismatch on `x`, got: {:?}",
+        diags(&hir)
+    );
+}
+
+/// L4 (S3): an array-literal element whose type does not match the declared
+/// element type is rejected per element; a uniform literal is clean.
+#[test]
+fn array_element_type_mismatch_is_rejected() {
+    let hir = lower(
+        "\
+main() {
+    let [int32; 2] bad = [1, true];
+    println(\"{}\", bad[0]);
+}
+",
+    );
+    assert!(
+        diags(&hir).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::ArrayElementTypeMismatch { index, expected, .. })
+                if *index == 1 && expected == "int32"
+        )),
+        "expected ArrayElementTypeMismatch on element 1, got: {:?}",
+        diags(&hir)
+    );
+
+    let clean = lower(
+        "\
+main() {
+    let [int32; 3] ok = [1, 2, 3];
+    println(\"{}\", ok[0]);
+}
+",
+    );
+    assert!(
+        !diags(&clean)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::ArrayElementTypeMismatch { .. }))),
+        "uniform int array must be clean, got: {:?}",
+        diags(&clean)
+    );
+}
