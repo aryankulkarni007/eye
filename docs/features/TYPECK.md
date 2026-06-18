@@ -182,6 +182,67 @@ This replaces the Hindley-Milner line in the original PARALLEL.md draft:
 unification arrives (if ever) as a sealed, dormant tier, not a global
 discipline.
 
+## Inference and the injected future (the scaling contract)
+
+The load-bearing fact, recorded so it is not re-derived: **inference stays
+monomorphic over the frozen kernel HIR, forever.** Generics, OOP, sum types,
+containers - every injected feature - do **not** reach inference as new node
+kinds. They desugar to the closed kernel node set at the AST -> HIR boundary,
+*before* inference runs ([KERNEL.md](../design/KERNEL.md) match seam, Option A:
+"extension patterns hit the kernel only as already-known kernel forms"; same
+boundary as `while` -> `loop`). So inference's node set is the kernel's, by
+construction - it never has to be taught a macro's syntax.
+
+Consequences, each a standing discipline:
+
++ **generics are monomorphization, not polymorphic inference.** `generics =
+  comptime + AST instantiation` ([VISION.md](../design/VISION.md),
+  [PRIME.md](PRIME.md)): prime executes and emits a *concrete monomorphic* body
+  per type. Each instantiation is an ordinary body that bidirectional checking
+  handles concretely. There is **no Hindley-Milner / polymorphic-type-variable
+  engine, ever** - inference's job at a generic call is only: synthesize the arg
+  types (bottom-up), hand them to prime to instantiate, check the instantiated
+  body. "Generics sooner" does not mean "make inference polymorphic."
+- the `let x = 0; ... usize-context` ergonomic gap (a use constraining an
+  earlier untyped binding) is **not** generics - it is literal-width
+  polymorphism, the **Tier 3** seam above. kernel refinement: because the kernel
+  has no generics (they monomorphize), the *only* source of type polymorphism is
+  numeric literals, so Tier-3-for-the-kernel is **literal-width inference vars**
+  (a per-body union-find that defaults an unconstrained literal to `int32`), not
+  full HM. this is the bounded, buildable-now slice of Tier 3.
+
+So inference has exactly **two** things to grow for the injected future, and only
+two:
+
+1. **`Cause::Expansion` provenance** (`Expansion { origin, inner: Box<Cause> }`,
+   above) - the multi-span origin-tracking that walks a macro-desugared error
+   back to the user's syntax ([MASTERPLAN.md](../planning/MASTERPLAN.md) H2 pillar
+   3). the **two-span diagnostics built 2026-06-18 are its seed** on the same
+   machinery; `Expansion` is a later cause variant, not a new subsystem. requires
+   the "diagnostics are structured facts until render" law (below).
+2. **re-entrancy with prime (the cyclic fixpoint)** - a generic instantiation
+   interleaves inference and prime (infer arg types -> instantiate -> check the
+   instantiation; PRIME.md "mutually recursive in the limit"). the seam is
+   already chosen: inference is **pure per-body functions** (PRIME.md D3) that a
+   demand-driven **query engine** (D4) wraps to orchestrate the interleaving;
+   each instantiation is its own sealed body.
+
+Laws that keep the seam open (do not let these slip):
+
+x never make inference HM-polymorphic across fn boundaries - power upgrades live
+  *inside* the seal (the Tier-3 union-find), never through it (the sealed-body
+  invariant).
+x diagnostics stay structured facts (found / expected / cause chain / ExprId)
+  until render - never pre-rendered strings - so an `Expansion` frame or a macro
+  error-lens can re-vocabularize its own desugarings.
+x inference stays pure per-body so the query engine can wrap it unchanged.
+
+Sequencing note: generics need only prime *execution* (the CTFE + types-as-values
++ AST-as-values layers), not the full async syntax-registration engine, so they
+can land after the **prime VM**, earlier than ~v10. that pulls the query-engine
+decision (D4) forward with them, because the cyclic fixpoint is exactly what
+forces it - so if generics move up, the query engine moves up too.
+
 ## TypeckResults (the side table)
 
 + built and populated in `crates/typeck/src/lib.rs`:

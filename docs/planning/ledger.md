@@ -387,11 +387,16 @@ features, not freeze blockers:
       `cause_assignable`; no codegen change (Ref/Ptr already emit identical C).
       Tests: `ref_widens_to_typed_pointer`, `typed_pointer_does_not_narrow_to_ref`,
       e2e `ref_widens_to_pointer_and_runs`. typeck 79, clippy clean, corpus 0 new
-      rejects. NOTE lang.eye stays XFAIL: with this rule it now passes typeck once
-      the line-160 void-`if` typo is fixed, but the C backend still fails on its
-      `*lang`/`*arena` deref hacks - fully repairing its pointer model is
-      unvalidatable corpus surgery (no expected output), left as the
-      self-ref/pointer-model gap.
+      rejects. UPDATE 2026-06-18: lang.eye line-160 void-`if` (T024) FIXED at
+      source (`if syl.str[i] == 'v' { seen_nucleus = true; }` - statement form,
+      the `{ true; }` made the value-position `if` void; T024 was correct) + the
+      call site is now `&lang, &arena` (ref widening), so lang.eye PASSES `--check`.
+      Remaining XFAIL = a clang error from the program's own `[ptr; 10] words`
+      hack (line 69): `lang.words = word_arr` assigns a `[char*; 10]` to a
+      `[ptr; 10]` field. arrays are element-INVARIANT (char* -> ptr widens per
+      scalar but not per whole-array; the C wrapper structs differ), which is the
+      correct no-footgun rule - lang.eye needs consistent array element types
+      throughout (its own data-model cleanup), not a compiler change.
 - [x] **Deref / index of a non-pointer-non-indexable value** FIXED 2026-06-18
       (footgun surfaced by a design discussion on `&`/`*` semantics; lang.eye's
       `*arena` where `arena` is a value was the tell). typeck silently accepted

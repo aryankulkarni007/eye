@@ -157,7 +157,7 @@ generate_lang(Language* lang, Arena* arena, Syllable syl, usize wc) {
     mut usize i = 0;
     loop {
         if i >= strlen(syl.str) { break; }
-        seen_nucleus = if syl.str == 'v' { true; };
+        if syl.str[i] == 'v' { seen_nucleus = true; }
         if syl.str[i] == 'c' && !seen_nucleus { onset_count += 1; }
         if syl.str[i] == 'c' && seen_nucleus  { coda_count += 1;  }
         i += 1;
