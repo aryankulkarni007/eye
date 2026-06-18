@@ -191,7 +191,7 @@ the rulings.
       fold into the funnel; `check_if_branch_consistency` now compares each branch
       against the `if`'s settled type (subsuming `expect_branch_type`, so a
       both-branches-agree-but-wrong-vs-expected `fn -> int32 { if c { 1.0 } else
-      { 2.0 } }` is still caught); the return checks are trimmed to arity-only.
+{ 2.0 } }` is still caught); the return checks are trimmed to arity-only.
       No net new rejections (behavior-preserving: 74 typeck + full workspace +
       corpus green). Open: the two-span render - the `Cause` selects the variant
       but the secondary span waits on the mismatch `TypeError` variants carrying
@@ -226,66 +226,72 @@ features, not freeze blockers:
       each carrying one `impl` block (or free items); cross-module items become
       `pub(crate)`, internal helpers stay private. Behavior-preserving (pure
       module moves), verify per file (`cargo test -p <crate>` + clippy). Recipe
-      and gotchas: [[massive-file-refactor]] memory.
-      - [x] `typeck/src/infer.rs` 2287 -> `infer/` (mod 748 / judgments 991 /
-            coerce 280 / ty 302). 74 typeck green, clippy clean. UNCOMMITTED.
-      - [x] `mir/src/lower.rs` 1288 -> `lower/` 2026-06-18 (mod 224 = entry +
-            `Lower`/`ArmKind` + body/tail drivers + infra `collect_operands`/
-            `terminated`/`map_local`/`mir_type_of` / stmt 442 = `lower_stmt`/
-            `lower_expr_stmt`/blocks/`return` + match-arm machinery / expr 588 =
-            rvalue+operand cores + `lower_into` family + const inlining / place
-            87 = `lower_place`/`place_for_value`). 11 mir green, clippy clean.
-            UNCOMMITTED.
-      - [x] `codegen/src/core/mir_emit.rs` 1429 -> `mir_emit/` 2026-06-18 (mod
-            664 = `gen_mir` entry + `MirGen` + `gen_all` driver + function/
-            type-decl/global emission + `gen_stmt` + shared free helpers
-            `c_fn_name`/`write_c_char_literal`/`local_name` / expr 446 = rvalue/
-            operand/place + `place_type` recovery + `println` + literals / switch
-            161 = `gen_switch`/`gen_guarded_switch`/`gen_arm_test` (module named
-            `switch`, not the `match` keyword) / strings 209 = `collect_strings`/
-            `gen_string_statics`/`string_id`). 1 codegen unit green, e2e 71,
-            snapshots 4/4 (`c_codegen` byte-identical), clippy clean. UNCOMMITTED.
-      - [x] `parser/src/grammar.rs` 1378 -> `grammar/` 2026-06-18 (items 407 /
-            types 77 / expr 553 / pat 151 / stmt 156 + mod.rs re-globs siblings;
-            all free fns blanket `pub(crate)` in the private `mod grammar`). 64
-            parser green incl `cst_snapshot`, clippy clean. UNCOMMITTED.
-      - [x] `parser/src/lib.rs` 1306 -> `event.rs` 2026-06-18 (Event +
-            Marker/CompletedMarker + build_tree out; lib.rs keeps Parser/Parse/
-            parse/tests). Marker fields -> `pub(crate)` (lib `open()` constructs
-            it); `pub use event::{CompletedMarker, Marker}` keeps the API. 64
-            parser green, clippy clean. UNCOMMITTED.
-      - [x] `effect/src/lib.rs` 972 -> 2026-06-18 lattice.rs 121 (Atom/EffectSet
-            + atom_index/LIVE_ATOMS + parse_effect_name/describe) + judge.rs 178
-            (WitnessKind + EffectResult + EffectJudge observer + infer_body_effects)
-            + lib.rs (EffectMap + fixpoint/SCC + contracts + witness trail). 16
-            effect green, clippy clean. UNCOMMITTED.
-      - [x] `lexer/src/lib.rs` 732 -> 2026-06-18 interner.rs 106 (Symbol/Interner +
-            StringTable impl) + source.rs 173 (LineCol/SourceHolder/SourceText/
-            SourceFile) + lib.rs (LexError/Lexed/Lexer). All moved items already
-            `pub`; re-exported. 21 lexer green + Interner doctest, clippy clean.
-            UNCOMMITTED.
-      - [x] (tier-2) test files 2026-06-18. `hir/src/core/tests.rs` 2008 ->
-            `core/tests/` (mod.rs = 3-line header + 5 helpers lower/diags/
-            first_match/MAIN_EYE/SHAPE_DECL + 8 concern modules: arrays/consts/
-            format/functions/matches/naming/pointers/structs; children `use
-            super::*`). `typeck/tests/judgments.rs` 1856 -> `tests/judgments/`
-            (cargo auto-discovers a `<name>/main.rs` dir as the same test
-            target; main.rs = header + lower/diags + 7 modules branches/calls/
-            casts/let_init/matches/range_arith/returns). hir 76 + judgments 74
-            green, clippy clean. UNCOMMITTED.
-      - x EXCLUDED: `ast/src/generated.rs` 1827 (xtask codegen output).
-      - -> after the split: refresh TYPECK.md `infer.rs` path refs; then the
-            let-from-init inference build (below) + the two-span render.
-- [ ] **Let-from-init inference** (the real "type inference" feature, unblocked
-      by the Tier-2 spine 2026-06-17). Today an untyped `let x = 5;` is rejected
-      by T025 `MissingTypeAnnotation` (`lower/stmt.rs:67`) - the spine is
-      bidirectional CHECKING, not annotation-omission. With the spine, an
-      untyped `let x = <init>` whose init synthesizes a concrete T can bind x:T
-      (no inference variables). Plumbing: typeck back-fills the local type from
-      init synthesis into `local_types`; codegen reads the local type from
-      typeck (not lowering's `Stmt::Let.ty`); keep T025 only for init-less lets.
-      ! VERIFY codegen's local-type source first - lowering assigns local types
-      before typeck runs (ordering is the real gate). Detail: [[typeck-effects-design]].
+      and gotchas: [[massive-file-refactor]] memory. - [x] `typeck/src/infer.rs` 2287 -> `infer/` (mod 748 / judgments 991 /
+      coerce 280 / ty 302). 74 typeck green, clippy clean. UNCOMMITTED. - [x] `mir/src/lower.rs` 1288 -> `lower/` 2026-06-18 (mod 224 = entry +
+      `Lower`/`ArmKind` + body/tail drivers + infra `collect_operands`/
+      `terminated`/`map_local`/`mir_type_of` / stmt 442 = `lower_stmt`/
+      `lower_expr_stmt`/blocks/`return` + match-arm machinery / expr 588 =
+      rvalue+operand cores + `lower_into` family + const inlining / place
+      87 = `lower_place`/`place_for_value`). 11 mir green, clippy clean.
+      UNCOMMITTED. - [x] `codegen/src/core/mir_emit.rs` 1429 -> `mir_emit/` 2026-06-18 (mod
+      664 = `gen_mir` entry + `MirGen` + `gen_all` driver + function/
+      type-decl/global emission + `gen_stmt` + shared free helpers
+      `c_fn_name`/`write_c_char_literal`/`local_name` / expr 446 = rvalue/
+      operand/place + `place_type` recovery + `println` + literals / switch
+      161 = `gen_switch`/`gen_guarded_switch`/`gen_arm_test` (module named
+      `switch`, not the `match` keyword) / strings 209 = `collect_strings`/
+      `gen_string_statics`/`string_id`). 1 codegen unit green, e2e 71,
+      snapshots 4/4 (`c_codegen` byte-identical), clippy clean. UNCOMMITTED. - [x] `parser/src/grammar.rs` 1378 -> `grammar/` 2026-06-18 (items 407 /
+      types 77 / expr 553 / pat 151 / stmt 156 + mod.rs re-globs siblings;
+      all free fns blanket `pub(crate)` in the private `mod grammar`). 64
+      parser green incl `cst_snapshot`, clippy clean. UNCOMMITTED. - [x] `parser/src/lib.rs` 1306 -> `event.rs` 2026-06-18 (Event +
+      Marker/CompletedMarker + build_tree out; lib.rs keeps Parser/Parse/
+      parse/tests). Marker fields -> `pub(crate)` (lib `open()` constructs
+      it); `pub use event::{CompletedMarker, Marker}` keeps the API. 64
+      parser green, clippy clean. UNCOMMITTED. - [x] `effect/src/lib.rs` 972 -> 2026-06-18 lattice.rs 121 (Atom/EffectSet + atom_index/LIVE_ATOMS + parse_effect_name/describe) + judge.rs 178
+      (WitnessKind + EffectResult + EffectJudge observer + infer_body_effects) + lib.rs (EffectMap + fixpoint/SCC + contracts + witness trail). 16
+      effect green, clippy clean. UNCOMMITTED. - [x] `lexer/src/lib.rs` 732 -> 2026-06-18 interner.rs 106 (Symbol/Interner +
+      StringTable impl) + source.rs 173 (LineCol/SourceHolder/SourceText/
+      SourceFile) + lib.rs (LexError/Lexed/Lexer). All moved items already
+      `pub`; re-exported. 21 lexer green + Interner doctest, clippy clean.
+      UNCOMMITTED. - [x] (tier-2) test files 2026-06-18. `hir/src/core/tests.rs` 2008 ->
+      `core/tests/` (mod.rs = 3-line header + 5 helpers lower/diags/
+      first_match/MAIN_EYE/SHAPE_DECL + 8 concern modules: arrays/consts/
+      format/functions/matches/naming/pointers/structs; children `use
+      super::*`). `typeck/tests/judgments.rs` 1856 -> `tests/judgments/`
+      (cargo auto-discovers a `<name>/main.rs` dir as the same test
+      target; main.rs = header + lower/diags + 7 modules branches/calls/
+      casts/let_init/matches/range_arith/returns). hir 76 + judgments 74
+      green, clippy clean. UNCOMMITTED. - x EXCLUDED: `ast/src/generated.rs` 1827 (xtask codegen output). - -> after the split: refresh TYPECK.md `infer.rs` path refs; then the
+      let-from-init inference build (below) + the two-span render.
+- [x] **Let-from-init inference** BUILT 2026-06-18 (the real annotation-omission
+      feature, on top of the Tier-2 spine). An untyped `let x = <init>` now binds
+      x to the initializer's bottom-up synthesized type (no inference variables -
+      the type already exists). 4-point plumbing: (1) lowering `lower/stmt.rs` no
+      longer emits T025 for an untyped let (typeck owns it); (2) typeck `infer/
+    mod.rs` Let arm - when the annotation is absent and the pat is `Pat::Bind`,
+      record `local_types[local]` from `infer_expr`'s returned type IF concrete
+      (`is_inferrable`: not Error/Unit/Never); (3) MIR `lower/stmt.rs` normal Let
+      reads the `local_types` fallback (mirroring `bind_local_to` for match
+      bindings) - the ordering gate verified: lower (untyped) -> typeck (fills
+      map) -> MIR (reads map) is already correct; (4) T025 reworded + relocated
+      to typeck, firing only for a VALUE-LESS init (`()`/`!`, nothing to bind);
+      an erroneous init (synthesizes nothing) stays silent (its own error covers
+      it). init-less let is a parse error (`ExpectedEqInBinding`), so unreachable
+      here. Tests: hir `untyped_let_requires_annotation` deleted; typeck
+      `untyped_let_infers_from_init` + `untyped_let_value_less_init_rejected`;
+      e2e `untyped_let_infers_and_runs` (21/9). hir 76 + judgments 76 + e2e 72,
+      clippy clean. UNCOMMITTED. Detail: [[typeck-effects-design]]. NOTE follow-up
+      found: an untyped `let xs = [1, "two"]` infers `[int32;2]` (heterogeneous
+      array literal not element-checked without an expected type) - separate
+      array-literal-synthesis hardening, ledgered below.
+- [ ] **Heterogeneous array-literal synthesis unchecked** (footgun, surfaced by
+      let-from-init). Without an expected type, `[1, "two"]` synthesizes its type
+      from the first element (`[int32;2]`) and silently accepts the mismatched
+      `"two"`; with an annotation the per-element judgment (T42
+      `ArrayElementTypeMismatch`, `coerce_array_literal`) catches it. Make the
+      no-expectation array-literal path enforce element homogeneity too (synth
+      first elem, then check the rest agree). Reachable now via `let xs = [..]`.
 - [~] **Salsa structural backdating** (SALSA.md divergence 5). `Memo<T>`
   equality WAS `Arc::ptr_eq` (every re-executed query counts as changed).
   **Signature-firewall half BUILT 2026-06-16 (S5):** `Memo`'s `PartialEq`

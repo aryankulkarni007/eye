@@ -190,27 +190,10 @@ main() {
     );
 }
 
-/// an untyped `let` is rejected. type inference is on hiatus, so a binding needs
-/// an explicit type; without one it would reach codegen as an `Error` placeholder
-/// (`void* /* ERROR TY */`).
-#[test]
-fn untyped_let_requires_annotation() {
-    let hir = lower(
-        "\
-main() {
-    let x = 5;
-    println(\"{}\", x);
-}
-",
-    );
-    assert!(
-        diags(&hir)
-            .iter()
-            .any(|e| matches!(e, HirError::Type(TypeError::MissingTypeAnnotation { .. }))),
-        "expected MissingTypeAnnotation, got: {:?}",
-        hir.diagnostics
-    );
-}
+// an untyped `let x = init` is no longer rejected in lowering: typeck infers
+// x's type from the initializer (let-from-init). the inference + the residual
+// value-less-init rejection live in the typeck crate's `judgments/let_init.rs`
+// (`untyped_let_infers_from_init`, `untyped_let_value_less_init_rejected`).
 
 /// a zero-length array `[T; 0]` lowers to a nonstandard c zero-length array, so
 /// it is rejected.

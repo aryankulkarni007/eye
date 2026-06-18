@@ -712,7 +712,7 @@ impl fmt::Display for TypeError {
             }
             TypeError::MissingTypeAnnotation { name } => write!(
                 f,
-                "binding `{name}` needs a type annotation (type inference is not yet supported); e.g. `let int32 {name} = ...`"
+                "binding `{name}` has no type to infer from; its initializer produces no value, so give `{name}` a type annotation, e.g. `let int32 {name} = ...`"
             ),
             TypeError::CallArityMismatch {
                 name,

@@ -10,7 +10,7 @@ use super::const_eval::{ScopedConsts, fold_with_map};
 use super::types::lower_type_ref;
 use crate::core::{
     Block, BlockId, LocalConst, Pat, PatternError, ResolveError, Stmt, StmtId, StructPatBinding,
-    Text, TypeError, TypeRef, fx_set,
+    Text, TypeRef, fx_set,
 };
 
 impl<'a> LoweringCtx<'a> {
@@ -60,12 +60,9 @@ impl<'a> LoweringCtx<'a> {
                     };
                     lower_type_ref(&t, &mut self.diagnostics, &consts, self.types)
                 });
-                // type inference is on hiatus, so a binding needs an explicit
-                // type. without one it would reach codegen as an `Error` type
-                // (`void* /* ERROR TY */`); reject it cleanly here instead.
-                if ty.is_none() {
-                    self.emit(ptr, TypeError::MissingTypeAnnotation { name: name.clone() });
-                }
+                // an untyped `let x = init` is no longer rejected here: typeck
+                // infers x's type from the initializer (let-from-init) and only
+                // rejects (T025) when the init has no value to infer from.
                 // R012: the annotation's type names must be declared.
                 if let Some(t) = ty {
                     self.check_type_names(t, ptr);

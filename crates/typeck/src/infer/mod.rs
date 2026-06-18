@@ -20,7 +20,7 @@
 use ast::UnaryOp;
 use hir::core::{
     BlockId, Body, Expr, ExprId, HIR, HirError, Literal, Pat, Resolution, Stmt, StmtId, Text,
-    TypeInterner, TypeKind, TypeRef,
+    TypeError, TypeInterner, TypeKind, TypeRef,
 };
 use syntax::SyntaxNodePtr;
 
@@ -130,8 +130,8 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
     }
     fn infer_stmt(&mut self, id: StmtId) {
         match &self.body.stmts[id] {
-            Stmt::Let { ty, init, .. } => {
-                let (ty, init) = (*ty, *init);
+            Stmt::Let { pat, ty, init, .. } => {
+                let (pat, ty, init) = (*pat, *ty, *init);
                 if let Some(init) = init {
                     // the declared type flows down the spine as a `LetDecl`
                     // expectation: literals adopt its width and a value-position
@@ -144,13 +144,32 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                         Some(declared) => Expectation::HasType(declared, Cause::LetDecl),
                         None => Expectation::None,
                     };
-                    self.infer_expr(init, expected);
+                    let init_ty = self.infer_expr(init, expected);
                     if let Some(declared) = ty {
                         // let-initializer judgments (moved from lowering, S2
                         // step b), against the explicit declared type.
                         let stmt_ptr = self.body.source_map.stmt.get(id.into()).cloned();
                         self.check_array_init_len(declared, init, stmt_ptr);
                         self.check_explicit_let_init_type(declared, init, stmt_ptr);
+                    } else if let Pat::Bind(local) = self.body.pats[pat] {
+                        // let-from-init inference: an untyped `let x = <init>`
+                        // binds x to the initializer's synthesized type, recorded
+                        // in `local_types` for MIR (the HIR local is untyped -
+                        // lowering no longer rejects it). a value-less init
+                        // (`()`/`!`) gives nothing to bind, so it still needs an
+                        // annotation (T025); an erroneous init (`None`) is already
+                        // diagnosed at its own site, so stay silent there.
+                        match init_ty {
+                            Some(t) if self.is_inferrable(t) => {
+                                self.results.local_types.insert(local, t);
+                            }
+                            Some(_) => {
+                                let name = self.body.locals[local].name.clone();
+                                let ptr = self.body.source_map.stmt.get(id.into()).cloned();
+                                self.emit_ptr(ptr, TypeError::MissingTypeAnnotation { name });
+                            }
+                            None => {}
+                        }
                     }
                 }
             }
@@ -649,6 +668,16 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             TypeKind::Path(name) if self.scope.items.enums.contains_key(name) => Some(name.clone()),
             _ => None,
         }
+    }
+
+    /// whether a synthesized type is concrete enough to back-fill an untyped
+    /// `let`. the error sentinel carries no information; `()` and `!` are
+    /// value-less, so a binding of either has nothing to store.
+    fn is_inferrable(&self, t: TypeRef) -> bool {
+        !matches!(
+            self.types.lookup(t),
+            TypeKind::Error | TypeKind::Unit | TypeKind::Never
+        )
     }
 
     /// a value-position name's type, mirroring the `NameRef` arm.

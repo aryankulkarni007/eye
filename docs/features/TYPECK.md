@@ -55,7 +55,7 @@ retrofit.
 ### Tier 1 - the bidirectional spine (always on)
 
 + built: `infer_expr(id, expected)` walks every `Expr` variant in
-  `typeck/src/infer.rs`; bottom-up synthesis is complete and is the sole type
+  `typeck/src/infer/`; bottom-up synthesis is complete and is the sole type
   source for MIR.
 + built (2026-06-17): expectations flow *down* through every transparent node.
   `infer_expr` and `infer_block` take an `Expectation`; a block forwards it to
@@ -65,6 +65,14 @@ retrofit.
   the bottom-up type is funneled through the single `expect` (below). this
   replaced the external `site_coerce` (one-level forwarding) and the scattered
   per-site mismatch checks.
++ built (2026-06-18): **let-from-init inference** - the spine makes an untyped
+  `let x = <init>` bind `x` to the init's bottom-up synthesized type (no
+  inference variables; the type already exists). lowering no longer rejects an
+  untyped let; the `infer_stmt` Let arm records `local_types[x]` from the init's
+  type when it is concrete (`is_inferrable`: not `Error`/`()`/`!`), and MIR reads
+  that fallback. T025 `MissingTypeAnnotation` now fires only for a value-less
+  init (`()`/`!` - nothing to bind). this is annotation-omission, distinct from
+  the Tier-2 CHECKING spine.
 ~ remaining: two-span `Cause` diagnostics. the `Cause` is threaded and selects
   the mismatch variant; rendering the imposing declaration's span as a *second*
   span waits on the mismatch `TypeError` variants carrying one.
@@ -228,7 +236,7 @@ pub fn check_body(scope: &HIR, body: &Body, types: &TypeInterner) -> TypeckResul
 
 ## Judgments
 
-+ all type-directed judgments now live in typeck (`crates/typeck/src/infer.rs`
++ all type-directed judgments now live in typeck (`crates/typeck/src/infer/`
   + `check_matches`); the cutover (C5) deleted lowering's type computation:
   + `check_int_literal_ranges` (M1)
   + `binary_judgments` - array ops, ptr arithmetic, enum arithmetic, float modulo
@@ -486,7 +494,7 @@ database); on-disk persistence stays deferred.
   (threaded through `infer_expr` later, by the 2026-06-17 spine build).
 + **S2 - cutover (BUILT, C1-C5 complete).** step A: MIR reads `TypeckResults`
   (`lower_function` takes it, `mir_type_of` reads it). step B: all judgments
-  migrated to `typeck/src/infer.rs` + `check_matches` (tests in
+  migrated to `typeck/src/infer/` + `check_matches` (tests in
   `typeck/tests/judgments.rs`). step C (irreversible): `coerce.rs` deleted,
   lowering's `Body::expr_types` deleted, `adjustments`/`local_types` populated,
   A3 fallback is an ICE, shadow harness deleted. step D: per-fn

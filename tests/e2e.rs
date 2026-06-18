@@ -42,6 +42,37 @@ main() {
     );
 }
 
+/// let-from-init inference end-to-end: untyped `let`s whose initializers
+/// synthesize concrete types compile and run, the inferred types reaching
+/// codegen through typeck's `local_types` (no annotation written).
+#[test]
+fn untyped_let_infers_and_runs() {
+    let source = "\
+add(int32 a, int32 b) -> int32 { a + b }
+main() {
+    let x = 20;
+    let y = add(x, 1);
+    let [int32; 3] xs = [7, 8, 9];
+    let z = xs[2];
+    println(\"{}\", y);
+    println(\"{}\", z);
+}
+";
+    let (out, _) = common::run_program(source);
+    assert!(
+        out.status.success(),
+        "program exited {}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "21\n9\n",
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// exercises the binop and prefix operator codegen path end-to-end.
 #[test]
 fn arithmetic_expression_evaluates_correctly() {

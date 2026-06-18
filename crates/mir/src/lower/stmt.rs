@@ -55,10 +55,15 @@ impl<'a> Lower<'a> {
                     return;
                 }
                 let local = &body.locals[hid];
+                // an untyped `let x = init` carries no type in the HIR arena;
+                // typeck inferred it from the initializer (let-from-init) and
+                // recorded it in `local_types`. fall back to it, as `bind_local_to`
+                // does for match-arm bindings.
                 let lty = ty
                     .as_ref()
                     .or(local.ty.as_ref())
                     .cloned()
+                    .or_else(|| self.typeck.local_types.get(&hid).copied())
                     .unwrap_or_else(|| self.types.error_type());
                 let name = Some(local.name.clone());
                 // lower the initializer before the binding is in scope: a `let`

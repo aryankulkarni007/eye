@@ -173,3 +173,54 @@ main() {
         diags(&clean)
     );
 }
+
+/// let-from-init: an untyped `let x = <init>` infers x's type from the
+/// initializer's synthesized type, so it is no longer rejected (the T025 that
+/// lowering used to emit is gone). covers a literal, an index, a call, and a
+/// struct literal - each synthesizes a concrete type.
+#[test]
+fn untyped_let_infers_from_init() {
+    let hir = lower(
+        "\
+structure Point { int32 x, int32 y, };
+mk() -> int32 { 7 }
+main() {
+    let a = 5;
+    let [int32; 3] xs = [1, 2, 3];
+    let b = xs[0];
+    let c = mk();
+    let p = Point { x: 1, y: 2 };
+    println(\"{} {} {} {}\", a, b, c, p.x);
+}
+",
+    );
+    assert!(
+        !diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::MissingTypeAnnotation { .. }))),
+        "untyped lets with concrete initializers must infer, not reject: {:?}",
+        diags(&hir)
+    );
+}
+
+/// the residual T025: an untyped `let x = <init>` whose initializer produces no
+/// value (a `()`-returning call) has nothing to infer, so it still needs an
+/// annotation.
+#[test]
+fn untyped_let_value_less_init_rejected() {
+    let hir = lower(
+        "\
+noop() {}
+main() {
+    let x = noop();
+}
+",
+    );
+    assert!(
+        diags(&hir)
+            .iter()
+            .any(|e| matches!(e, HirError::Type(TypeError::MissingTypeAnnotation { name }) if name == "x")),
+        "a value-less initializer must still require an annotation: {:?}",
+        diags(&hir)
+    );
+}
