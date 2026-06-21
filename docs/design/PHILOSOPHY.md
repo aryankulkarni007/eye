@@ -619,6 +619,117 @@ rather than:
 
 ---
 
+## Silent Safety - The Central Feeling
+
+Everything above describes what Eye protects and exposes. This describes how that
+protection should _feel_.
+
+The target is the feeling of being a citizen of Gotham who knows Batman has their
+back. Silent, comforting safety. You walk the streets freely. You rarely see the
+protection. It surfaces only when there is a real threat, deals with it, and
+disappears.
+
+The roles: the Eye programmer is the citizen of Gotham. I am
+Batman - the one who builds the protection that keeps the streets safe. The
+compiler is how that protection reaches the city: it works in the shadows so the
+programmer can act without fear
+(honestly just typed that so I can say that I am Batman lmao - but the point still stands).
+
+This resolves the tension that runs through every Eye design decision:
+
+```txt
+Catch everything   (safety, like Rust)
+        vs
+Stay out of the way (low friction, unlike Rust)
+```
+
+Rust catches everything but is loud about it. It is the bodyguard who narrates
+every risk and makes you sign waivers before you cross the street: lifetime
+annotations, `unsafe` blocks, explicit types at every turn. The safety is real,
+but you feel its weight at all times.
+
+Eye should catch just as much and feel almost none of it. Both languages have a
+total safety net. Only one is loud.
+
+The way to pay for safety without the loudness is inference and sensible defaults,
+not an annotation tax:
+
+- immutable-by-default protects without you marking anything
+- `let` inference fills the type from the initializer; you do not restate it
+- integer and float literals adopt the width the context expects
+- const-by-default parameters protect arguments without a `const` keyword
+
+The user states intent only where the intent is genuinely dangerous. That is the
+one place the compiler steps out of the shadows and into the light:
+
+- an explicit `as` cast for a lossy or dangerous conversion
+- `mut` to opt a binding or parameter into mutation
+- `&mut` to opt a borrow into mutation
+
+Everywhere else, flow. The compiler does not narrate the safety that is working.
+It speaks only for a real problem - the errors and warnings already in the kernel
+cover the basics, and they should stay terse, complete, and then vanish. Silence
+is not the absence of checking. It is the absence of ceremony around checking that
+is succeeding.
+
+The measure of success is the felt experience reported while writing real
+programs in Eye: that it is flowy, and that there is barely any friction. That
+feeling is not a side effect of the design. It is the design goal.
+
+### The nudge: safe path easy, unsafe path uphill
+
+The same feeling, stated as a rule for where friction goes. choice architecture
+(Thaler/Sunstein, _Nudge_): the default path is the safe one and costs nothing;
+the dangerous path stays reachable but uphill. this names Eye's exact position
+between C and Rust:
+
+- not safe-by-proof (Rust's borrow checker proves whole bug classes absent and
+  charges for it at every line),
+- not unsafe-by-default (C, where the easy path is the fragile one),
+- but **safe-by-default-with-escape-hatches**: the default is safe, the holes are
+  accepted, the unsafe path is opt-in.
+
+the nudge has a failure mode worth guarding: if the unsafe path is not just hard
+but _painful_, programmers route around the language entirely (Rust's `unsafe`
+blocks and reflexive `.clone()` are this disease). so the escape must be uphill
+**and ergonomic**. example (memory): auto-drop is the default, manual deallocation
+the opt-in, and the opt-in is kept cheap (allocate from an arena = bulk manual,
+one drop) so it is chosen, not fled to. [MEM.md](MEM.md).
+
+### The Safety Quadrant
+
+The principle is also a priority function. Sort any compiler behaviour on two
+axes - how loud it is, and whether it actually keeps the citizen safe:
+
+```txt
+            SAFE                       UNSAFE
+SILENT    the goal                   the betrayal
+          immutable-by-default,      no warning, real UB -
+          inference, sensible        the citizen feels safe
+          defaults                   and still falls
+
+LOUD      Rust                       C with -Wall
+          protected but heavy,       warned, but can still
+          ceremony at every step     fall through the gap
+```
+
+This ranks the work:
+
+1. Silent-and-unsafe is the worst quadrant and is fixed first. A program that
+   compiles clean and still has undefined behaviour is the one case that breaks
+   the entire promise - Batman was supposed to be there and was not. Eye's
+   pointer-arithmetic leniency and implicit integer-to-pointer conversions live
+   here today.
+2. Loud-and-unsafe (clang warns) and loud-and-safe (verbose checks) both move
+   toward silent-and-safe: keep the protection, remove the noise, by paying with
+   inference and defaults rather than annotations.
+3. Missing capability that is neither loud nor unsafe - a feature simply not
+   built yet - is expressiveness work, not a safety betrayal, and waits behind
+   the three above.
+
+Loud-but-safe is acceptable; silent-but-unsafe is not. Ceremony is a cost;
+silent undefined behaviour is a broken promise.
+
 ## Final Observation
 
 The simulator was ostensibly about generating proto-language words.

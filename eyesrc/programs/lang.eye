@@ -65,9 +65,7 @@ structure Arena {
 -- the length place in the array in a struct
 structure Language {
     usize len,
-    -- [char*; 10] words, -- arbitrarily make it 10 length
-    [ptr; 10] words,
-    -- ^ hack
+    [char*; 10] words, -- arbitrarily make it 10 length
 };
 
 -- ironic that the eye flips the structure struct thing

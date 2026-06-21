@@ -8,7 +8,11 @@ tested in the tree, not aspirational. For the version-by-version ledger see
 and [DEFER.md](planning/DEFER.md).
 
 Status anchor: verified against the working tree on 2026-06-10. Not all of this
-is committed or tagged.
+is committed or tagged. NOTE (2026-06-21): this is a dated snapshot and now lags
+the tree - it predates the typeck split S2-S6, let-from-init inference, Rust-style
+FFI (variadic / opaque types), and LSP hover. For authoritative current status see
+[TYPECK.md](../features/TYPECK.md), [FFI.md](../features/FFI.md), and the
+[ledger](../planning/ledger.md); this doc needs a full refresh.
 
 ## What Eye is
 

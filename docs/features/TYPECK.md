@@ -7,8 +7,10 @@ effects built, S5 firewall built 2026-06-16, S6 parallel wave built 2026-06-16,
 Unit/Never types built 2026-06-17 (the void rule, below), the Tier-2 expectation
 spine built 2026-06-17 (downward propagation + the unified `expect` funnel,
 below), let-from-init inference built 2026-06-18, two-span `Cause` diagnostics
-built 2026-06-18 (the secondary "declared here" label renders). Remaining: S7
-row-poly effects (designed, not built). LSP hover built 2026-06-18. This document is the engineering design
+built 2026-06-18 (the secondary "declared here" label renders). Remaining: the S7
+effects upgrade - S7-payload (typed `fail` carrying `set<TypeRef>`) designed;
+row-polymorphic effect *variables* demoted 2026-06-21 (monomorphization subsumes
+per-instance precision; see [EFFECT.md](EFFECT.md) S7 amendment). LSP hover built 2026-06-18. This document is the engineering design
 and the ratified inference strategy; status sigils track what exists in the
 working tree. The cast lattice ruling lives in [CAST.md](CAST.md). [EFFECT.md](EFFECT.md) designs the second
 lattice on the same machine. [PARALLEL.md](../design/PARALLEL.md) records the
@@ -183,6 +185,31 @@ unification arrives (if ever) as a sealed, dormant tier, not a global
 discipline.
 
 ## Inference and the injected future (the scaling contract)
+
+### why generic inference fights sealed-body (the difficulty, stated)
+
+Sealed-body and generic *type inference* are opposite axioms, which is why
+generics wait on comptime rather than growing the checker:
+
+- **a generic function has no single concrete signature to seal-check against.**
+  `id[T](x: T) -> T` is a *family* of signatures, not one. Checking the body
+  abstractly (T opaque) needs "what operations does T support" = trait bounds = a
+  constraint system, the thing sealed-body omits - and without bounds an abstract
+  T supports nothing (you cannot even check `x + x`). Checking it per concrete
+  instantiation makes the body's checking depend on its *callers' chosen types* -
+  inter-procedural, the thing sealed-body forbids.
+- **call-site inference of a type parameter is unification.** `let y = id(5)`
+  infers `T = int32` from the argument and flows it to the return - an inference
+  variable solved across the call boundary. Sealed-body's defining rule is "no
+  inference variables, no facts cross boundaries." Generic inference *is* a
+  bidirectional flow of type facts across the boundary; the two cannot both hold.
+- so the difficulty is structural, not incidental: generic inference **requires**
+  inter-procedural type flow, and sealed-body is **defined by forbidding** it.
+
+The resolution (below) sidesteps the clash entirely: generics are not polymorphic
+inference, they are comptime monomorphization - each instantiation is an ordinary
+sealed body, and the checker never goes polymorphic. That is why "no point
+discussing generics before comptime": **comptime is the generics mechanism.**
 
 The load-bearing fact, recorded so it is not re-derived: **inference stays
 monomorphic over the frozen kernel HIR, forever.** Generics, OOP, sum types,
@@ -600,9 +627,13 @@ database); on-disk persistence stays deferred.
   `parallel_inference_is_deterministic` regression test over fresh databases).
   Scoped out (documented above): the per-fn `hir_diagnostics` fan-out (firewall
   makes it low value) and Wave 0 parallel lowering.
-- **S7 - row-polymorphic effects (NOT BUILT).** Effect variables on fn types
-  for precise higher-order effect tracking. Requires S6 lock-free
-  infrastructure. See EFFECT.md "Path forward".
+- **S7 - effects upgrade (NOT BUILT; split 2026-06-21).** the live half is
+  **S7-payload**: the `fail` effect carries `set<TypeRef>` for typed errors
+  (closed-world, sealed-body-clean). row-polymorphic effect *variables* on fn types
+  are **demoted** to a far-future escape hatch - monomorphization subsumes
+  per-instance effect precision, and the fn-pointer membrane is crossed by an
+  inferred concrete effect on the pointer type, not row variables. See EFFECT.md S7
+  amendment.
 
   Note: the **Tier-2 expectation spine** (downward `Expectation` propagation,
   the unified `expect` funnel) was built 2026-06-17 (not numbered as a segment -

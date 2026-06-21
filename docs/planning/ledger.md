@@ -23,6 +23,135 @@ limitations of the frozen kernel and become the typeck pass's scope.
 
 ---
 
+## Phased implementation plan (sequencing decided 2026-06-19, expanded with P0 + the move/drop reorder 2026-06-21)
+
+Ratified: **harden the current pipeline first, then add features in dependency
+order.** Consistent with the safety quadrant (silent-unsafe first, PHILOSOPHY.md)
+and the harden-pipeline-first directive. Each P0 item already has a row elsewhere in
+this ledger (named here, not duplicated). Design homes: KERNEL.md (arithmetic,
+ADTs), MODBLOCK.md (wrapping / modifier blocks), MUT.md (mutability, `&mut`),
+ERRORS.md (errors), EFFECT.md (S7-payload), MEM.md (move/drop).
+
+### P0 - current pipeline: correctness + hardening (no new language surface)
+
+fix / harden what already ships. build-ready checklist (audit 2026-06-21). source
+scan is clean - no `FIXME`/`TODO`/`XXX`/`HACK` in the crates, the 39 panic-family
+calls are invariant guards / checked-`unreachable!`; the only in-source FIXMEs are 3
+in `eyesrc/programs/lang.eye` (readable-C mode, field/arg types CLOSED, tail-expr
+enforcement = T5 below). ordered cheap -> keystone:
+
+**T1 - cheap lints / hygiene (independent, fast):**
+- [ ] dead / pure expression statement lint (`-Wunused-value`) [typeck/lint]
+- [ ] unsigned `<= 0` tautology lint [lint]
+- [ ] unused-variable / unused-parameter lint [lint]
+- [ ] unused generated array-wrapper global - emit only when referenced [codegen]
+- [ ] dangling-`&local` return warning (`-Wreturn-stack-address` surface) [the free
+      warning, ahead of the deferred escape analysis]
+
+**T2 - frontend-vs-clang flags + class A:**
+- [ ] add `-Wall` to the prod clang invocation (not `-pedantic`); opt-in
+      `eye build --strict` [driver]
+- [ ] class A: frontend owns clang's hard errors with a clean diagnostic [typeck]
+- [ ] variadic argument types unchecked (args past a variadic) [typeck]
+
+**T3 - C-attribute stamping (free clang enforcement) [codegen]:**
+- [ ] `nonnull` on `&T` / `string` params
+- [ ] `format(printf, m, n)` on the printf prototype
+- [ ] FFI const-correctness: unmarked `extern` param emits `const` C (fixes the
+      `memcpy` builtin-redecl warning). standalone here; the general
+      const-default-param rule is P1. (`warn_unused_result` / `returns_nonnull`
+      stays blocked on a new attribute surface - deferred, not P0.)
+
+**T4 - pointer / usize-ptr correctness [typeck]:**
+- [ ] non-offset pointer arithmetic unchecked -> reject
+- [ ] pointer-type contamination propagates -> contain
+- [ ] implicit `usize -> ptr` at a return -> reject / require explicit cast
+
+**T5 - index / judgment completeness [typeck]:**
+- [ ] non-integer array index (T47) -> reject
+- [ ] one-operand-checked -> two-operand judgment sweep (audit every binary judgment)
+- [ ] tail-expression type enforcement (the lang.eye FIXME / open typeck-scope gap)
+- [ ] verify untyped heterogeneous array literal (`let xs = [1, true]`) is rejected
+      under let-from-init; close the uniformity check if open (DEFER row)
+
+**T6 - parser bug:**
+- [ ] block-bodied match arms (VERIFIED broken) - fixed by **blocks-as-expressions**
+      (wire `{...}` into pratt expr parsing); small, bundled into P0 because it is
+      the fix [parser]
+
+**T7 - arithmetic UB-kill + the abort/panic keystone:**
+- [ ] abort / panic mechanism (keystone) - the trap primitive, bare `abort()` now
+      [codegen/runtime]
+- [ ] `-fwrapv` in the clang invocation (signed overflow -> defined wrap) [driver]
+- [ ] div / mod by zero + `INT_MIN/-1` runtime check -> abort [codegen]
+- [ ] shift `>=` bit width -> define (trap or mask) [codegen]
+- [ ] dynamic out-of-bounds index -> bounds trap (rides the keystone; DEFER "runtime
+      bounds traps" unblocks here)
+
+**T8 - main entry contract:**
+- [ ] main return-type default (`-> int32`) + implicit `return 0` [typeck/feature]
+- [ ] argc/argv: `main(int32 argc, string* argv)` [feature]
+- [ ] recursive-main ban [typeck]
+
+(the trap-default *flip* + `wrapping { }` escape is P1, not P0 - P0 ships the UB-kill
++ the mechanism; P1 flips the default and adds the modifier-block surface.)
+
+NOT in P0: the performance backlog, the code-clarity / DRY backlog, and the
+architecture-analysis items - separate tracks, not behavior-correctness.
+
+### P1 - footgun-fix surface + cheap independents (first new surface)
+
+- **trap-default arithmetic flip + `wrapping { }`** (the first modifier block; needs
+  the P0 abort keystone). [MODBLOCK.md](../design/MODBLOCK.md), KERNEL.md option Y.
+- **const-default parameters + `mut` marker** (completes the mutability model).
+  MUT.md.
+
+### P2 - ownership keystone (large; the reorder)
+
+move/drop is the prerequisite for owning-payload ADTs and error-path drops - the
+2026-06-19 order buried it at the tail of "mutability completion"; corrected
+2026-06-21 to sit before ADTs / errors.
+
+- **move + drop + use-after-move** (the auto-drop machinery). gates P3b, P4, the
+  resource model. MEM.md.
+- **`&mut T`** (mutability axis enforced, aliasing-xor-mutation deferred to escape
+  analysis - option B). MUT.md.
+
+### P3 - ADTs / sum types
+
+- **3a non-owning**: `struct { tag; union }` desugar + B2 refutable payload-match
+  seam + bare variant resolution (qualify only when forced). no drop dependency, so
+  it can overlap / precede P2. KERNEL.md.
+- **3b owning-payload drop glue** (tag-dispatched; needs P2). recursive ADTs (`Box`)
+  deferred to P5 (comptime).
+
+### P4 - error handling
+
+- **S7-payload effects** (`set<TypeRef>` on `fail`; lattice extension over the built
+  S4 fixpoint). EFFECT.md.
+- **try / catch + implicit-propagation lowering** (hidden result-channel +
+  early-return) + error-path drops (P2) + C3 nominal closed set + catch
+  exhaustiveness. needs P3 (error values = ADTs) + S7. ERRORS.md. (raise word: last
+  micro-pick.)
+
+### P5+ - far future
+
+- **comptime / prime VM** -> generics (monomorphization, subsumes row-poly effects)
+  + recursive ADTs (`Box`) + generic containers (Vec / Option / Result / Box) +
+  user-defined modifier blocks (the engine). PRIME.md.
+- **escape / lifetime analysis** -> `&mut` aliasing-xor-mutation + full memory safety
+  (dangling `&local`) + `restrict` / noalias optimization + `arena(a) { }` /
+  `unchecked { }` modifier blocks (with their features). DEFER.md.
+
+- [ ] **ADTs / sum types with payloads** [feature, Phase 2] - ratified 2026-06-19
+      as the first **compiler-blessed desugaring** (KERNEL.md "The freeze,
+      precisely"): `enum Opt = Some(int32) | None` -> `struct { tag; union
+      payload; }`, match payload-patterns desugar through the B2 seam to kernel
+      tag-check + union-extract + bind. **no new kernel primitive** (lowers to the
+      frozen kernel). pulls forward match payload-patterns (S3+, DEFER). the value
+      side of error handling ([ERRORS.md](../features/ERRORS.md) D2); also makes
+      plain enums far more useful.
+
 ## Open bugs (correctness)
 
 - [x] **M2 - mixed-width arithmetic narrows** [typeck] - CLOSED 2026-06-15
@@ -198,6 +327,340 @@ the rulings.
       a declaration `SyntaxNodePtr`. TYPECK.md Tier 1 / Tier 2 updated.
 
 Acceptance corpus for the pass: lang.eye plus the CLEAK reproducers.
+
+---
+
+## Type-check + codegen gaps surfaced 2026-06-18 (arena allocator program)
+
+A separate arena-allocator port exercised paths lang.eye does not. Six gaps
+the frontend should catch before clang, queued for a dedicated session. The
+headline: a `uint8*` accepts `+ usize` (and worse) with no cast, and the
+resulting pointer type silently contaminates downstream integer arithmetic.
+Gaps 1-3 are one root (pointer arithmetic leniency); 4-6 are independent.
+
+- [ ] **pointer operand in non-offset arithmetic unchecked** [typeck] -
+      `arena.start + arena.off` synthesizes a pointer, then `-addr` and
+      `addr & mask` apply unary-neg and bitwise-and to that pointer. `ptr + int
+      -> ptr` (offset) is the one legal pointer arithmetic; unary `-`, `~`, and
+      the bitwise ops on a pointer operand must reject (need an explicit
+      `as usize` first). the no-footgun rule for pointer arithmetic: only the
+      offset form stays implicit, every other pointer-in-arith is the dangerous
+      direction and is gated.
+- [ ] **pointer type contamination propagates** [typeck] - once `addr` is typed
+      pointer (gap 1), `(-addr) & mask` stays pointer and poisons every
+      downstream use: `total = size + padding`, `next = arena.off + padding`.
+      catching gap 1 at the source kills most of it; also verify a binary's
+      result-type rule does not let a pointer operand leak into an
+      integer-declared destination without the mismatch firing (the ptr/int
+      analogue of M2b exact-width checking).
+- [ ] **implicit `usize -> ptr` at a return** [typeck] - a fn declared `-> ptr`
+      returns `arena.off + padding` (a `usize` offset), missing the
+      `arena.start +` that would convert the offset to an address. typeck
+      accepts the bare `usize` tail into a `ptr` return. `int -> ptr` is the
+      dangerous direction (fabricating an address from a number) and must be
+      gated behind `as ptr` - the int/ptr analogue of the `&T -> T*` widening
+      already built (which gates only the safe direction). the blessed
+      `const ptr NULL = 0 as ptr` idiom already casts; the offset case does not.
+- [ ] **dead / pure expression statement** [typeck/lint] - a bare `NULL` (folds
+      to `0`) as a statement after the if-body has no effect. flag an
+      expression-statement whose value is pure and discarded (no call, no
+      assignment, no side effect); or - if it was meant as an early exit - the
+      missing `return` is the real bug. a purity check over the
+      discarded-expression-statement set.
+- [ ] **unsigned `<= 0` tautology** [lint] - `size <= 0` on a `usize` is always
+      `== 0` (unsigned). readability lint: suggest `== 0`, and flag the
+      always-false `< 0` / always-true `>= 0` family on an unsigned operand. not
+      a correctness bug.
+- [ ] **unused generated array-wrapper global** [codegen] - `__eye_arr_27_5uint8`
+      is emitted into the C but never referenced (an empty-string `""` wrapper).
+      dead-declaration elimination: suppress an emitted static/struct decl with
+      no use site. codegen-side DCE, not typeck.
+
+---
+
+## Mutability model completion (surfaced 2026-06-18, lexer session)
+
+The immutable-by-default rule (MUT.md) is applied to bindings + globals but not
+parameters, and the reference model has `&T` only. Three linked items: the
+silent-safety principle ([PHILOSOPHY.md](../design/PHILOSOPHY.md)) finishing a
+half-done job. Designed in [MUT.md](../features/MUT.md), **not built** - build
+nothing until ratified.
+
+- [ ] **const-by-default parameters + `mut` marker** [feature] - parameters are
+      currently mutable, the one immutable-by-default hole. design: an unmarked
+      param is immutable (`Local.mutable = false`, the existing `AssignToImmutable`
+      `T` check fires), `mut` opts into a mutable local copy. needs a `mut` marker
+      on the `Param`/`ParamList` grammar + a `mutable: bool` on `Param` that
+      collection sets. MUT.md "const-by-default parameters".
+- [ ] **FFI const-correctness** [codegen] - clang knows libc fns as builtins with
+      const-qualified pointer params (`memcpy` = `void *memcpy(void *dest, const
+      void *src, size_t n)`); an Eye `extern` emits a non-const prototype for
+      `src`, conflicting with the builtin ("incompatible redeclaration of library
+      function"). closed for free by const-by-default params: an unmarked extern
+      param emits a `const` C param (matching the builtin), a `mut` param emits the
+      non-const form. MUT.md "FFI const-correctness".
+- [ ] **`&mut T` mutable-reference split** [feature] - no safe mutable borrow
+      exists; mutating through a reference forces the raw-pointer escape (`T*` +
+      `*p`, the `ffi`/unsafe boundary). design: `&T` safe-default-silent, `&mut T`
+      explicit opt-in (checked, no `ffi` effect), `T*`/`ptr` the unsafe escape -
+      the same dangerous-direction-gated rule as `mut`. full soundness gated on
+      escape analysis (dangling `&local`, DEFER); until then `&mut` carries the
+      same runtime freedom `&` does today.
+
+---
+
+## Frontend-vs-clang safety audit (2026-06-18)
+
+The silent-safety quadrant ([PHILOSOPHY.md](../design/PHILOSOPHY.md)) made
+concrete: every place the Eye frontend leans on clang to catch a problem the
+frontend should own. Two safety nets, a gap between them:
+
+- production `eye build` (`src/backend.rs`) invokes clang **bare**: `clang
+  file.c -o bin -O0`. no `-Wall`/`-Werror`/`-pedantic`/`-std`. clang hard-errors
+  halt the build; clang *warnings* still build and run -> the binary ships with
+  the issue. this is the silent-unsafe quadrant.
+- the strict-C gate (`scripts/check-c-strict.sh`, CI corpus job) compiles the
+  corpus's generated C under `-std=c11 -pedantic-errors -Wall -Wextra -Werror`.
+  it proves **codegen cleanliness** for corpus programs; it does **not** catch a
+  user's semantic error (it skips files Eye rejects, and only covers corpus
+  inputs). it even suppresses `-Wno-unused-parameter`/`-Wno-unused-variable`
+  because "Eye has no unused-binding lint yet" - two gaps recorded as
+  suppressions.
+
+three classes. class A = clang hard-errors (build halts); Eye already pre-empts
+most (R-class unresolved names/unknown types, `typegraph` ordering, value
+recursion, arity, the CLEAK "verified via strict gate" rows). largely owned, but
+not entirely (the row below). class B = clang **default-on warnings** that still
+build+run in production = silent today. class C = clang cannot catch even under
+the strict gate (runtime UB). B and C are the work.
+
+### class A - clang hard-errors the frontend should own (clean diagnostic)
+
+- [ ] **non-integer array index** [typeck] - `index_judgments`
+      (`crates/typeck/src/infer/judgments.rs`) checks the *base* type
+      (`IndexOfNonIndexable`/T46, `IndexOnPtr`) and compile-time bounds, but never
+      the *index operand's* type. `arr[3.5]` (float), `arr["x"]`, `arr[somePtr]`,
+      `arr[aStruct]` all pass the frontend; clang then hard-errors ("array
+      subscript is not an integer" / pointer+pointer). add an index-type judgment:
+      the index must be an integer type. new `TypeError::NonIntegerIndex` (T47),
+      the companion to T46. design call: integers only (`int*`/`uint*`/`usize`/
+      `isize`); `char`/`bool` are C-integers but indexing with them is a footgun -
+      lean Rust-strict (require `as usize`) per no-footguns. silent-safety: a clean
+      T-class diagnostic instead of a cryptic clang error on generated C.
+
+### class B - clang warns, production builds + runs anyway
+
+- [ ] **no unused-variable / unused-parameter lint** [lint] - `-Wunused-variable`
+      / `-Wunused-parameter`, suppressed in the strict gate. a dead local or
+      param is silently legal Eye. frontend lint over `Body::locals` + params
+      (reachability already known to the walker).
+- [ ] **variadic argument types unchecked** [typeck] - extra args past a variadic
+      extern's fixed params have no parameter to check against (`infer/mod.rs`
+      stops at the declared arity), so `printf("%d", some_ptr)` passes a
+      wrong-typed value to a `%d` slot - UB, and clang's `-Wformat` only fires for
+      functions it recognizes as printf-family. a format-string-aware check (or at
+      least a "variadic arg must be a scalar/pointer, not an aggregate" floor).
+- [ ] dangling `&local` return - `-Wreturn-stack-address`. cross-ref DEFER escape
+      analysis (the runtime-safety axis).
+- [ ] implicit `usize -> ptr` at a return - `-Wint-conversion`. cross-ref arena
+      gap 3 above.
+- [ ] FFI const-correctness (builtin redeclaration) -
+      `-Wincompatible-library-redeclaration`. cross-ref mutability section above.
+- [ ] dead pure expression statement - `-Wunused-value`. cross-ref arena gap 4.
+- [ ] unsigned `<= 0` tautology - `-Wtautological-compare`. cross-ref arena gap 5.
+- [~] value-position uninitialized temp - `-Wsometimes-uninitialized`. the
+      exhaustive-match case is FIXED (CLEAK M3, switch emits its last arm as
+      `else`); the general value-position control-flow case waits on CFG MIR (A7).
+- [?] incompatible pointer-type assignment - `-Wincompatible-pointer-types`. the
+      array-element-invariance case (lang.eye `[char*; 10]` into `[ptr; 10]`) is a
+      correct reject now, and scalar pointer mismatches mostly route through the
+      cast lattice / ref-widening; verify no remaining slip path before closing.
+
+### class C - clang cannot catch even strict (runtime UB)
+
+these are the **defined-arithmetic-edge-semantics** kernel gap (KERNEL.md
+"Genuinely-missing kernel substrate (2026-06-18 audit)"): the kernel ships the
+operator set but not its behavior at the edges. **decided 2026-06-21 (pair
+session, option Y): trap-by-default.** every edge with no correct value
+(signed/unsigned overflow, neg `INT_MIN`, over-width shift, div/mod by zero,
+`INT_MIN/-1`) traps at runtime (reserved `panic` atom, allowed in `pure`/prime) -
+a bug per ERRORS.md D1, not a silent wrap. wrapping is opt-in via a lexical
+**`wrapping { }` modifier block** (no per-op sigils), which doubles as the
+auto-vectorization opt-out; saturating/checked are stdlib intrinsics, not syntax.
+rejected: wrap-by-default + trap-debug/wrap-release (both ship a silent footgun in
+the release build). sequencing: kill UB now (`-fwrapv` + define shift + div-zero
+`abort()`), flip overflow to trap + ship `wrapping { }` when the abort path lands
+(bare `abort()` works before the full panic theme). vectorization preserved by
+clang check-elision + the region + a future MIR once-per-loop check-hoist + the H3
+backend.
+
+- [ ] **signed integer overflow** [kernel-semantics] - C UB; Eye emits `a + b`
+      verbatim and inherits it. near-term near-free fix: compile the generated C
+      with `-fwrapv` (clang/gcc make signed overflow two's-complement wrap =
+      defined), pairing with the `-Wall` prod-build decision above. that removes
+      the UB without the abort mechanism; the explicit-intent ops are the later
+      ergonomic layer.
+- [ ] **runtime division / modulo by zero** [kernel-semantics/runtime-safety] -
+      only the *constant* case is caught (`ConstDivByZero`/C9, const_eval.rs). a
+      runtime `a / b` with `b == 0` is UB; `-fwrapv` does NOT cover it. needs a
+      runtime trap (abort mechanism) or a checked-div lowering.
+- [ ] **shift amount >= bit width** [kernel-semantics/runtime-safety] - `x << 64`
+      on a 64-bit type is UB; not covered by `-fwrapv`. runtime trap or a masked
+      shift lowering.
+- [ ] dynamic out-of-bounds index - cross-ref DEFER bounds traps (same theme).
+- [ ] pointer arithmetic producing a bad address (typed `T* & mask`, `-ptr`) -
+      cross-ref arena gaps 1-2 (frontend can gate the dangerous forms; the
+      resulting address validity is still runtime).
+- [!] raw-pointer deref of an invalid/garbage pointer - inherent to the `ptr`
+      escape, `ffi` boundary by design ([EFFECT.md](../features/EFFECT.md)); not a
+      gap to close, the explicit unsafe seam.
+
+### threads 2 + 3 (same session)
+
+- thread 2 (diagnostics too loud): swept the diagnostic surface - Eye does **not**
+  over-narrate. messages are already terse (doc-voice) and the classes are small.
+  the asymmetry runs the other way: Eye **under-catches** (the B/C gaps above),
+  it does not over-explain. no loud-safe softening work found. revisit if a future
+  pass adds chatty notes.
+- thread 3 (missing-capability fork ranking, by real-program unblock): for the
+  programs being written now (the lexer, lang.eye), the order is **sum types w/
+  payloads > slices/growable buffers > generics > modules**. a lexer's `Token`
+  wants `Ident(string) | Number(int) | ...`; today enums are tagless (no payload),
+  so the token type cannot be expressed without a manual tagged union. sum types
+  (Fork B2, the extensible-match engine) is the nearest wall. generics and modules
+  unblock scale, not the current programs. ties to the design-question rows below.
+
+### C-attribute stamping: free clang enforcement
+
+the resolution mechanism for several class-B rows, and the cleanest expression
+of the silent-safety quadrant: Eye does the analysis, the C backend stamps an
+`__attribute__`, clang/gcc enforce it for free. the user writes nothing; a silent
+fact becomes a loud-safe clang check. split by what Eye already knows:
+
+- [ ] **`nonnull` on `&T` / `string` parameters** [codegen] - references and
+      string values are non-null by construction (a `&place` of a real value, or
+      a string literal); only raw `ptr` / `T*` is the nullable escape. stamp
+      `__attribute__((nonnull(i, j, ...)))` with the 1-based positions of every
+      `&T`/`string` param. maps exactly onto the existing ref-vs-ptr distinction,
+      no new language surface. closes the "passing 0/NULL to a reference param"
+      hole for free.
+- [ ] **`format(printf, m, n)` on the printf prototype** [codegen] - Eye emits
+      `int printf(const char*, ...)` for the `println` intrinsic; stamping
+      `__attribute__((format(printf, 1, 2)))` makes clang check the varargs
+      against the format string. directly closes the class-B "variadic argument
+      types unchecked" row for the printf path. arbitrary user variadic externs
+      need a format-position annotation (below) to know which param is the format
+      string.
+- [ ] **`warn_unused_result` / `returns_nonnull`** [feature, blocked] - need new
+      language surface Eye lacks: a `must-use` annotation and a nullability /
+      never-fail contract (no null concept yet). deferred until those annotations
+      exist; the user's motivating cases (`align_alloc` never-null,
+      `init` must-use) are annotation-driven, not inferable. record only.
+
+decision: build the free tier (nonnull-on-refs, format-on-printf) when the
+mutability/FFI work lands - they share the extern-emission path; defer the
+annotation tier.
+
+### main entry contract
+
+design captured in [MAIN.md](../features/MAIN.md). three items; build nothing
+until ratified. note: integer exit codes via `-> int32` already work (the shim
+forwards `return (int)__eye_main()`); these are the remaining gaps.
+
+- [ ] **main return-type default + implicit `return 0`** [feature] - main is the
+      one function whose omitted return type defaults to `int32`; falling off the
+      end is an implicit `return 0` (C99), so a bare `main() {}` exits 0 with no
+      ceremony and `return 1` sets the code with no `exit(1)` call. a main-only
+      completeness exception (non-main `-> int32` fall-off stays a missing-return
+      error).
+- [ ] **argc/argv** [feature] - accept `main(int32 argc, string* argv)` (with or
+      without `-> int32`); the shim forwards `int main(int argc, const char**
+      argv) { return __eye_main(argc, argv); }`. relax `MainHasParams` to this one
+      shape, reject any other param list. slice-typed argv waits on slices.
+- [ ] **recursive-main ban** [feature] - reject a call expression resolving to the
+      main function (an entry point is not a callable routine). new diagnostic.
+
+### decision: production build surfaces clang warnings (not pedantic)
+
+ratified 2026-06-18 ("if Eye doesn't catch everything, at least clang should -
+not too pedantic"). today prod `eye build` (`src/backend.rs`) is bare
+(`-O0`, no warning flags), so even issues clang catches-by-warning ship silently.
+
+- [ ] add `-Wall` to the prod clang invocation: warnings become **visible**
+      (int-conversion, return-type, return-stack-address, uninitialized,
+      incompatible-pointer-types, format are all in `-Wall` or default-on).
+- [ ] do **not** add `-pedantic`/`-pedantic-errors` (GNU-extension noise = too
+      pedantic, against the directive) and do **not** `-Werror` by default (a
+      warning must not break the flow). the strict-C gate keeps
+      `-pedantic-errors -Werror` for the corpus/codegen-cleanliness job only.
+- [ ] optional `eye build --strict` opts a user build into the gate's full flag
+      set for those who want loud-safe-as-error.
+
+### use-after-invalidation evidence (lifetime/ownership theme)
+
+a concrete motivator for the deferred escape/lifetime analysis (DEFER): reading
+`arena.start` after `reset(&arena)` (which zeroes the fields) is currently safe
+only by accident - `reset` happens to null them. printing after a free/reset is
+UB the frontend should reject as "use of `arena` after it was invalidated".
+
+- two layers exposed, both feed the mutability + ownership theme:
+  1. `reset(&arena)` mutates through a `&` (shared, immutable) reference - it can
+     only do so today via a raw-pointer write, the `&mut` gap (mutability section
+     above). a `reset(&mut Arena)` would express the mutation honestly.
+  2. "arena is dead after reset" needs a **consuming / move** parameter mode
+     (the fn takes ownership; the caller's binding is marked moved-from; later
+     reads reject) - Rust's affine model. this is the third reference mode beyond
+     `&T` / `&mut T`: by-value-owned. the largest single feature here; the whole
+     escape/lifetime/ownership theme, deferred. record as the motivating example.
+
+---
+
+## Blocks as expressions (decided 2026-06-18 pair session)
+
+- [ ] **a block is a first-class expression everywhere** [feature] - Rust's rule:
+      a block evaluates to its final expression when that expression has no
+      trailing `;` (a trailing `;` makes it `()`). Eye already does this in
+      dedicated slots (fn body, `if`/`loop` tails - the tail-expr mechanism); the
+      decision generalizes it so a bare `{ ...; v }` is an expression in any expr
+      position (`let x = { .. }`, a call arg, a match-arm RHS). same machinery,
+      wider. interacts with the statement-boundary footgun fix (`if {} * p`,
+      already handled) - keep block-like-in-statement-position parsing as-is.
+- [ ] **block-bodied match arms** [parser] - VERIFIED broken 2026-06-18: `1 -> {
+      let int32 y = 2; y }` fails with `[S045] expected an expression` at the `{`.
+      arm RHS uses general pratt expr parsing (`grammar/expr.rs lhs`), which does
+      not accept a `{` block. the AST already has `MatchArm::body() -> Option<Block>`
+      (generated.rs:1295) - intended but never wired in the grammar. SUBSUMED by
+      blocks-as-expressions above: once `{...}` is an expr, the arm RHS accepts it
+      for free.
+
+---
+
+## Error handling (design agreed 2026-06-19 pair session, not built)
+
+Full design in [ERRORS.md](../features/ERRORS.md). errors = first-class values;
+fallibility = a tracked `fail` effect. decided: D1 bugs/recoverable split
+(bugs -> panic/abort = the deferred abort theme; recoverable -> values), D2
+inferred typed payload-carrying error union (the effect-lattice join = the
+error-set union, no `From` plumbing, no `Result` signature noise), D3 implicit
+propagation by default + explicit-check optional, visibility via the `fail`
+signature + witness-driven LSP inlay hints. handling = a `catch` boundary (no
+algebraic resume).
+
+- [ ] **`fail` effect + payload (typed-effect upgrade)** [effect] - `fail` carries
+      the error type; the lattice join unions error types. this is the
+      typed/payload-effect upgrade (EFFECT.md S7-adjacent) - the one genuinely new
+      machinery; today's atoms are payload-free `u8`.
+- [ ] **implicit propagation + LSP visibility** [effect/lsp] - fallible calls
+      auto-propagate inside a `fail` context (early-return-on-error lowering, no
+      `setjmp`); the LSP paints potential-failure call sites inline from the
+      witness data. explicit-check form optional.
+- [ ] **`catch` boundary** [feature] - discharge the `fail` effect into a handled
+      value; exhaustive match over the inferred union where matched. no resume.
+- [ ] **drops on the error path** [codegen] - destructors/`defer` (MEM.md) must run
+      as an error propagates out (the `errdefer` interaction).
+- open sub-decisions (ERRORS.md "Open"): error value representation (gate on sum
+  types vs a kernel-simple error first), keywords, catch exhaustiveness over an
+  open union, dependency ordering vs sum types + EFFECT.md S7.
 
 ---
 

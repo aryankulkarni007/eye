@@ -34,6 +34,26 @@ A macro cannot fake these. They are the gap.
 | **Variadic `extern` (`...`)** | BUILT 2026-06-11 | FFI is the kernel's machine seam; a C ABI seam that can't express variadics is incomplete. Unblocks `printf` and the `bubblesort`/`file` corpus programs. | `...` as the last entry of an extern signature (extern-only, needs one named param first - both parser-rejected otherwise); `Function::variadic`; the prototype gains `, ...` and calls pass extra trailing operands unchanged. [FFI.md](features/FFI.md). |
 | **Opaque / named FFI pointer types** (`FILE*`) | BUILT 2026-06-11 | Same seam: `fopen`/`fgets` need a `FILE*`-typed value. | `extern { type FILE; }` declares an opaque type: a forward typedef (`typedef struct FILE FILE;`), no definition, legal behind `*`/`&` only (value-position use is a C incomplete-type error until typeck). The auto-`#include <stdio.h>` is DROPPED: the extern block is the sole prototype; `println` (still an intrinsic) auto-supplies `int printf(const char *, ...);` when no user `printf` is declared. Restored `bubblesort`/`file`. [FFI.md](features/FFI.md). |
 
+## Genuinely-missing kernel substrate (2026-06-18 audit)
+
+The table above records gaps that were found and closed. A later audit, run
+through the silent-safety lens ([PHILOSOPHY.md](PHILOSOPHY.md)), found gaps the
+subtractive framing had hidden: we audited *which primitives exist* and *what to
+cut*, never whether the existing primitives are fully *defined* at their edges.
+These are kernel (a macro cannot fake them) and not yet resolved.
+
+| Item | Status | Why it is kernel | Notes |
+|------|--------|------------------|-------|
+| **Defined arithmetic edge semantics** | ~ DESIGNED | The operator set is listed BUILT, but the *behavior at the edges is undefined*: signed integer overflow, shift amount `>=` bit width, and runtime division/modulo by zero are all C undefined behavior that Eye inherits by emitting `a + b` / `a << b` / `a / b` verbatim. A no-footgun kernel cannot leave its most-used operations undefined - this is a footgun sitting in the core, invisible because the operators were checked off as done. | Only the *constant* div-by-zero case is caught (`ConstDivByZero`/C9). The reference answer is Rust's: a defined default plus explicit intent ops. Near-term, signed overflow becomes defined-wrapping for free by compiling the generated C with `-fwrapv` (clang/gcc make signed overflow two's-complement wrap). Shift-past-width and runtime div-by-zero stay UB under `-fwrapv` - they need either a runtime trap (the deferred abort theme) or explicit checked ops. **Decided 2026-06-21 (option Y): trap-by-default** - every edge with no correct value (signed/unsigned overflow, neg `INT_MIN`, over-width shift, div/mod by zero, `INT_MIN/-1`) traps at runtime (reserved `panic` atom, allowed in `pure`/prime), a bug per [ERRORS.md](features/ERRORS.md) D1. wrapping is opt-in via a lexical **`wrapping { }` modifier block** (per-op sigils rejected as ugly), which doubles as the auto-vectorization opt-out; saturating/checked are stdlib intrinsics. rejected: wrap-by-default and trap-debug/wrap-release (both ship a silent footgun in the release build). vectorization preserved by clang check-elision + the region + a future MIR once-per-loop check-hoist + the H3 backend. sequencing: kill UB now (`-fwrapv` + define shift + div-zero `abort()`), flip to trap + ship the region with the abort path. ledger "class C". |
+| **Reference-mode completeness** (`&mut`, owned/move) | ! GAP | Reference modes are pure substrate, not stdlib. The kernel has `&T` (shared, immutable) and raw `T*`/`ptr` only. There is no safe mutable borrow (`&mut T`) and no consuming/owned-move mode. Mutating through a reference forces the raw-pointer escape; "this value is dead after I pass it" cannot be expressed. | Designed in [MUT.md](features/MUT.md): the three-tier target `&T` (shared, silent, `nonnull`-stampable) / `&mut T` (mutable borrow, opt-in) / owned-move (consuming, enables use-after-free rejection). The owned-move tier is the affine/ownership theme, large. `&mut` is small and unblocks honest mutation + the `nonnull` attribute win. |
+| **Self-reference / cycle construction** | ? OPEN | The philosophy is valid-by-construction, no `null` literal - which currently makes a self-referential struct or a linked-list cycle *unconstructable* (you cannot make a node and later point it at another). This is a deliberate choice with an unintended reach: it forbids an entire data-structure class, not just null bugs. | Unresolved: is the answer a nullable *typed* pointer (a kernel primitive, distinct from the raw-`ptr` escape), a two-phase init form, or a stdlib `Option`-over-raw-`ptr` once sum types exist? The machine primitive is kernel; the ergonomic wrapper is stdlib. (2026-06-21) sum types resolve the *acyclic* half: a `Nil`-style terminator variant makes trees / singly-linked lists constructable bottom-up over `Box`/raw-`ptr` with no `null` (see the recursive-ADT ruling below); the residual open is *cyclic* construction (back-edges), still needing a two-phase / nullable-typed-pointer answer. ledger design question "Self-referential structs still impossible". |
+| **Memory layout control** (`packed`/`align`/repr) | ! GAP (narrow) | `sizeof` leans on the C backend with no Eye layout model - deliberate, and struct layout matches C by construction (good for FFI). But there is no way to *force* packed or aligned layout, which hardware-register and wire-format code needs. The arena's surprise alignment padding ([PHILOSOPHY.md](PHILOSOPHY.md) observation 5) is the tell. | Lower priority than the three above; only bites systems code that must match an exact external layout. Would be struct attributes the C backend stamps (`__attribute__((packed/aligned))`), the same Eye-analyzes/C-enforces pattern as the [MUT.md](features/MUT.md) attribute tier. `alignof` (already deferred) is the read side of the same axis. |
+
+The headline: **defined arithmetic edge semantics**. The other genuine gaps are
+substrate refinements; this one is a no-footgun violation in the kernel's core,
+and it was missed precisely because subtractive auditing asks "does `+` exist?"
+not "what does `+` do at `INT_MAX`?".
+
 ## Chosen ergonomic primitive (not strictly irreducible, but the natural core)
 
 | Item | Status | Honest framing |
@@ -91,14 +111,86 @@ kernel forms; the kernel never opens a dynamic seam. This is the same architectu
 boundary as the `if`/`loop` lowering: the macro engine can rewrite `while` to
 `loop`+`if`+`break`, but `loop` itself stays a closed MIR statement.
 
-## Explicitly NOT kernel - resist adding
+## Explicitly NOT kernel PRIMITIVES - add only as desugarings
 
-All stdlib-derivable via supermacros; adding them to the kernel would violate the
-subtractive thesis: `while` / `for` (over `loop`+`if`+`break`), payload enums /
-sum types, generics, OOP / vtables, `Vec` / `Option` / `Result` / iterators,
-owned strings, slices `&[T]` (length-erased fat pointer). Convenience control
-flow - break-with-value, labeled break - is low-priority and derivable; defer
-([FUTURE.md](planning/FUTURE.md) Fork D).
+These must never become kernel *primitives* (that is the subtractive thesis), but
+they may be **added as desugarings to the frozen kernel** (see the freeze reframe
+below): `while` / `for` (over `loop`+`if`+`break`), payload enums / sum types,
+generics, OOP / vtables, `Vec` / `Option` / `Result` / iterators, owned strings,
+slices `&[T]`. Convenience control flow - break-with-value, labeled break - is
+low-priority and derivable; defer ([FUTURE.md](planning/FUTURE.md) Fork D).
+
+## The freeze, precisely (reframed 2026-06-19 pair session)
+
+The earlier worry - "if we add sum types we break the freeze, and give-an-inch /
+lose-a-mile" - was an over-reaction that conflated two things. The freeze is on
+the **kernel primitive set**, not on "no new features ever." The reframe, now the
+standing rule:
+
+> **Features may be added as desugarings to the frozen kernel. Never as new
+> kernel primitives.** Anything added must lower to the existing kernel node set
+> through the AST -> HIR seam (the B2 seam, Option A); the kernel's primitives,
+> MIR, and codegen never grow.
+
+This rule *is* the anti-slope, not its erosion: it is the subtractive thesis
+applied. ADTs pass (enum tag + union payload + struct wrapper + match desugaring);
+generics pass (comptime monomorphization -> ordinary kernel bodies); `Vec`/`Result`
+pass (stdlib over the kernel). Anything that *cannot* desugar to the frozen kernel
+does not get in. The danger was only ever "bake it as a primitive"; "add it as a
+desugaring" is the opposite - it is the proof the composable-core thesis works.
+
+Two implementation tiers for a desugaring, same seam:
+
+1. **compiler-blessed** (now): the desugaring is hand-written in the compiler, the
+   way Rust treats `Option`/`Result`/`?`/`for` (lang items). No VM, no macro
+   engine, no syntax hygiene / comptime needed - we are writing the extension and
+   baking it in.
+2. **engine-registered** (far future): the same desugaring registered by a stdlib
+   supermacro once the extensibility engine exists ([PRIME.md](features/PRIME.md)).
+   Migrating tier 1 -> tier 2 is moving the desugaring's home, not redoing it; and
+   it may simply never be worth doing - the blessed form is fine permanently.
+
+### First desugaring: ADTs / sum types with payloads (ratified 2026-06-19, build after hardening)
+
+Sum types with payloads are an **official feature**, built as the first
+compiler-blessed desugaring (tier 1). `enum Opt = Some(int32) | None` lowers to a
+`struct { tag; union payload; }` and `match` payload-patterns lower through the B2
+seam to kernel tag-check + union-field-extract + bind. This also makes plain enums
+far more useful. It pulls forward the deferred match payload-patterns (S3+,
+[DEFER.md](planning/DEFER.md)) and is the value side of error handling
+([ERRORS.md](features/ERRORS.md) D2) - one feature unblocking both.
+
+**Recursive ADTs (decided 2026-06-21 pair session).** a by-value recursive
+payload (`enum List = Cons(int32, List) | Nil`) is infinite-size and lowers to a
+C struct containing itself by value, which clang rejects (`field has incomplete
+type`). the ruling: **reject by-value recursion with a diagnostic that points at
+the fix; require explicit indirection** (`Cons(int32, Box<List>)`). an owning
+`Box` is generic, so it rides on comptime monomorphization - recursive ADTs with
+auto-drop land *with* comptime, not before; the interim is a raw `*List` field
+(manual malloc/free, no auto-drop - the raw-pointer escape). this is the
+recursion-under-the-hood substrate language extensions need. it closes the
+self-reference open (kernel-gap table above) for the *acyclic* case: `Nil` is the
+terminator, so a tree / stack / singly-linked list is constructable bottom-up
+with no `null` literal; *cyclic* structures (doubly-linked, graph back-edges)
+still need mutate-after-construct and stay open.
+
+**Variant namespacing + drop (decided 2026-06-21).** variant constructors and
+patterns are **bare** (`Some(x)`), resolved against the expected / scrutinee type -
+the [MATCH.md](features/MATCH.md) bare-ident rule extended from patterns to
+construction. **qualified `Opt.Some` (dot - Eye has no `::`) only when it must be**:
+no inferable type context, or a name shared by two enums; an ambiguous bare variant
+is rejected with a hint to qualify. one uniform rule, bare-by-default, qualify to
+disambiguate. **drop** of a sum is compiler-generated and tag-dispatched - switch on
+the tag, drop the active variant's owning payload; variants with no owning payload
+drop to nothing; a move moves the whole tagged union and marks the source moved.
+both fall out of the `struct { tag; union }` desugaring + auto-drop, no new
+mechanism.
+
+**Sequencing (ratified):** harden the current feature set *first* - close the
+not-fully-defined / silent-unsafe gaps in what already ships (arithmetic edge
+semantics, non-integer index, the one-operand-checked judgment sweep, the
+frontend-vs-clang class-A/B gaps) - *before* adding ADTs or any new feature. See
+[ledger.md](planning/ledger.md) "Hardening (Phase 1, before new features)".
 
 ## Basic surface gaps (grammar audit 2026-06-05)
 

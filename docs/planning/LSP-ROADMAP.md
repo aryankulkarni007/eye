@@ -37,19 +37,19 @@ by construction, does not:
 
 audited 2026-06-13 against `crates/lsp`. reference: rust-analyzer.
 
-### shipped (3 server-side features)
+### shipped (4 server-side features)
 
 | feature | what it does | r-a equivalent |
 |---|---|---|
 | text document sync (FULL) | notifies server on open/change/close; replaces entire buffer on each edit | same (r-a has INCREMENTAL too) |
 | semantic tokens (full) | syntax highlighting via HIR-enriched CST; 15 token types, 1 modifier | same (r-a has more token types, delta, and range) |
 | diagnostics | phase-gated errors from lexer, parser, and HIR; published on open/change, cleared on close; error codes match CLI output | same (r-a has faster inlay diagnostics via incremental re-check) |
+| hover | function names show signature + inferred effect set; bindings and expressions show their type. reads `CheckedFile.typeck` + `CheckedFile.effects` | same shape (r-a also shows docs, folded const values, struct/const hover) |
 
-### not yet implemented (48 features missing)
+### not yet implemented (47 features missing)
 
 | feature | priority | prerequisites |
 |---|---|---|
-| hover (type info + docs) | high | wire HIR type query → markdown |
 | go to definition | high | `NameRef` → HIR `ItemScope` target resolution |
 | go to type definition | medium | same + type lookup from HIR |
 | find references | medium | needs cross-file reference index |
@@ -92,25 +92,23 @@ from [TYPECK.md](../features/TYPECK.md), verified against working tree:
 + **S0 — representation prep (BUILT).** `TypeKind::RawPtr` replaces
   `Path("ptr")` magic at every judgment site. `TypeKind::Fn` carries
   variadic flag. 21 dispatch sites verified.
-+ **S1 — shadow pass (BUILT).** `crates/typeck/` walker (`infer.rs`,
-  816 lines) handles every `Expr` variant. Shadow harness (`shadow.rs`)
-  validates parity against lowering stamps. 335 workspace tests + corpus
-  regression all green. `InferObserver` trait + no-op impl built.
-~ **S2 — cutover (IN PROGRESS).** step A (MIR reads `TypeckResults`) BUILT.
-  step B (diagnostics migration) PARTIAL: int ranges, binary/array/enum/ptr
-  judgments migrated to typeck with 286-line test suite (`judgments.rs`);
-  return/tail/match/let judgments still in lowering. step C (delete
-  coerce + stamping + A3 ICE + shadow) NOT YET — `adjustments`/`local_types`
-  maps unpopulated, A3 `int32` fallback still live. step D (per-fn
-  `typeck_fn` query) NOT YET.
-- **S3 — new judgments (NOT BUILT).** M2 operand unification, assignment
-  non-value, cast lattice, struct-field value types, call argument types,
++ **S1 — shadow pass (BUILT).** `crates/typeck/` walker handles every `Expr`
+  variant; `InferObserver` trait + no-op impl built.
++ **S2 — cutover (BUILT 2026-06-15).** MIR reads `TypeckResults`; lowering no
+  longer types any expression (C1-C5 + the per-fn `typeck_fn` query, step D, all
+  complete); the A3 `int32` fallback is gone (ICE on miss).
++ **S3 — new judgments (BUILT 2026-06-16).** operand width unification (M2/M2b),
+  assignment non-value, cast lattice, struct-field + call-argument value types,
   const declared-type check.
-- **S4 — effects (NOT BUILT).** No `crates/effect/` exists. `EffectSet`,
-  fixpoint, E-class diagnostics — design only.
-- **S5 — firewall (NOT BUILT).** Structural signature backdating. `Memo<T>`
-  still `Arc::ptr_eq`.
-- **S6 — parallel wave (NOT BUILT).** No `rayon`/`boxcar`/`papaya` deps.
++ **S4 — effects (BUILT 2026-06-14).** `crates/effect/` exists (`EffectSet`
+  bitset, Tarjan-SCC fixpoint, E-class diagnostics, witness trails).
++ **S5 — firewall (BUILT 2026-06-16).** structural signature backdating.
++ **S6 — parallel wave (BUILT 2026-06-16).** `rayon` + lock-free interner
+  (`boxcar`/`papaya`); the determinism gate passes.
++ later (2026-06-17/18): Unit/Never void rule, the Tier-2 expectation spine,
+  let-from-init inference, two-span diagnostics, LSP hover. authoritative status:
+  [TYPECK.md](../features/TYPECK.md). remaining: S7-payload effects (row-poly
+  effect variables demoted 2026-06-21).
 
 intelligence-phase LSP features (completion, inlay hints, signature help)
 gate on S2 completion (for type-aware completion) and S3 (for deferred
@@ -219,14 +217,14 @@ week 4: 0.2 (backdating) — performance foundation
 
 ## phase 1 — navigation and information
 
-**status: not started. estimated 3 weeks. highest-ROI feature set.**
+**status: partial (hover BUILT 2026-06-18; the rest not started). estimated 3 weeks. highest-ROI feature set.**
 
 these are the features users notice first: hover to see what something is,
 ctrl-click to jump to its definition, outline to navigate the file.
 
 | feature | effort | description |
 |---|---|---|
-| 1.1 — hover | 3-5 days | for `NameRef`: resolve via HIR `Resolution` → look up declared type from `ItemScope`/`Body::locals`/`Body::expr_types` → format as markdown. for `FnDef`/`StructDef` etc: show signature. for consts: show folded value. `BodySourceMap` gives exact CST position → LSP `Range`. |
+| 1.1 — hover | ~ partial (BUILT) | function names show signature + inferred effect (`hover_info` in `server/requests.rs`); `let` bindings and expressions show their type, read from `TypeckResults` + `EffectMap`. remaining: `StructDef`/`EnumDef`/const hover, folded-const-value preview, doc comments. |
 | 1.2 — go to definition | 3-5 days | for `NameRef`: `Resolution` gives `FnId`/`StructId`/`LocalId` → `SyntaxNodePtr` from `ItemScope` or `BodySourceMap` → convert to LSP `Location`. zero salsa queries beyond what hover already does. |
 | 1.3 — go to type definition | 2-3 days | `Body::expr_types[id]` → `TypeRef` → if `TypeKind::Path(name)`, look up `ItemScope` for the struct/enum → return its `SyntaxNodePtr`. shares 80% infrastructure with 1.2. |
 | 1.4 — document symbols | 2-3 days | walk `ItemScope` (functions, structs, enums, consts, globals) + `Body::locals` → produce `SymbolInformation[]` with LSP `SymbolKind`. tree structure enables VS Code outline / breadcrumbs. |

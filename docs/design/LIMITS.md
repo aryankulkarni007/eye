@@ -4,7 +4,10 @@ The pipeline works. It produces correct binaries from correct input. Its
 limitations show up not in correctness but in velocity, latency, and what the
 architecture permits a future contributor to build. This doc is the ledger.
 
-Status: **CURRENT** - these are live constraints on the tree, not hypotheticals.
+Status: **PARTLY SUPERSEDED** - the salsa migration (2026-06-12,
+[SALSA.md](SALSA.md)) and the S2-S6 typeck / parallel builds resolved several
+constraints below (the missing query boundary, `RefCell<TypeInterner>`, the fused
+passes). resolved rows are marked; the rest are live.
 
 ## Batch pipeline, all-or-nothing
 
@@ -60,10 +63,15 @@ materialized as an independently inspectable IR. The `--dump-mir-raw` flag
 re-lowers inside the dump path. There is no `mir(FnId) -> MirBody` query to
 compose against.
 
-## `RefCell<TypeInterner>` breaks query purity
+## `RefCell<TypeInterner>` breaks query purity (RESOLVED 2026-06-12)
 
-`HIR.types: RefCell<TypeInterner>` (`crates/hir/src/core.rs:164`) is the sole
-interior-mutability point in the entire HIR, and it propagates everywhere:
+RESOLVED by the salsa migration: the interner is now lock-free and `&self`-interning
+(`boxcar`/`papaya`, no `RefCell`, no `&mut`; `crates/hir/src/core.rs` notes "plain
+(no `RefCell`)"). The description below is the original pre-salsa limitation, kept
+for rationale.
+
+Was: `HIR.types: RefCell<TypeInterner>` was the sole interior-mutability point in
+the entire HIR, and it propagated everywhere:
 
 - **Lowering** interps types during body construction.
 - **MIR lowering** calls `self.hir.types.borrow_mut()` for error-type fallback

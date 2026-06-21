@@ -10,23 +10,25 @@
   effect fixpoint (Tarjan condensation, bitset unions - the only serial
   part, O(V+E) on byte-sized sets).
 
-  BUILD STATUS as of 2026-06-15:
+  BUILD STATUS as of 2026-06-18:
   + S1 (shadow-mode walker): BUILT
-  + S2 (cutover, steps A-D): IN PROGRESS (A-C1-C3 complete, C4 complete,
-    C2+C5+D remaining)
-  + S3 (new judgments): DESIGNED, NOT BUILT
+  + S2 (cutover, steps A-D): BUILT (C1-C5 + the per-fn `typeck_fn` query, step D,
+    complete 2026-06-15; lowering no longer types any expression)
+  + S3 (new judgments): BUILT (2026-06-16)
   + S4 (effect inference + fixpoint + annotations + contract): BUILT (2026-06-14)
-  + S5 (signature firewall): DESIGNED, NOT BUILT
-  + S6 (parallel wave: rayon per-body + lock-free interner): DESIGNED, NOT BUILT
-  + S7 (row-polymorphic effects): DESIGNED, NOT BUILT (see EFFECT.md)
+  + S5 (signature firewall): BUILT (2026-06-16)
+  + S6 (parallel wave: rayon per-body + lock-free interner): BUILT (2026-06-16)
+  + S7 effects upgrade: S7-payload (typed `fail`) designed; row-polymorphic effect
+    variables DEMOTED 2026-06-21 (mono subsumes; see EFFECT.md S7 amendment)
 
   An earlier draft of this section named Hindley-Milner for types. Replaced:
   global HM is what forfeits the per-body parallelism above (its purpose is
   inferring unannotated signatures, which the Explicit Contract bans).
   Unification, if ever needed, arrives as TYPECK.md Tier 3: body-local
-  variables solved at the seal, never escaping a signature. Row-polymorphic
-  effects upgrades from the monomorphic kernel to effect variables on fn
-  types (S7), enabling precise tracking through higher-order fns.
+  variables solved at the seal, never escaping a signature. (Row-polymorphic
+  effect variables were considered for higher-order precision but demoted
+  2026-06-21 - monomorphization subsumes them, and the fn-pointer membrane uses an
+  inferred concrete effect on the pointer type, not variables. EFFECT.md S7.)
 
   Threaded through the LSP via salsa parallel queries + cancellation; the
   whole-program effect fixpoint runs off the latency path. Cycle handling:
@@ -35,11 +37,12 @@
 
 ---
 
-The segmentation S0-S7 tracks the build plan. After S6 (parallel wave) and
-S7 (row-polymorphic effects), the dual inference engine reaches its designed
-end state: per-body checking is embarrassingly parallel, effect tracking is
-precise through higher-order fn calls, and the lock-free interner eliminates
-the last shared-memory bottleneck.
+The segmentation S0-S7 tracks the build plan. S6 (parallel wave) is built
+(2026-06-16), so the dual inference engine's designed end state is reached:
+per-body checking is embarrassingly parallel and the lock-free interner eliminates
+the last shared-memory bottleneck. Higher-order effect precision comes from
+comptime monomorphization (each instance a concrete sealed body), not from
+row-polymorphic effect variables (demoted 2026-06-21, EFFECT.md S7).
 
 - parallelised lexing and parsing
   trivial with rayon work-stealing pool

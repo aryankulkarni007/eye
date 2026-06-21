@@ -104,18 +104,27 @@ pub(crate) fn parse_effect_name(name: &str) -> Result<Option<Atom>, ()> {
 /// render an effect set as its annotation spelling: `pure` for the empty set,
 /// else the live atoms joined with ` | ` in a fixed order.
 pub(crate) fn describe(set: EffectSet) -> String {
-    if set.is_pure() {
-        return "pure".to_string();
+    set.to_string()
+}
+
+/// an effect set renders as its annotation spelling: `pure` for the empty set,
+/// else the live atoms joined with ` | ` in a fixed order. this is the surface
+/// the LSP shows on hover and the diagnostics use in witness trails.
+impl std::fmt::Display for EffectSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_pure() {
+            return f.write_str("pure");
+        }
+        let mut parts = Vec::new();
+        if self.contains(Atom::Io) {
+            parts.push("io");
+        }
+        if self.contains(Atom::Ffi) {
+            parts.push("ffi");
+        }
+        if self.contains(Atom::State) {
+            parts.push("state");
+        }
+        f.write_str(&parts.join(" | "))
     }
-    let mut parts = Vec::new();
-    if set.contains(Atom::Io) {
-        parts.push("io");
-    }
-    if set.contains(Atom::Ffi) {
-        parts.push("ffi");
-    }
-    if set.contains(Atom::State) {
-        parts.push("state");
-    }
-    parts.join(" | ")
 }

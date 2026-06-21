@@ -184,7 +184,7 @@ supermacros, type inference.
 
 ---
 
-## Roadmap - v0.7 (in progress, working tree)
+## Roadmap - v0.7 (built in working tree, not tagged)
 
 **Theme:** arrays as a first-class value primitive, plus clearing latent gaps.
 Built and tested in the working tree; not yet committed or tagged. Full design
@@ -219,7 +219,7 @@ by-value recursion is rejected (`RecursiveValueType`). See [DEFER.md](DEFER.md).
 
 ---
 
-## Roadmap - v0.8 (in progress, working tree)
+## Roadmap - v0.8 (built in working tree, not tagged)
 
 **Theme:** basic-surface completeness found in a grammar audit against the token
 set - small primitives that were thin or unenforced. Built and tested in the

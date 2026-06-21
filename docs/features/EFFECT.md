@@ -254,6 +254,34 @@ the S2C cutover (C2/C4/C5 + D) and S6 parallelism (ledger).
 
 ### S7 - Row-polymorphic effects (DESIGNED, NOT BUILT)
 
+> **Amendment 2026-06-21 (pair session): S7 is split, and the row-variable form
+> below is demoted.** the original S7 conflated two upgrades; they are now
+> separated:
+>
+> 1. **S7-payload (the live half).** the `fail` effect carries a **`set<TypeRef>`**
+>    of nominal error types ([ERRORS.md](../features/ERRORS.md) C3); join =
+>    set-union, computed by the existing SCC fixpoint. closed-world, no effect
+>    variables, sealed-body-clean. this is all error handling needs; build it with
+>    errors.
+> 2. **the fn-pointer membrane (the worthy innovation).** fn-pointer imprecision
+>    (the conservative full-live-set, "Inference" step note above) is fixed
+>    *without* row variables: make the effect a **concrete component of the
+>    fn-pointer type**, inferred at addr-of and **joined at unification**
+>    (`[&pure_fn, &io_fn]` gives element effect `pure ⊔ io = io`). a call through
+>    the pointer takes that concrete set - precise-to-the-type, body-local, no HM.
+>    this replaces the row-variable instantiation below for every case Eye has.
+> 3. **row-polymorphic effect *variables* (demoted).** the `EffectVar` /
+>    row-unification design below is demoted to a **far-future escape hatch**.
+>    rationale: **monomorphization subsumes it** - each generic instance is a
+>    monomorphic sealed body with a *concrete* effect set; the only case needing a
+>    cross-boundary effect *variable* is a single shared non-mono polymorphic fn,
+>    which mono makes unnecessary. build it **only if** a concrete case defeats
+>    mono + the effect-typed fn-pointer above. a speculative commitment would spend
+>    the exact sealed-body budget (LSP latency / parallel checking / incrementality)
+>    that closed-world inference bought, for precision mono already delivers.
+>
+> the row-variable design is preserved below as the escape-hatch reference.
+
 The kernel ships monomorphic `EffectSet` (a `u8` bitset), which means every
 call through a fn-pointer value conservatively assumes the full live set
 (`io | ffi | state`). This is sound but imprecise: a higher-order `map` that

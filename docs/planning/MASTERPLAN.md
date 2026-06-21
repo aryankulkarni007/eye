@@ -64,10 +64,11 @@ From [FARFUTURE.md](FARFUTURE.md) section 3 and the top gap in [AUDIT.md](design
 Effects depend on the typeck split. The typeck split depends only on the freeze.
 So typeck is the next large structural build after const.
 
-**Status:** The typeck split (S1 shadow mode) and effect system (S4 fixpoint +
-annotations + contracts) are BUILT as of 2026-06-14. The remaining build work
-on the dual inference engine is the S2 cutover (C2/C4/C5/D), S3 new judgments,
-S5 signature firewall, S6 parallel wave, and S7 row-polymorphic effects.
+**Status:** the dual inference engine is now largely built - the typeck split + S2
+cutover, S3 judgments, S4 effects, S5 signature firewall, and S6 parallel wave all
+built 2026-06-14/16, plus let-from-init inference and two-span diagnostics
+(2026-06-18). Remaining: S7-payload effects (typed `fail`); row-polymorphic effect
+variables were demoted 2026-06-21 (monomorphization subsumes them, EFFECT.md S7).
 
 ## Horizon 2 - The extensibility engine (far-future, ~v10)
 
@@ -112,9 +113,9 @@ and no runtime length. One later theme, off the critical path. See
 ```
 const (finite) ---> (kernel freeze) ----------------------------------------+
        |                                                                     |
-       +--> typeck surgery (S1 built, S2 cutover, S3 pending) ----+         |
+       +--> typeck surgery (S1-S6 built, let-from-init built) ----+         |
                   |                                                |         |
-                  +--> effects (S4 built, S7 row-polymorphic = pending)      |
+                  +--> effects (S4 built; S7-payload pending; row-poly demoted)|
                   |                                                          |
                   +--> prime VM (WASM) ---> macro engine ---> generics, containers, identity payoff
                                               (far-future, "when ready")

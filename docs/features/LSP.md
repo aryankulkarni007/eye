@@ -13,19 +13,19 @@ Reference: rust-analyzer (the baseline for "what a language server can do").
 
 ## Current Feature Set
 
-### Implemented (3 server-side features)
+### Implemented (4 server-side features)
 
 | Feature | What it does | Rust-analyzer equivalent |
 |---|---|---|
 | Text document sync (FULL) | Notifies server on open/change/close; replaces entire buffer on each edit | Same (but r-a supports INCREMENTAL too) |
 | Semantic tokens (full) | Syntax highlighting via HIR-enriched CST; 15 token types, 1 modifier | Same (r-a has more token types, delta requests, and range requests) |
 | Diagnostics | Phase-gated errors from lexer, parser, and HIR; published on open/change, cleared on close; error codes match CLI output | Same (r-a has faster inlay diagnostics via incremental re-check) |
+| Hover | Function names (at the definition or any reference) show their signature prefixed with the inferred effect set (`io foo(int32 n) -> int32`); variable bindings and other expressions show their type. Reads `CheckedFile.typeck` + `CheckedFile.effects`; smallest covering source range wins | Same shape (r-a also shows docs, const-folded values, and struct/const hover) |
 
-### Not yet implemented (48 features missing)
+### Not yet implemented (47 features missing)
 
 | Feature | Priority | Prerequisites |
 |---|---|---|
-| **Hover** (type info + docs) | High | Wire HIR type query → markdown; deferred per #39 |
 | **Go to definition** | High | `NameRef` → HIR `ItemScope` target resolution |
 | **Go to type definition** | Medium | Same + type lookup from HIR |
 | **Find references** | Medium | Needs cross-file reference index (not just per-file names) |
@@ -63,7 +63,7 @@ Implemented in `crates/lsp/src/server/requests.rs`.
 
 - `shutdown`: handled through `Connection::handle_shutdown`.
 - `textDocument/semanticTokens/full`: retrieves the `SourceFileInput` from `DocumentStore`, calls `database::lex`, `database::parse`, and `database::lowered_file` queries, then computes semantic tokens from the HIR-enriched CST.
-- `textDocument/hover`: *deferred*. Not advertised and no handler registered. Planned for a future pass that exposes HIR type information as markdown content.
+- `textDocument/hover`: advertised (`hover_provider: Simple(true)`) and handled in `hover_info`. Resolves the cursor offset against the parse tree (function-definition name tokens) and every checked body's expr/pat source maps (smallest covering range wins). A function name renders its signature with the inferred effect prefix (from `CheckedFile.effects`), a `let` binding renders the local's type (declared, or from `TypeckResults::local_types`), and any other expression renders its `expr_types` entry. Struct/enum/const hover and const-folded-value preview are not yet covered.
 - `textDocument/definition`: *deferred*. Not advertised and no handler registered. Planned for a future pass that resolves `NameRef` targets from the HIR `ItemScope`.
 - Unknown requests: answered with JSON-RPC `-32601` (`Method not found`).
 
@@ -139,4 +139,4 @@ Ran:
 cargo test -p eye-lsp
 ```
 
-Result: passed. The local test suite reported 8 passing library tests, 0 binary tests, and 0 doctests.
+Result: passed. The local test suite reported 13 passing library tests, 0 binary tests, and 0 doctests.

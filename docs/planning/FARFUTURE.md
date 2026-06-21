@@ -42,3 +42,31 @@ While C generation serves as a perfect bootstrap vehicle today, Cranelift native
 - **JIT for LSP:** In-memory compilation enables on-the-fly evaluation and type-as-execution for the IDE.
 
 > **In Short:** You are building a platform where developers can safely invent their own perfectly-tailored language paradigms without ever sacrificing the speed of raw machine code or the clarity of native compiler errors.
+
+---
+
+## 5. Experimental ideas (unratified, parked)
+
+Ideas raised in design sessions that are interesting but neither scoped nor
+committed. Recorded so they are not lost; none is on a roadmap.
+
+### clang-import: C-header translation in the extern block (EXPERIMENTAL)
+
+Instead of hand-writing `extern` signatures, point Eye at a C header and have it
+translate the C declarations into Eye externs automatically - the
+`@cImport` (Zig) / `bindgen` (Rust) model. Raised 2026-06-18.
+
+- Why it fits Eye: it is silent-safety reaching into FFI. Reading the *real*
+  header gets const-correctness, `nonnull`, and exact ABI types right by
+  construction - the `memcpy`-non-const-`src` defect (MUT.md) never arises,
+  because the const comes from the source of truth, not a hand transcription.
+- Why it is far / experimental: it needs a C parser (libclang or a hand C
+  frontend) inside the toolchain - a large surface and a heavy dependency,
+  exactly the kind of infrastructure PHILOSOPHY.md warns can eat months without
+  growing the language. It also straddles the Cranelift goal of dropping the
+  clang dependency: a libclang-based importer reintroduces it.
+- Shape if ever built: an `extern "c-header" { ... }` form, or a build-time
+  `eye cimport <header.h>` that emits an `.eye` extern module. The translation is
+  one-directional (C signatures -> Eye externs); it does not import C bodies.
+- Status: parked. Revisit only after the Cranelift/native path and the macro
+  engine clarify whether a C frontend belongs in the toolchain at all.

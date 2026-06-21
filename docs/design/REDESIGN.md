@@ -1,7 +1,8 @@
 # REDESIGN: Compiler Pipeline
 
-Status: PARTLY BUILT. Track 1 (diagnostics) and Track 2 (MIR) are shipped; Track
-3 (typeck/lowering split) is designed but not built. This file records the target
+Status: BUILT. Track 1 (diagnostics), Track 2 (MIR), and Track 3 (typeck/lowering
+split) are all shipped (Track 3 = S0-S6 + the cutover, 2026-06-14/16; remaining is
+the S7-payload effects upgrade). This file records the target
 architecture and the invariants the refactor holds itself to; the per-track
 status is below. `DESIGN.md` holds the long-term language vision; this file is the
 concrete pipeline plan grounded in the current code.
@@ -12,9 +13,11 @@ concrete pipeline plan grounded in the current code.
   control-flow flattening and temp/hoist generation out of codegen; codegen is a
   direct MIR -> C printer. The `check_unhoisted_matches` ban (I3) is deleted, so
   nested value-position match compiles. See [`MIR.md`](features/MIR.md).
-- **Track 3 - Typeck split: DESIGNED, NOT BUILT.** Lifting the inline `check_*`
-  and type stamping out of lowering into a pass over frozen HIR. See
-  [`TYPECK.md`](features/TYPECK.md).
+- **Track 3 - Typeck split: BUILT** (S0-S6 + the cutover, 2026-06-14/16). The
+  inline `check_*` and type stamping were lifted out of lowering into a pass over
+  frozen HIR: lowering no longer types any expression, typeck is the sole type
+  source. Remaining: the S7-payload effects upgrade (row-poly effect variables
+  demoted 2026-06-21). See [`TYPECK.md`](features/TYPECK.md).
 
 The verified-current-state and target-pipeline sections below were written
 pre-build; read them as the plan of record, with the per-track status above as
