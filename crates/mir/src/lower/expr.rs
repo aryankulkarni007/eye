@@ -5,9 +5,7 @@
 //! [`Operand`] forms MIR is built from.
 
 use ast::{BinOp, UnaryOp};
-use hir::core::{
-    BlockId, ConstId, ConstValue, Expr, ExprId, Literal, Resolution, Text, TypeKind,
-};
+use hir::core::{BlockId, ConstId, ConstValue, Expr, ExprId, Literal, Resolution, Text, TypeKind};
 use thin_vec::ThinVec;
 
 use super::Lower;

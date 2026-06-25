@@ -74,7 +74,14 @@ pub(crate) fn block(p: &mut Parser, ctx: TextRange) {
             // or an item keyword (the block is unclosed; expectedblockclose
             // fires below).
             p.sync(
-                &[T![;], T!['}'], T![structure], T![union], T![enum], T![extern]],
+                &[
+                    T![;],
+                    T!['}'],
+                    T![structure],
+                    T![union],
+                    T![enum],
+                    T![extern],
+                ],
                 crate::SyntaxError::ExpectedStatement,
             );
             if !p.eat(T![;]) {

@@ -3,9 +3,10 @@
 //! / `field_type`), the `println` intrinsic rendering, and literals. these turn
 //! a MIR value into its c text; no control flow lives here.
 
+use std::fmt::Write as _;
+
 use hir::core::{Literal, TypeInterner, TypeKind, TypeRef};
 use mir::core::{MirBody, Operand, Place, RValue, Type};
-use std::fmt::Write as _;
 
 use super::super::arrays::array_wrapper_name;
 use super::super::types::{CType, spec_for_type};

@@ -360,7 +360,10 @@ main() {
             .children_with_tokens()
             .filter_map(|e| e.into_token())
             .find(|t| t.kind() == SyntaxKind::Ident);
-        assert_eq!(name.map(|t| t.text().to_string()), Some("render".to_owned()));
+        assert_eq!(
+            name.map(|t| t.text().to_string()),
+            Some("render".to_owned())
+        );
     }
 
     #[test]

@@ -270,10 +270,7 @@ fn name_span(name: Option<SyntaxToken>, fallback: &SyntaxNode) -> Span {
 /// as `(name, span)` in source order. the parser nests them in an `EffectList`
 /// node; each ident token is one effect. validation against the atom set is the
 /// EFFECT crate's job (EFFECT.md), so this only interns names and their spans.
-fn collect_effect_annotations(
-    f: &ast::FnDef,
-    interner: &dyn StringTable,
-) -> Vec<(Text, Span)> {
+fn collect_effect_annotations(f: &ast::FnDef, interner: &dyn StringTable) -> Vec<(Text, Span)> {
     let Some(list) = f
         .syntax()
         .children()

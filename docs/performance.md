@@ -124,10 +124,10 @@ C code generation builds a single `String` incrementally via `write_fmt`. For a 
 ## 5. Architectural Findings
 
 ### A1 — Double MIR lowering on `--dump-mir`
-`src/main.rs:105-108` and `crates/codegen/src/core/mir_emit.rs:337`. When both `--dump-mir` and codegen run, every function body is lowered to MIR twice: once in the dump pass, once in `gen_mir`. No MIR cache exists. Fix: cache `MirBody` arenas in the `HIR` struct or gate dump to reuse them.
+`src/main.rs` and `crates/codegen/src/core/mir_emit/mod.rs` (`gen_mir`). When both `--dump-mir` and codegen run, every function body is lowered to MIR twice: once in the dump pass, once in `gen_mir`. No MIR cache exists. Fix: cache `MirBody` arenas in the `HIR` struct or gate dump to reuse them.
 
 ### A2 — `place_type()` recursion
-`crates/codegen/src/core/mir_emit.rs:1058`. The `place_type()` function recurses O(depth) per call for nested field/pointer access. `index_access`, `place_is_pointer_like`, and `spec_for_type` each call it independently. For deeply nested struct chains this is O(N·depth). A memoization cache or iterative rewrite would avoid re-walking.
+`crates/codegen/src/core/mir_emit/expr.rs` (`place_type`). The `place_type()` function recurses O(depth) per call for nested field/pointer access. `index_access`, `place_is_pointer_like`, and `spec_for_type` each call it independently. For deeply nested struct chains this is O(N·depth). A memoization cache or iterative rewrite would avoid re-walking.
 
 ### Rowan CST overhead
 The rowan green tree accounts for ~60% of parse time. This is by design — Eye targets developer tooling (LSP, diagnostics, formatting) where the lossless CST is essential. For batch compilation, a direct-to-AST parser would be 3-5× faster. If batch-compile throughput becomes critical, a separate fast-path parser could bypass CST construction.

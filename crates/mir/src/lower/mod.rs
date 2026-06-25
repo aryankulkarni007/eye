@@ -214,11 +214,15 @@ impl<'a> Lower<'a> {
     /// (S2C C5), since codegen only runs on a program with no diagnostics, where
     /// inference is complete by construction.
     fn mir_type_of(&self, e: ExprId) -> Type {
-        self.typeck.expr_types.get(e.into()).copied().unwrap_or_else(|| {
-            panic!(
-                "MIR: typeck left {e:?} untyped - the walker must be total over \
+        self.typeck
+            .expr_types
+            .get(e.into())
+            .copied()
+            .unwrap_or_else(|| {
+                panic!(
+                    "MIR: typeck left {e:?} untyped - the walker must be total over \
                  every expression MIR lowers (S2C C5)"
-            )
-        })
+                )
+            })
     }
 }

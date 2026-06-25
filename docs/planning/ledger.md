@@ -254,6 +254,17 @@ the rulings.
 - M2 operand unification (open-bug row above).
 - Integer-literal typing: the `int32` default replaced by expected-type
   propagation (the T030 range sweep already guards the values).
+- [ ] **let-init type check is Call-only** [typeck] - `check_explicit_let_init_type`
+      (infer/judgments.rs) returns on any non-`Call` initializer, so a known-typed
+      init through a field / variable / index read skips the declared-type
+      judgment. observable footgun: a raw `ptr` field read into a typed-pointer
+      slot (`let int64* d = vec.start;`) compiles, while the same value from a
+      `malloc()` call rejects (T002). the dangerous `void*` -> `T*` reinterpret is
+      gated for call inits, branch tails (T41) and args (`site_assignable`), but
+      not for non-call let inits; integer narrowing through a non-call init leaks
+      the same way. same directional rule as the integer widen/narrow note above.
+      fix: route every known-typed init through `site_assignable`, pending the
+      let-init width ruling. found dogfooding a Vec in dev/ds (raw `ptr` field).
 - A3 `mir_type_of` fallback flipped to a hard error (open-bug row above).
 - [x] `types_compatible` integer-family leniency (any int matches any int) -
       REMOVED 2026-06-16. Compatibility is now exact `TypeRef` equality (plus Error

@@ -124,7 +124,11 @@ fn write_c_char_literal(c: char, out: &mut String) {
 }
 
 impl<'a> MirGen<'a> {
-    fn new(hir: &'a HIR, mirs: &'a FxHashMap<FnId, MirBody>, expr_type_seed: &'a [TypeRef]) -> Self {
+    fn new(
+        hir: &'a HIR,
+        mirs: &'a FxHashMap<FnId, MirBody>,
+        expr_type_seed: &'a [TypeRef],
+    ) -> Self {
         let (strings, string_index) = collect_strings(hir, mirs);
         let error_ty = hir.types.error_type();
         Self {

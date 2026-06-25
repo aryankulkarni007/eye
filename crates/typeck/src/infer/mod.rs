@@ -214,9 +214,10 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             // `Never`. before the unit type this was `None`, which left a
             // value-position block untyped and ICEd MIR.
             None => {
-                let diverges = body.blocks[id].stmts.last().is_some_and(|&s| {
-                    matches!(&body.stmts[s], Stmt::Expr(e) if self.is_never(*e))
-                });
+                let diverges = body.blocks[id]
+                    .stmts
+                    .last()
+                    .is_some_and(|&s| matches!(&body.stmts[s], Stmt::Expr(e) if self.is_never(*e)));
                 Some(if diverges {
                     self.types.never_ty()
                 } else {
@@ -450,11 +451,11 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                     // the *arity* judgments (a value in a void fn, a missing value).
                     let expected = match self.fn_ret {
                         Some(ret) => Expectation::HasType(
-                    ret,
-                    Cause::Return {
-                        decl: self.fn_ret_span.clone(),
-                    },
-                ),
+                            ret,
+                            Cause::Return {
+                                decl: self.fn_ret_span.clone(),
+                            },
+                        ),
                         None => Expectation::None,
                     };
                     self.infer_expr(v, expected);
@@ -481,9 +482,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 let inner = match self.types.lookup(op_ty) {
                     &TypeKind::Ref(inner) | &TypeKind::Ptr(inner) => Some(inner),
                     // `string` is `&uint8` (a byte pointer) and is dereferenceable.
-                    TypeKind::Path(n) if n == "string" => {
-                        Some(self.types.uint8_ty())
-                    }
+                    TypeKind::Path(n) if n == "string" => Some(self.types.uint8_ty()),
                     // the untyped `ptr` has no pointee type to deref (L7/P1).
                     TypeKind::RawPtr => {
                         self.emit_at(id, None, hir::core::TypeError::DerefOfPtr);
@@ -689,13 +688,15 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 match callee_ty {
                     Some(ty) => match self.types.lookup(ty) {
                         // a void function pointer's call yields unit.
-                        TypeKind::Fn { ret, .. } => {
-                            ret.or_else(|| Some(self.types.unit_ty()))
-                        }
+                        TypeKind::Fn { ret, .. } => ret.or_else(|| Some(self.types.unit_ty())),
                         TypeKind::Error => Some(self.types.error_type()),
                         _ => {
                             let found = self.types.display(ty).to_string();
-                            self.emit_at(callee, None, hir::core::TypeError::CallNonFunction { found });
+                            self.emit_at(
+                                callee,
+                                None,
+                                hir::core::TypeError::CallNonFunction { found },
+                            );
                             Some(self.types.error_type())
                         }
                     },
@@ -730,9 +731,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
             // a match-arm binding is untyped in the arena (lowering no longer
             // knows the scrutinee type, S2C C2); its type is filled in
             // `local_types` when the enclosing match is walked.
-            Resolution::Local(id) => self
-                .body
-                .locals[*id]
+            Resolution::Local(id) => self.body.locals[*id]
                 .ty
                 .or_else(|| self.results.local_types.get(id).copied()),
             Resolution::Const(cid) => Some(self.scope.consts[*cid].ty),

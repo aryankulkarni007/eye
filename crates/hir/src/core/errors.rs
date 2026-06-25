@@ -611,7 +611,9 @@ impl fmt::Display for TypeError {
                 f,
                 "match arm type mismatch: expected {expected}, this arm produces {found}"
             ),
-            TypeError::ReturnTypeMismatch { expected, found, .. } => write!(
+            TypeError::ReturnTypeMismatch {
+                expected, found, ..
+            } => write!(
                 f,
                 "return type mismatch: function returns {expected}, but this produces {found}"
             ),

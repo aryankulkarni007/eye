@@ -29,21 +29,23 @@ and the `EYE_MIR` flag are deleted; MIR is the only path.
   lowering are both exhaustive over `Resolution`, so every reachable `Path`
   denotes a value and MIR's non-value `Path` arms are checked-`unreachable!`.
   This satisfies I2 (a well-typed HIR can no longer reach a codegen `todo!()`).
-  Of the 21 `eyesrc` programs, 18 compile and run;
-  `raytracer` was rewritten to declare its libc externs (ABI-compatible) and now
-  runs too; `bubblesort`/`file`/`floodfill` are rejected with a clean diagnostic,
-  pending deferred features - see `docs/DEFER.md`.
+  Of the `eyesrc` programs, the corpus compiles and runs; `raytracer` was
+  rewritten to declare its libc externs (ABI-compatible), and
+  `bubblesort`/`file`/`floodfill` - rejected at this segment - were since restored
+  (Rust-style FFI for the first two, 2026-06-11; early return for `floodfill`,
+  2026-06-04; see `docs/DEFER.md` and the `bubblesort_runs` / `floodfill_runs`
+  e2e tests).
 
 Plan: `~/.claude/plans/noble-tickling-parnas.md`.
 
 ## Purpose
 
-Today codegen walks the HIR `Body` directly and makes semantic decisions:
-`hoist_matches` (`crates/codegen/src/core/matches.rs:92`) pulls value-position
-matches into `_matchN` temps, and `check_unhoisted_matches`
-(`crates/hir/src/core/lower/stmt.rs:275`) bans the positions codegen cannot
-hoist. MIR removes both. A dedicated HIR -> MIR lowering pass flattens control
-flow and generates temps; codegen becomes a direct printer over MIR.
+Before MIR, codegen walked the HIR `Body` directly and made semantic decisions:
+`hoist_matches` pulled value-position matches into `_matchN` temps, and
+`check_unhoisted_matches` banned the positions codegen could not hoist. MIR removed
+both (both functions are deleted): a dedicated HIR -> MIR lowering pass
+(`crates/mir/src/lower/`) flattens control flow and generates temps; codegen is a
+direct printer over MIR (`crates/codegen/src/core/mir_emit/`).
 
 ## The acid test (REDESIGN I3)
 
@@ -193,7 +195,7 @@ Each MIR construct maps to one C form, no decisions:
   intends for an enclosing loop (the arm and the `break` would share the same
   `switch` scope); the `if`/`else-if` chain leaves `break`/`continue` bound to
   the loop. `<scrut>` is a trivial operand, so re-evaluating it per arm has no
-  side effect. (Built Segment 2: `crates/codegen/src/core/mir_emit.rs::gen_switch`.)
+  side effect. (Built Segment 2: `crates/codegen/src/core/mir_emit/switch.rs::gen_switch`.)
 - `RValue::Binary` -> `a op b` (operands trivial, no recursion)
 - `RValue::Call` -> `func(arg, ...)` (the `FnId` resolves to the function name;
   args are trivial operands). (Built Segment 3.)

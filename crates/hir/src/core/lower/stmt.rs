@@ -114,9 +114,7 @@ impl<'a> LoweringCtx<'a> {
                     // a missing type or initializer was already diagnosed by
                     // the parser; fall back to poison without re-reporting.
                     let ty = match c.ty() {
-                        Some(t) => {
-                            lower_type_ref(&t, &mut self.diagnostics, &consts, self.types)
-                        }
+                        Some(t) => lower_type_ref(&t, &mut self.diagnostics, &consts, self.types),
                         None => self.types.error_type(),
                     };
                     let value = c

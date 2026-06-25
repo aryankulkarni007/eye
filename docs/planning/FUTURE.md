@@ -17,9 +17,9 @@ For long-term language vision, see [`VISION.md`](design/VISION.md).
 - Optional `clang-format` on generated C.
 
 HIR lowering lives in [`crates/hir/src/core/lower/`](crates/hir/src/core/lower/).
-HIR -> MIR lowering lives in [`crates/mir/src/lower.rs`](crates/mir/src/lower.rs)
+HIR -> MIR lowering lives in [`crates/mir/src/lower/`](crates/mir/src/lower/)
 (control-flow flattening and temp generation); the MIR -> C emitter is
-[`crates/codegen/src/core/mir_emit.rs`](crates/codegen/src/core/mir_emit.rs), a
+[`crates/codegen/src/core/mir_emit/`](crates/codegen/src/core/mir_emit/), a
 direct printer that makes no semantic decisions. See [`MIR.md`](features/MIR.md).
 
 **Not implemented:** separate typechecker pass, multi-file modules, optimizations,

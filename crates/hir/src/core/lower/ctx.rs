@@ -173,5 +173,4 @@ impl<'a> LoweringCtx<'a> {
         }
         Resolution::Unresolved(name.clone())
     }
-
 }

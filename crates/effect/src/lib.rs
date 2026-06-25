@@ -25,7 +25,6 @@ pub use lattice::{Atom, EffectSet};
 use judge::WitnessKind;
 use lattice::{LIVE_ATOMS, atom_index, describe, parse_effect_name};
 
-
 /// the whole-program effect verdict: every function's *total* effect set, with
 /// callees' effects propagated in. produced by [`infer_effects`] / [`infer_file`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -182,7 +181,8 @@ fn check_contracts(
             let anchor = function.declared_effects[0].1.clone();
             // explain each *unexpected* atom (inferred but not declared) by
             // walking the call graph to the primitive that produced it.
-            let witness = witness_for_surprises(fid, declared, inferred, hir, results, &index, effects);
+            let witness =
+                witness_for_surprises(fid, declared, inferred, hir, results, &index, effects);
             sink.emit(
                 anchor,
                 HirError::Effect(EffectError::EffectMismatch {
@@ -465,7 +465,10 @@ mod tests {
             "extern {\n    malloc(usize n) -> ptr;\n}\nmain() {\n    let ptr p = malloc(8);\n}\n",
             "main",
         );
-        assert!(r.set.contains(Atom::Ffi), "extern call must produce ffi: {r:?}");
+        assert!(
+            r.set.contains(Atom::Ffi),
+            "extern call must produce ffi: {r:?}"
+        );
         assert_eq!(r.callees.len(), 1, "the extern call is a call edge: {r:?}");
     }
 
@@ -576,8 +579,14 @@ mod tests {
             "execute(int32 x, (int32) -> int32 operation, (int32) callback) {\n    let int32 r = operation(x);\n    callback(r);\n}\n",
         );
         let e = total(&hir, &map, "execute");
-        assert!(e.contains(Atom::Io), "indirect call -> conservative io: {e:?}");
-        assert!(e.contains(Atom::Ffi), "indirect call -> conservative ffi: {e:?}");
+        assert!(
+            e.contains(Atom::Io),
+            "indirect call -> conservative io: {e:?}"
+        );
+        assert!(
+            e.contains(Atom::Ffi),
+            "indirect call -> conservative ffi: {e:?}"
+        );
         assert!(
             e.contains(Atom::State),
             "indirect call -> conservative state: {e:?}"

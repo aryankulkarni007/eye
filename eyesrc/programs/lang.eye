@@ -314,7 +314,7 @@ main() {
     -- handle char* yet or some type of C codegen issue. is really a backend
     -- issue, but we need a working transpiler so we have to work around this
     let usize len = 0;
-    let [ptr; 10] words = [""; 10];
+    let [char*; 10] words = [""; 10];
 
     -- WARN: compiler doesn't error on unintialised struct! (wait maybe it does)
     -- WARN: compiler doesn't error when we pass in a field with the wrong type

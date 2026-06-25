@@ -328,9 +328,9 @@ fn flamegraph() {
             match args[i].as_str() {
                 "--iterations" | "-n" => {
                     i += 1;
-                    iterations = args[i]
-                        .parse()
-                        .unwrap_or_else(|_| panic!("--iterations requires a number, got {}", args[i]));
+                    iterations = args[i].parse().unwrap_or_else(|_| {
+                        panic!("--iterations requires a number, got {}", args[i])
+                    });
                 }
                 "--output" | "-o" => {
                     i += 1;
@@ -360,7 +360,10 @@ fn flamegraph() {
     let stress_file = root.join("eyesrc/STRESS_GENERATED.eye");
 
     // ---- generate a valid stress program ----
-    println!("generating {iterations} unique functions → {}", stress_file.display());
+    println!(
+        "generating {iterations} unique functions → {}",
+        stress_file.display()
+    );
     generate_stress_program(&stress_file, iterations);
 
     let stress_size = filesize(&stress_file);
@@ -394,8 +397,9 @@ fn flamegraph() {
     let default_svg = root.join("flamegraph.svg");
     if default_svg.exists() {
         if output != default_svg {
-            std::fs::rename(&default_svg, &output)
-                .unwrap_or_else(|e| panic!("move {} → {}: {e}", default_svg.display(), output.display()));
+            std::fs::rename(&default_svg, &output).unwrap_or_else(|e| {
+                panic!("move {} → {}: {e}", default_svg.display(), output.display())
+            });
         }
         println!("flamegraph written to {}", output.display());
     } else {
@@ -441,12 +445,9 @@ fn generate_stress_program(path: &Path, n: usize) {
             writeln!(f, "f0() -> int32 {{ 0 }}").unwrap();
         } else {
             match i % 5 {
-                0 => writeln!(
-                    f,
-                    "f{i}() -> int32 {{ let int32 x = f{}(); x + 1 }}",
-                    i - 1
-                )
-                .unwrap(),
+                0 => {
+                    writeln!(f, "f{i}() -> int32 {{ let int32 x = f{}(); x + 1 }}", i - 1).unwrap()
+                }
                 1 => writeln!(
                     f,
                     "f{i}() -> int32 {{ let int32 y = f{}(); y * 2 + 1 }}",

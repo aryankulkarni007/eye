@@ -30,7 +30,7 @@ const-expr fold, not CTFE: it does not run functions at compile time. That
 `const <type> <name> = <expr>;` at the top level, or as a statement inside a
 block (added 2026-06-11). The type is always explicit (no inference at the
 floor). Grammar: a `const_def` item arm and a `block()` statement arm
-(`crates/parser/src/grammar.rs`), the `const` keyword token, and one AST
+(`crates/parser/src/grammar/`), the `const` keyword token, and one AST
 `ConstDef` node for both positions (`crates/ast/eye.ungram`).
 
 ### Block-scope `const`

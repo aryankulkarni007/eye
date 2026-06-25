@@ -3,7 +3,7 @@
 the rule for `as`. built 2026-06-16 as part of the S3 judgment pass
 (TYPECK.md); before it, `as` was any-to-any. follows the ruling ratified
 2026-06-12 (TYPECK.md deferred list). the judgment lives in the typeck walker's
-`Cast` arm (`crates/typeck/src/infer.rs`, `cast_allowed` / `cast_class`); the
+`Cast` arm (`crates/typeck/src/infer/ty.rs`, `cast_allowed` / `cast_class`); the
 rejection is `TypeError::CastNotAllowed` (T043).
 
 ## classes

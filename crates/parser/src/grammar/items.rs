@@ -230,7 +230,14 @@ pub(crate) fn field_list(p: &mut Parser, ctx: TextRange) {
             // the loop bails when no `,` follows -- either `}` (normal exit)
             // or an item keyword (the field list is unclosed).
             p.sync(
-                &[T![,], T!['}'], T![structure], T![union], T![enum], T![extern]],
+                &[
+                    T![,],
+                    T!['}'],
+                    T![structure],
+                    T![union],
+                    T![enum],
+                    T![extern],
+                ],
                 crate::SyntaxError::ExpectedField,
             );
             if !p.eat(T![,]) {
@@ -358,9 +365,7 @@ pub(crate) fn param_list(p: &mut Parser, ctx: TextRange, variadic_ok: bool) {
     while !p.at(T![')']) && !p.at_eof() {
         // when '(' is missing, item-level keywords are never valid params.
         // bail immediately so subsequent items aren't consumed as params.
-        if !had_open
-            && matches!(p.nth0(), T![structure] | T![union] | T![enum] | T![extern])
-        {
+        if !had_open && matches!(p.nth0(), T![structure] | T![union] | T![enum] | T![extern]) {
             break;
         }
         if p.at(T![...]) {

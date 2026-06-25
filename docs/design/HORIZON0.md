@@ -117,7 +117,7 @@ The model and the decisions it settled:
 - **token** (`crates/token/src/lib.rs`): add `#[token("const")] Const`. The
   keyword list today is let, mut, structure, enum, union, extern, if, else,
   loop, break, continue, return, match, as.
-- **grammar** (`crates/parser/src/grammar.rs`, `item()` ~L102): add a `T![const]`
+- **grammar** (`crates/parser/src/grammar/items.rs`, `item()`): add a `T![const]`
   arm producing `const_def := 'const' type Ident '=' expr ';'`, plus top-level
   `let` / `mut` arms for globals (Component 3).
 - **AST** (`crates/ast/eye.ungram` + regenerate `generated.rs`): add a `ConstDef`
@@ -181,7 +181,7 @@ expression. Both are coherent; the implementer must handle the two paths.
 - MIR is per-function bodies today (`MirBody`). Add a module-level section
   (`globals`, `consts`) so consts and globals exist outside any `MirBody`.
 - A scalar const emits as C `static const T NAME = <folded>;` (or inlines its
-  folded value). `crates/codegen/src/core/mir_emit.rs` gains a pre-pass that
+  folded value). `crates/codegen/src/core/mir_emit/` gains a pre-pass that
   prints these before the function bodies.
 
 ## Component 2: sizeof / alignof (leaf)

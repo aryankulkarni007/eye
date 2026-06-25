@@ -166,9 +166,10 @@ main() {
 ",
     );
     assert!(
-        !diags(&clean)
-            .iter()
-            .any(|e| matches!(e, HirError::Type(TypeError::ArrayElementTypeMismatch { .. }))),
+        !diags(&clean).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::ArrayElementTypeMismatch { .. })
+        )),
         "uniform int array must be clean, got: {:?}",
         diags(&clean)
     );
@@ -258,9 +259,10 @@ main() {
 ",
     );
     assert!(
-        !diags(&clean)
-            .iter()
-            .any(|e| matches!(e, HirError::Type(TypeError::ArrayElementTypeMismatch { .. }))),
+        !diags(&clean).iter().any(|e| matches!(
+            e,
+            HirError::Type(TypeError::ArrayElementTypeMismatch { .. })
+        )),
         "homogeneous untyped array literal must be clean: {:?}",
         diags(&clean)
     );

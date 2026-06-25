@@ -292,10 +292,12 @@ f(usize size) -> usize {
         .exprs
         .iter()
         .filter(|(_, e)| matches!(e, Expr::Binary { .. }))
-        .map(|(idx, _)| match hir.types.lookup(results.expr_types[idx.into()]) {
-            TypeKind::Path(n) => n.as_str().to_owned(),
-            other => format!("{other:?}"),
-        })
+        .map(
+            |(idx, _)| match hir.types.lookup(results.expr_types[idx.into()]) {
+                TypeKind::Path(n) => n.as_str().to_owned(),
+                other => format!("{other:?}"),
+            },
+        )
         .collect();
 
     assert!(!widths.is_empty(), "expected binary expressions");
@@ -445,7 +447,9 @@ main() {
 /// array or a pointer has elements. an array index stays clean.
 #[test]
 fn index_of_non_indexable_is_rejected() {
-    let bad = lower("main() {\n    let int32 x = 5;\n    let int32 y = x[0];\n    println(\"{}\", y);\n}\n");
+    let bad = lower(
+        "main() {\n    let int32 x = 5;\n    let int32 y = x[0];\n    println(\"{}\", y);\n}\n",
+    );
     assert!(
         diags(&bad)
             .iter()
@@ -453,7 +457,8 @@ fn index_of_non_indexable_is_rejected() {
         "indexing a scalar must be rejected: {:?}",
         diags(&bad)
     );
-    let ok = lower("main() {\n    let [int32; 3] xs = [1, 2, 3];\n    println(\"{}\", xs[0]);\n}\n");
+    let ok =
+        lower("main() {\n    let [int32; 3] xs = [1, 2, 3];\n    println(\"{}\", xs[0]);\n}\n");
     assert!(
         !diags(&ok)
             .iter()

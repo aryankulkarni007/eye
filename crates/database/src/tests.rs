@@ -98,7 +98,12 @@ fn lowered_file_carries_the_effect_map() {
     let db = Database::default();
     let input = file(&db, "main() {\n    println(\"{}\", 1);\n}\n");
     let checked = lowered_file(&db, input);
-    let main = *checked.hir.items.functions.get("main").expect("main exists");
+    let main = *checked
+        .hir
+        .items
+        .functions
+        .get("main")
+        .expect("main exists");
     assert!(
         checked.effects.effect_of(main).contains(effect::Atom::Io),
         "main's effect map entry must record io"
@@ -192,14 +197,18 @@ fn body_edit_backdates_the_sibling_typeck() {
     // alpha is first, so editing beta's (later) body leaves alpha's node range -
     // and thus its StableFnId - identical across the edit.
     let alpha_ptr = item_scope(&db, input).fns[0].1;
-    let alpha0 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr)).0.clone();
+    let alpha0 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr))
+        .0
+        .clone();
 
     // edit only beta's body; every signature is untouched.
     input
         .set_text(&mut db)
         .to(TWO_FNS.replace("    2", "    2 + 2"));
 
-    let alpha1 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr)).0.clone();
+    let alpha1 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr))
+        .0
+        .clone();
     assert!(
         Arc::ptr_eq(&alpha0, &alpha1),
         "alpha's typeck_fn must cache-hit when only beta's body changed"
@@ -234,12 +243,18 @@ fn signature_edit_reruns_every_body() {
     let input = file(&db, FN_THEN_CONST);
 
     let alpha_ptr = item_scope(&db, input).fns[0].1;
-    let alpha0 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr)).0.clone();
+    let alpha0 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr))
+        .0
+        .clone();
 
     // edit the const's value; alpha's node range is unchanged (const is later).
-    input.set_text(&mut db).to(FN_THEN_CONST.replace("= 10", "= 20"));
+    input
+        .set_text(&mut db)
+        .to(FN_THEN_CONST.replace("= 10", "= 20"));
 
-    let alpha1 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr)).0.clone();
+    let alpha1 = typeck_fn(&db, StableFnId::new(&db, input, alpha_ptr))
+        .0
+        .clone();
     assert!(
         !Arc::ptr_eq(&alpha0, &alpha1),
         "a signature/const edit must re-run every body's typeck (no stale skip)"
@@ -279,9 +294,11 @@ fn parallel_per_fn_typeck_matches_serial() {
 
     let db = Database::default();
     let input = file(&db, FOUR_FNS);
-    let ptrs: Vec<SyntaxNodePtr> =
-        item_scope(&db, input).fns.iter().map(|&(_, p)| p).collect();
-    assert!(ptrs.len() >= 4, "spike needs several bodies to be meaningful");
+    let ptrs: Vec<SyntaxNodePtr> = item_scope(&db, input).fns.iter().map(|&(_, p)| p).collect();
+    assert!(
+        ptrs.len() >= 4,
+        "spike needs several bodies to be meaningful"
+    );
 
     // serial: per-fn typeck in collection order. diagnostics carry baked-in
     // display strings + type *names* (not raw `TypeRef` handles), so their
@@ -297,8 +314,7 @@ fn parallel_per_fn_typeck_matches_serial() {
     // parallel: one owned db clone per body, moved into a rayon task via
     // `into_par_iter` (needs only `Database: Send`). order-preserving collect
     // keeps determinism law #1 (collection order, never completion order).
-    let clones: Vec<(Database, SyntaxNodePtr)> =
-        ptrs.iter().map(|&p| (db.clone(), p)).collect();
+    let clones: Vec<(Database, SyntaxNodePtr)> = ptrs.iter().map(|&p| (db.clone(), p)).collect();
     let parallel: Vec<String> = clones
         .into_par_iter()
         .map(|(db2, ptr)| {

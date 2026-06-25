@@ -57,7 +57,7 @@ tokens + Interner        lexer  - Lexer::tokenize() drives logos -> Lexed
   │  TokenKind            token  - flat token kinds, logos rules attached
   ▼
 event stream             parser - Parser emits Copy POD events
-  │  grammar rules        parser/src/grammar.rs - recursive-descent, resilient
+  │  grammar rules        parser/src/grammar/ - recursive-descent, resilient
   ▼
 green tree (CST)         parser - build_tree drives rowan, lossless
   │  SyntaxKind           syntax - unified leaf+node kind enum
@@ -143,7 +143,7 @@ no new token, only a new _node_.
 1. **`syntax` crate** - add a `SyntaxKind` variant in the _node kinds_ block of
    `syntax_kinds!` (after `SourceFile`, before `ErrorNode`). Node kinds are not
    in `From<TokenKind>` - they are produced only by `marker.complete(...)`.
-2. **`parser/src/grammar.rs`** - write the parse rule. The pattern, every time:
+2. **`parser/src/grammar/`** - write the parse rule. The pattern, every time:
    ```rust
    fn my_thing(p: &mut Parser) {
        let m = p.open();
@@ -261,8 +261,8 @@ in `mir`, then printed in `codegen`.
 | Crate / file | Owns |
 | ------------ | ---- |
 | `crates/mir/src/core.rs` | the MIR schema: locals, operands, places, rvalues, statements, structured control flow. Add a node here only if the construct needs a shape the existing nodes cannot express |
-| `crates/mir/src/lower.rs` | `lower_function`: HIR -> MIR. Value-position `if`/`match` lower into temps here (`lower_into`); `&&`/`||` lower to control flow; statement control flow lowers to MIR statements |
-| `crates/codegen/src/core/mir_emit.rs` | `gen_mir`: the MIR -> C printer. Emit the new MIR node as C text |
+| `crates/mir/src/lower/` | `lower_function`: HIR -> MIR. Value-position `if`/`match` lower into temps here (`lower_into`); `&&`/`||` lower to control flow; statement control flow lowers to MIR statements |
+| `crates/codegen/src/core/mir_emit/` | `gen_mir`: the MIR -> C printer. Emit the new MIR node as C text |
 | `crates/codegen/src/core/types.rs` | type mapping and `print` conversion specifiers (`spec_for_type`) |
 | `crates/codegen/src/core/arrays.rs` | fixed-array value-wrapper mangling and `.data[]` indexing |
 
@@ -331,8 +331,8 @@ Tests live in each module’s `#[cfg(test)]` block. See [`editor-setup.md`](edit
 [ ] ast lib.rs      - hand-written semantic accessor, only if one is needed
 [ ] hir lower/      - lower the new construct; expr_types / diags as needed
 [ ] hir tests       - crates/hir/src/core/tests.rs
-[ ] mir lower       - crates/mir/src/lower.rs (+ a MIR node in core.rs if needed)
-[ ] codegen emit    - crates/codegen/src/core/mir_emit.rs (print the MIR node)
+[ ] mir lower       - crates/mir/src/lower/ (+ a MIR node in core.rs if needed)
+[ ] codegen emit    - crates/codegen/src/core/mir_emit/ (print the MIR node)
 [ ] codegen tests   - crates/codegen/src/core/tests.rs
 [ ] e2e             - tests/e2e.rs + eyesrc fixture when behaviour is user-visible
 [ ] FUTURE.md       - shipped surface, limitations, oversights

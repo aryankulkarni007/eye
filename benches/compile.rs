@@ -227,11 +227,7 @@ fn codegen(c: &mut Criterion) {
 
     group.bench_function("complex", |b| {
         b.iter(|| {
-            let _ = codegen::core::gen_mir(
-                black_box(&hir),
-                black_box(&mirs),
-                black_box(&seed),
-            );
+            let _ = codegen::core::gen_mir(black_box(&hir), black_box(&mirs), black_box(&seed));
         });
     });
 

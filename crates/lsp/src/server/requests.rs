@@ -10,9 +10,7 @@ use database::{CheckedFile, Database};
 use hir::core::{BodyId, Expr, ExprId, FnId, Function, HIR, Pat, PatId, Resolution};
 use lexer::SourceText;
 use lsp_server::{Connection, Message, Response};
-use lsp_types::{
-    Hover, HoverContents, HoverParams, MarkedString, SemanticTokensParams,
-};
+use lsp_types::{Hover, HoverContents, HoverParams, MarkedString, SemanticTokensParams};
 use text_size::{TextRange, TextSize};
 
 use crate::documents::DocumentStore;
@@ -69,13 +67,29 @@ fn hover_in_body(checked: &CheckedFile, offset: TextSize) -> Option<String> {
     let hir = &checked.hir;
     let mut best: Option<(TextRange, FnId, BodyId, Hit)> = None;
     for (fn_id, function) in hir.functions.iter() {
-        let Some(body_id) = function.body else { continue };
+        let Some(body_id) = function.body else {
+            continue;
+        };
         let body = &hir.bodies[body_id];
         for (expr_id, ptr) in body.source_map.expr.iter() {
-            consider(&mut best, offset, ptr.text_range(), fn_id, body_id, Hit::Expr(expr_id.into()));
+            consider(
+                &mut best,
+                offset,
+                ptr.text_range(),
+                fn_id,
+                body_id,
+                Hit::Expr(expr_id.into()),
+            );
         }
         for (pat_id, ptr) in body.source_map.pat.iter() {
-            consider(&mut best, offset, ptr.text_range(), fn_id, body_id, Hit::Pat(pat_id.into()));
+            consider(
+                &mut best,
+                offset,
+                ptr.text_range(),
+                fn_id,
+                body_id,
+                Hit::Pat(pat_id.into()),
+            );
         }
     }
 
@@ -128,8 +142,7 @@ fn consider(
     body_id: BodyId,
     hit: Hit,
 ) {
-    if range.contains_inclusive(offset)
-        && best.as_ref().is_none_or(|(r, ..)| range.len() < r.len())
+    if range.contains_inclusive(offset) && best.as_ref().is_none_or(|(r, ..)| range.len() < r.len())
     {
         *best = Some((range, fn_id, body_id, hit));
     }
@@ -224,7 +237,12 @@ mod tests {
     use super::*;
     use database::Database;
 
-    fn hover_at(db: &Database, input: database::SourceFileInput, line: u32, col: u32) -> Option<String> {
+    fn hover_at(
+        db: &Database,
+        input: database::SourceFileInput,
+        line: u32,
+        col: u32,
+    ) -> Option<String> {
         let source = SourceText::new(input.text(db).to_owned());
         let offset = source.offset_utf16(line, col);
         let parse = database::parse(db, input);

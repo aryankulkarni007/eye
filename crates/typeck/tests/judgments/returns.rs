@@ -165,10 +165,11 @@ fn explicit_unit_return_type_is_void_like() {
 
     let rejected = lower("noop() -> () { }\nmain() { let int32 x = noop(); }\n");
     assert!(
-        rejected.diagnostics.entries().iter().any(|(_, e)| matches!(
-            e,
-            HirError::Type(TypeError::VoidValueInValuePosition)
-        )),
+        rejected
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|(_, e)| matches!(e, HirError::Type(TypeError::VoidValueInValuePosition))),
         "binding a `()` value must be the void-value error: {:?}",
         diags(&rejected)
     );
@@ -180,14 +181,12 @@ fn explicit_unit_return_type_is_void_like() {
 /// statement-position void `if` stays legal (its value is discarded).
 #[test]
 fn value_position_void_if_is_rejected() {
-    let init = lower(
-        "extern { f(); }\nmain() { let int32 x = if true { f(); } else { f(); }; }\n",
-    );
+    let init = lower("extern { f(); }\nmain() { let int32 x = if true { f(); } else { f(); }; }\n");
     assert!(
-        init.diagnostics.entries().iter().any(|(_, e)| matches!(
-            e,
-            HirError::Type(TypeError::VoidValueInValuePosition)
-        )),
+        init.diagnostics
+            .entries()
+            .iter()
+            .any(|(_, e)| matches!(e, HirError::Type(TypeError::VoidValueInValuePosition))),
         "a void `if` bound to int32 must be rejected: {:?}",
         diags(&init)
     );
@@ -195,10 +194,11 @@ fn value_position_void_if_is_rejected() {
     // statement position: the `if` runs for effect, its `()` discarded.
     let stmt = lower("extern { f(); }\nmain() { if true { f(); } else { f(); } }\n");
     assert!(
-        !stmt.diagnostics.entries().iter().any(|(_, e)| matches!(
-            e,
-            HirError::Type(TypeError::VoidValueInValuePosition)
-        )),
+        !stmt
+            .diagnostics
+            .entries()
+            .iter()
+            .any(|(_, e)| matches!(e, HirError::Type(TypeError::VoidValueInValuePosition))),
         "a statement-position void `if` must be clean: {:?}",
         diags(&stmt)
     );

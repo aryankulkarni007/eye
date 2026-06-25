@@ -5,9 +5,7 @@
 //! position here and the value position in [`super::expr`].
 
 use ast::{AssignOp, BinOp};
-use hir::core::{
-    BlockId, Expr, ExprId, LocalId as HirLocalId, MatchArm, Pat, PatId, Stmt, Text,
-};
+use hir::core::{BlockId, Expr, ExprId, LocalId as HirLocalId, MatchArm, Pat, PatId, Stmt, Text};
 use smallvec::SmallVec;
 use thin_vec::ThinVec;
 

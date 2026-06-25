@@ -3,7 +3,7 @@
 
 use syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
-use crate::{support, AstChildren, AstNode};
+use crate::{AstChildren, AstNode, support};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceFile {

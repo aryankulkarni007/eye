@@ -10,8 +10,8 @@ use syntax::SyntaxNodePtr;
 
 use crate::InferObserver;
 
-use super::ty::*;
 use super::InferCtx;
+use super::ty::*;
 
 /// a match scrutinee's discriminant domain (see `check_matches`). only an enum
 /// or a primitive scalar is matchable; everything else is `Other`.
@@ -101,9 +101,10 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
 
     fn block_has_break(&self, block: BlockId) -> bool {
         let b = &self.body.blocks[block];
-        b.stmts.iter().any(|&s| {
-            matches!(&self.body.stmts[s], Stmt::Expr(e) if self.expr_has_break(*e))
-        }) || b.tail.is_some_and(|t| self.expr_has_break(t))
+        b.stmts
+            .iter()
+            .any(|&s| matches!(&self.body.stmts[s], Stmt::Expr(e) if self.expr_has_break(*e)))
+            || b.tail.is_some_and(|t| self.expr_has_break(t))
     }
 
     fn expr_has_break(&self, id: ExprId) -> bool {
@@ -394,7 +395,11 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         // a non-matchable scrutinee: report once, then skip the domain-specific
         // per-arm and exhaustiveness checks (but still flag unreachable arms).
         if matches!(domain, MatchDomain::Other) {
-            self.emit_at(scrut, match_ptr, hir::core::TypeError::MatchScrutineeNotEnum);
+            self.emit_at(
+                scrut,
+                match_ptr,
+                hir::core::TypeError::MatchScrutineeNotEnum,
+            );
         }
         let mut covered: Vec<bool> = match domain {
             MatchDomain::Enum(eid) => vec![false; self.scope.enums[eid].variants.len()],
@@ -456,7 +461,9 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                             }
                         }
                         MatchDomain::Bool | MatchDomain::Int | MatchDomain::Char => {
-                            let vname = self.scope.enums[enum_id].variants[idx as usize].name.clone();
+                            let vname = self.scope.enums[enum_id].variants[idx as usize]
+                                .name
+                                .clone();
                             self.emit_ptr(
                                 Some(arm.ptr),
                                 hir::core::PatternError::PatternDomainMismatch {
@@ -677,6 +684,15 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         if self.is_unit(init) {
             return;
         }
+        // FIXME(let-init coverage, see ledger): this judgment only checks Call
+        // initializers. every non-call init (field read, variable, index) returns
+        // here unchecked, so a raw `ptr` field read into a typed-pointer slot
+        // (`let int64* d = vec.start;`) bypasses the dangerous-direction gate a
+        // `malloc()` call hits (T002) and that T41 / `site_assignable` enforce for
+        // branch tails and args. integer narrowing through a non-call init slips
+        // the same way. same directional rule as the integer widen/narrow note.
+        // fix: run `site_assignable` on every known-typed init, pending the
+        // let-init width ruling.
         if !matches!(self.body.exprs[init], Expr::Call { .. }) {
             return;
         }
@@ -941,7 +957,11 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 // `x[i]` on it would emit invalid c.
                 _ => {
                     let found = self.types.display(ty).to_string();
-                    self.emit_at(id, None, hir::core::TypeError::IndexOfNonIndexable { found });
+                    self.emit_at(
+                        id,
+                        None,
+                        hir::core::TypeError::IndexOfNonIndexable { found },
+                    );
                 }
             }
         }

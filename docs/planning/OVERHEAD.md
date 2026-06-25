@@ -28,7 +28,7 @@ new unsafe code, no architectural refactor.
 
 ### 1.1 `check_body` signature: `&mut TypeInterner` → `&TypeInterner`
 
-**Files:** `crates/typeck/src/lib.rs:137`, `crates/typeck/src/infer.rs:22,33`
+**Files:** `crates/typeck/src/lib.rs:137`, `crates/typeck/src/infer/mod.rs`
 **Dependent:** `crates/database/src/lib.rs:383`
 
 **What:** `check_body` takes `&mut TypeInterner`, but every method called on the
@@ -42,7 +42,7 @@ where `lowered.lowered.types.clone()` is called solely to pass an owned copy to
 
 **Changes required:**
 - `typeck/src/lib.rs:137` — fn signature
-- `typeck/src/infer.rs:22,33` — `InferCtx.types` field type
+- `typeck/src/infer/mod.rs` — `InferCtx.types` field type
 - `database/src/lib.rs:383` — remove `.clone()`, pass `&lowered.lowered.types`
 
 **Yield:** HIGH — the #1 hot-path allocation. Saves one deep `TypeInterner`
@@ -143,7 +143,7 @@ pointer chase. No semantic change.
 
 ### 2.2 MIR Place clone: last-iteration move in destructure loop
 
-**File:** `crates/mir/src/lower.rs:281`
+**File:** `crates/mir/src/lower/`
 
 **What:** `lower_let_destructure` builds `Place::Field(Box::new(base.clone()), field)`
 per field in a loop. For N fields, iterations 0..N-2 clone `base` (reused),
@@ -166,7 +166,7 @@ clone per destructure (≈ 24-32 bytes + any deep projection chain).
 
 ### 2.3 MIR Place clone: split `lower_into` catch-all
 
-**File:** `crates/mir/src/lower.rs:1049`
+**File:** `crates/mir/src/lower/`
 
 **What:** The catch-all arm of `lower_into` uses `target` exactly once (to
 assign the lowered rvalue). But `lower_into` takes `&Place` because other arms

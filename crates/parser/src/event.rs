@@ -103,7 +103,11 @@ impl CompletedMarker {
 /// walks the event stream and the raw token stream together, driving a
 /// `GreenNodeBuilder`. trivia tokens are interleaved back in here so the tree
 /// round-trips to the original source.
-pub(crate) fn build_tree(tokens: &[Token], mut events: Vec<Event>, source: &SourceText) -> SyntaxNode {
+pub(crate) fn build_tree(
+    tokens: &[Token],
+    mut events: Vec<Event>,
+    source: &SourceText,
+) -> SyntaxNode {
     let mut builder = GreenNodeBuilder::new();
     let mut raw = 0usize;
     // scratch reused across every forward-parent chain - inline storage

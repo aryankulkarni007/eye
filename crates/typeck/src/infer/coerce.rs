@@ -10,8 +10,8 @@ use hir::core::{Expr, ExprId, Literal, TypeKind, TypeRef};
 
 use crate::{Adjustment, Cause, Expectation, InferObserver};
 
-use super::ty::*;
 use super::InferCtx;
+use super::ty::*;
 
 impl<'a, O: InferObserver> InferCtx<'a, O> {
     /// the single found-meets-expected funnel - [`Self::infer_expr`]'s tail (the
@@ -104,9 +104,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
     /// widening, but no `ptr` (void*) widening.
     fn cause_assignable(&self, cause: &Cause, expected: TypeRef, found: TypeRef) -> bool {
         match cause {
-            Cause::Arg { .. } | Cause::Field { .. } => {
-                site_assignable(expected, found, self.types)
-            }
+            Cause::Arg { .. } | Cause::Field { .. } => site_assignable(expected, found, self.types),
             Cause::Return { .. } => {
                 types_compatible(found, expected, self.types)
                     || array_ref_decays_to(expected, found, self.types)
