@@ -40,13 +40,22 @@ calls are invariant guards / checked-`unreachable!`; the only in-source FIXMEs a
 in `eyesrc/programs/lang.eye` (readable-C mode, field/arg types CLOSED, tail-expr
 enforcement = T5 below). ordered cheap -> keystone:
 
-**T1 - cheap lints / hygiene (independent, fast):**
-- [ ] dead / pure expression statement lint (`-Wunused-value`) [typeck/lint]
-- [ ] unsigned `<= 0` tautology lint [lint]
-- [ ] unused-variable / unused-parameter lint [lint]
-- [ ] unused generated array-wrapper global - emit only when referenced [codegen]
-- [ ] dangling-`&local` return warning (`-Wreturn-stack-address` surface) [the free
-      warning, ahead of the deferred escape analysis]
+**T1 - cheap lints / hygiene (independent, fast): BUILT 2026-07-12** (see the
+completed entry for the severity plumbing + per-lint detail):
+- [x] dead / pure expression statement lint (`-Wunused-value`) [typeck/lint] -
+      T48, purity walk over discarded expression statements.
+- [x] unsigned `<= 0` tautology lint [lint] - T50, both operand orders, the
+      `<`/`>=`/`<=` family; `==`/`!=`/`> 0` stay silent.
+- [x] unused-variable / unused-parameter lint [lint] - T49, any `Path`
+      reference counts as a use, `_`-prefix opts out, param wording via the
+      `Param` pattern-pointer kind.
+- [x] unused generated array-wrapper global - emit only when referenced
+      [codegen] - reference-scan fixpoint in `gen_all` over captured def/tail
+      buffers; struct/union/opaque decls never dropped.
+- [x] dangling-`&local` return warning (`-Wreturn-stack-address` surface) [the
+      free warning, ahead of the deferred escape analysis] - T51, direct
+      `return &local` / tail `&local` + field/index projections; `Deref`
+      breaks the root walk; flow through bindings stays escape-analysis scope.
 
 **T2 - frontend-vs-clang flags + class A:**
 - [ ] add `-Wall` to the prod clang invocation (not `-pedantic`); opt-in
@@ -153,6 +162,18 @@ move/drop is the prerequisite for owning-payload ADTs and error-path drops - the
       plain enums far more useful.
 
 ## Open bugs (correctness)
+
+- [ ] **float-typed const inlines as a bare C int literal** [codegen/mir] -
+      surfaced 2026-07-12 by the strict-C gate, the first run to include
+      lang.c (lang.eye's T024 XFAIL closed with the `[char*; 10]` fix, so it
+      now reaches the gate). `const float64 RAND_MAX = 0x7fffffff;` inlined
+      into arithmetic emits `double _t = (2147483647 + 1);` - the folded
+      value prints with no float spelling or cast, so the `+ 1` overflows in
+      C `int` (`-Winteger-overflow`, UB class) before the double conversion.
+      fix: a float-typed `ConstValue` must render as a float literal
+      (`2147483647.0`) or carry a `(double)` cast at the inline site.
+      reproduce: `./scripts/check-c-strict.sh` (1/43 = lang.c; the memcpy
+      builtin-redecl note on the same file is the known T3/FFI-const row).
 
 - [x] **M2 - mixed-width arithmetic narrows** [typeck] - CLOSED 2026-06-15
       (S3, typeck's first judgment customer). A binary's result type is now the
@@ -372,20 +393,17 @@ Gaps 1-3 are one root (pointer arithmetic leniency); 4-6 are independent.
       gated behind `as ptr` - the int/ptr analogue of the `&T -> T*` widening
       already built (which gates only the safe direction). the blessed
       `const ptr NULL = 0 as ptr` idiom already casts; the offset case does not.
-- [ ] **dead / pure expression statement** [typeck/lint] - a bare `NULL` (folds
-      to `0`) as a statement after the if-body has no effect. flag an
-      expression-statement whose value is pure and discarded (no call, no
-      assignment, no side effect); or - if it was meant as an early exit - the
-      missing `return` is the real bug. a purity check over the
-      discarded-expression-statement set.
-- [ ] **unsigned `<= 0` tautology** [lint] - `size <= 0` on a `usize` is always
-      `== 0` (unsigned). readability lint: suggest `== 0`, and flag the
-      always-false `< 0` / always-true `>= 0` family on an unsigned operand. not
-      a correctness bug.
-- [ ] **unused generated array-wrapper global** [codegen] - `__eye_arr_27_5uint8`
-      is emitted into the C but never referenced (an empty-string `""` wrapper).
-      dead-declaration elimination: suppress an emitted static/struct decl with
-      no use site. codegen-side DCE, not typeck.
+- [x] **dead / pure expression statement** [typeck/lint] - CLOSED 2026-07-12
+      (P0 T1, T48 warning). a purity walk over discarded expression statements;
+      calls / assignments / control flow are impure, poison stays silent.
+- [x] **unsigned `<= 0` tautology** [lint] - CLOSED 2026-07-12 (P0 T1, T50
+      warning). `<`/`>=`/`<=` against literal `0` on an unsigned operand, both
+      operand orders; the `<= 0` form suggests `== 0`.
+- [x] **unused generated array-wrapper global** [codegen] - CLOSED 2026-07-12
+      (P0 T1 wrapper DCE). `gen_all` captures each type def and the tail
+      sections into side buffers, then keeps an array wrapper only if other
+      kept text names it (fixpoint for nested wrappers). the inlined-println
+      string case now emits no wrapper at all.
 
 ---
 
@@ -461,18 +479,20 @@ the strict gate (runtime UB). B and C are the work.
 
 ### class B - clang warns, production builds + runs anyway
 
-- [ ] **no unused-variable / unused-parameter lint** [lint] - `-Wunused-variable`
-      / `-Wunused-parameter`, suppressed in the strict gate. a dead local or
-      param is silently legal Eye. frontend lint over `Body::locals` + params
-      (reachability already known to the walker).
+- [x] **no unused-variable / unused-parameter lint** [lint] - CLOSED 2026-07-12
+      (P0 T1, T49 warning) over `Body::locals` (params are the first-seeded
+      locals). the strict gate's `-Wno-unused-parameter`/`-Wno-unused-variable`
+      suppressions STAY: the lint is warning-severity, so a corpus program may
+      legally keep an unused binding and its generated C still carries it.
 - [ ] **variadic argument types unchecked** [typeck] - extra args past a variadic
       extern's fixed params have no parameter to check against (`infer/mod.rs`
       stops at the declared arity), so `printf("%d", some_ptr)` passes a
       wrong-typed value to a `%d` slot - UB, and clang's `-Wformat` only fires for
       functions it recognizes as printf-family. a format-string-aware check (or at
       least a "variadic arg must be a scalar/pointer, not an aggregate" floor).
-- [ ] dangling `&local` return - `-Wreturn-stack-address`. cross-ref DEFER escape
-      analysis (the runtime-safety axis).
+- [x] dangling `&local` return - `-Wreturn-stack-address`. the free direct-form
+      warning CLOSED 2026-07-12 (P0 T1, T51); flow through intermediate
+      bindings stays DEFER escape analysis (the runtime-safety axis).
 - [ ] implicit `usize -> ptr` at a return - `-Wint-conversion`. cross-ref arena
       gap 3 above.
 - [ ] FFI const-correctness (builtin redeclaration) -
@@ -2069,6 +2089,57 @@ Every in-source issue marker, so none float free of the ledger:
 ---
 
 ## Completed
+
+### 2026-07-12: P0 T1 - first warnings (4 lints + wrapper DCE + severity gate)
+
+the first warning-severity diagnostics; design in
+[LINT.md](../features/LINT.md). the dormant `Severity` axis
+(`crates/diagnostics`, built with the 8-class model, never used) got its
+first customers. ruled with the build: **severity-only** - a lint is a
+`T`-class diagnostic with `severity() -> Warning`, no tenth `Class::Lint`;
+class stays the concern axis, severity the failure axis.
+
+- **severity plumbing**: `impl Diagnostic for HirError` gains `severity()`
+  (delegating per variant) and `help()`. both renderers already mapped
+  `Severity::Warning` (CLI ariadne `ReportKind::Warning`, LSP
+  `DiagnosticSeverity::WARNING`) - zero renderer work.
+- **driver gate** (`src/main.rs`): was severity-blind (`!front_diags
+  .is_empty()` halted before codegen). now renders everything and halts only
+  when an `Error`-severity entry exists; a warning-only program builds and
+  runs (verified end-to-end: 3 warnings render, exit 0, binary runs).
+- **T48 dead expression statement** (`-Wunused-value`): purity walk over
+  `Stmt::Expr` statements (all blocks). pure = literal / resolved path /
+  field / index / binary / unary / ref / deref / cast / sizeof / len /
+  array + struct literals over pure parts; calls, assignments, control
+  flow, poison = impure. block tails are value positions and never reach it.
+- **T49 unused binding**: any `Expr::Path(Local)` marks use (assignment
+  targets count; write-only is a future lint). `_`-prefix opts out.
+  param-vs-variable wording from the pattern pointer's `SyntaxKind::Param`
+  (params are the body's first-seeded locals, `fn_body.rs`). help text:
+  rename to `_name`.
+- **T50 unsigned compare tautology** (`-Wtautological-compare`): `u < 0` /
+  `u >= 0` / `u <= 0` and mirrored literal-first forms against unsigned
+  operands; `<= 0` suggests `== 0`. `==`/`!=`/`> 0` stay silent.
+- **T51 ref-to-local returned** (`-Wreturn-stack-address` surface): direct
+  `return &local` and the implicit-return tail, walking field/index
+  projections to the local root; `Deref` breaks the chain (pointee storage).
+  flow through intermediate bindings stays escape-analysis scope (DEFER).
+- **wrapper DCE** (`gen_all`): type defs and tail sections captured into
+  side buffers; an array wrapper is kept only if other kept text names it
+  (fixpoint covers nested wrappers; a wrapper's own def does not keep it).
+  struct/union/opaque decls never dropped. the inlined-println string
+  wrapper (the ledger reproducer) now vanishes; `c_codegen` snapshot
+  re-blessed with the dead typedef gone.
+- T47 left reserved for `NonIntegerIndex` (class A row); lints took T48-51.
+- test-helper split: judgments `diags()` now error-only (accepted-case
+  fixtures may warn freely), new `warnings()` helper; 11 lint tests in
+  `judgments/lints.rs`.
+- verify: judgments 93 + full workspace green, clippy clean, corpus sweep
+  1 reject (linkedlist R008, known; lang.eye T024 XFAIL closed by the
+  worktree `[char*; 10]` fix). strict-C gate 1/43 = lang.c, a NEW
+  pre-existing find (float-const int-literal inline, open-bug row above) -
+  not a T1 regression (present at HEAD; the file simply never reached the
+  gate before).
 
 ### 2026-06-18: T046 latent bug - string indexing rejected
 

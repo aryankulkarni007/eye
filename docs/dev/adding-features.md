@@ -17,20 +17,20 @@ diagnostics ──▶ shared by lexer / parser / hir   (off to the side)
 xtask       ──▶ generates crates/ast/src/generated.rs   (off to the side)
 ```
 
-| Crate          | Path                                                      | Owns                                                                 |
-| -------------- | --------------------------------------------------------- | -------------------------------------------------------------------- |
-| `eye-token`    | `crates/token/src/lib.rs`                                 | `Token`, `TokenKind` (+ its `logos` rules), `Diagnostic`             |
-| `eye-lexer`    | `crates/lexer/src/lib.rs`                                 | `Lexer` (the `logos` driver), `SourceText`, `Interner`, `Lexed`      |
-| `eye-syntax`   | `crates/syntax/src/lib.rs`                                | `SyntaxKind`, rowan binding, `T!`                                    |
-| `eye-parser`   | `crates/parser/src/lib.rs` + `grammar.rs`                 | event stream, grammar, `build_tree`                                  |
-| `eye-ast`      | `crates/ast/src/lib.rs` + `generated.rs` + `eye.ungram`   | typed views over the CST                                             |
-| `eye-hir`      | `crates/hir/src/core/` + `core/lower/`                    | `HIR`, `lower_source_file`, name resolution, `expr_types`, diags     |
-| `eye-mir`      | `crates/mir/src/{core,lower}.rs`                          | MIR schema (`core.rs`); `lower_function` HIR → MIR (`lower.rs`)      |
-| `eye-codegen`  | `crates/codegen/src/core/{mir_emit,arrays,types}.rs`     | `gen_mir`, MIR → C string (direct printer)                           |
-| `eye-diagnostics` | `crates/diagnostics/src/lib.rs`                        | shared `Diagnostic` trait, `Span`, `Severity`, `Code`, `Sink`       |
-| `xtask`        | `crates/xtask/src/main.rs`                                | `cargo xtask codegen` - regenerates `ast/generated.rs`             |
-| `eye`          | `src/main.rs`                                             | driver: lex → parse → lower → mir-emit → clang                       |
-| `eye-lsp`      | `crates/lsp/src/`                                         | `eye_lsp::run` - semantic tokens + parser diagnostics over LSP       |
+| Crate             | Path                                                    | Owns                                                             |
+| ----------------- | ------------------------------------------------------- | ---------------------------------------------------------------- |
+| `eye-token`       | `crates/token/src/lib.rs`                               | `Token`, `TokenKind` (+ its `logos` rules), `Diagnostic`         |
+| `eye-lexer`       | `crates/lexer/src/lib.rs`                               | `Lexer` (the `logos` driver), `SourceText`, `Interner`, `Lexed`  |
+| `eye-syntax`      | `crates/syntax/src/lib.rs`                              | `SyntaxKind`, rowan binding, `T!`                                |
+| `eye-parser`      | `crates/parser/src/lib.rs` + `grammar.rs`               | event stream, grammar, `build_tree`                              |
+| `eye-ast`         | `crates/ast/src/lib.rs` + `generated.rs` + `eye.ungram` | typed views over the CST                                         |
+| `eye-hir`         | `crates/hir/src/core/` + `core/lower/`                  | `HIR`, `lower_source_file`, name resolution, `expr_types`, diags |
+| `eye-mir`         | `crates/mir/src/{core,lower}.rs`                        | MIR schema (`core.rs`); `lower_function` HIR → MIR (`lower.rs`)  |
+| `eye-codegen`     | `crates/codegen/src/core/{mir_emit,arrays,types}.rs`    | `gen_mir`, MIR → C string (direct printer)                       |
+| `eye-diagnostics` | `crates/diagnostics/src/lib.rs`                         | shared `Diagnostic` trait, `Span`, `Severity`, `Code`, `Sink`    |
+| `xtask`           | `crates/xtask/src/main.rs`                              | `cargo xtask codegen` - regenerates `ast/generated.rs`           |
+| `eye`             | `src/main.rs`                                           | driver: lex → parse → lower → mir-emit → clang                   |
+| `eye-lsp`         | `crates/lsp/src/`                                       | `eye_lsp::run` - semantic tokens + parser diagnostics over LSP   |
 
 Each crate's lib name is the short form (`use lexer::Lexer`), the package name
 is `eye-*`. A stage only sees the crates below it - `ast` cannot reach into the
@@ -144,6 +144,7 @@ no new token, only a new _node_.
    `syntax_kinds!` (after `SourceFile`, before `ErrorNode`). Node kinds are not
    in `From<TokenKind>` - they are produced only by `marker.complete(...)`.
 2. **`parser/src/grammar/`** - write the parse rule. The pattern, every time:
+
    ```rust
    fn my_thing(p: &mut Parser) {
        let m = p.open();
@@ -162,6 +163,7 @@ no new token, only a new _node_.
      `ErrorNode` and _guarantees progress_. Loops must always make progress or
      the `FUEL` guard panics ("non-progressing loop").
    - Hook the new rule into its parent rule's `if p.at(...)` dispatch.
+
 3. **`grammar.rs` doc comment** - update the EBNF block at the top of the file.
    It is the source of truth for the grammar; keep it exact.
 4. **`ast` crate** - add the typed view by editing the **grammar file**, not
@@ -231,14 +233,14 @@ No `lexer` or `token` change at all - the lexemes were already there.
 After the AST parses, meaning lives in `eye-hir`. Entry point:
 `lower_source_file` in `crates/hir/src/core/lower/mod.rs`.
 
-| Submodule | Path | Typical change |
-| --------- | ---- | -------------- |
-| Item collection | `lower/collect.rs` | new top-level item kinds |
-| Types / literals | `lower/types.rs` | new `TypeRef` shapes, literal typing |
-| Expressions | `lower/expr.rs` | new `Expr` variants, `expr_types` rules |
-| Statements | `lower/stmt.rs` | `let`, blocks, scopes |
-| Patterns | `lower/pat.rs` | match patterns (not `let` bindings) |
-| Context | `lower/ctx.rs` | resolve, alloc, field-type lookup |
+| Submodule        | Path               | Typical change                          |
+| ---------------- | ------------------ | --------------------------------------- |
+| Item collection  | `lower/collect.rs` | new top-level item kinds                |
+| Types / literals | `lower/types.rs`   | new `TypeRef` shapes, literal typing    |
+| Expressions      | `lower/expr.rs`    | new `Expr` variants, `expr_types` rules |
+| Statements       | `lower/stmt.rs`    | `let`, blocks, scopes                   |
+| Patterns         | `lower/pat.rs`     | match patterns (not `let` bindings)     |
+| Context          | `lower/ctx.rs`     | resolve, alloc, field-type lookup       |
 
 `LoweringCtx` and `Scopes` are defined in `lower/mod.rs` so split `impl` blocks
 in child files can access private fields (same pattern as `CGen` in codegen).
@@ -258,13 +260,13 @@ short-circuit rewriting) live in **HIR -> MIR lowering**; the C backend is a
 **direct printer** that walks MIR and makes no decisions. A new construct is lowered
 in `mir`, then printed in `codegen`.
 
-| Crate / file | Owns |
-| ------------ | ---- |
-| `crates/mir/src/core.rs` | the MIR schema: locals, operands, places, rvalues, statements, structured control flow. Add a node here only if the construct needs a shape the existing nodes cannot express |
-| `crates/mir/src/lower/` | `lower_function`: HIR -> MIR. Value-position `if`/`match` lower into temps here (`lower_into`); `&&`/`||` lower to control flow; statement control flow lowers to MIR statements |
-| `crates/codegen/src/core/mir_emit/` | `gen_mir`: the MIR -> C printer. Emit the new MIR node as C text |
-| `crates/codegen/src/core/types.rs` | type mapping and `print` conversion specifiers (`spec_for_type`) |
-| `crates/codegen/src/core/arrays.rs` | fixed-array value-wrapper mangling and `.data[]` indexing |
+| Crate / file                        | Owns                                                                                                                                                                          |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- | ------------------------------------------------------------------------ |
+| `crates/mir/src/core.rs`            | the MIR schema: locals, operands, places, rvalues, statements, structured control flow. Add a node here only if the construct needs a shape the existing nodes cannot express |
+| `crates/mir/src/lower/`             | `lower_function`: HIR -> MIR. Value-position `if`/`match` lower into temps here (`lower_into`); `&&`/`                                                                        |     | ` lower to control flow; statement control flow lowers to MIR statements |
+| `crates/codegen/src/core/mir_emit/` | `gen_mir`: the MIR -> C printer. Emit the new MIR node as C text                                                                                                              |
+| `crates/codegen/src/core/types.rs`  | type mapping and `print` conversion specifiers (`spec_for_type`)                                                                                                              |
+| `crates/codegen/src/core/arrays.rs` | fixed-array value-wrapper mangling and `.data[]` indexing                                                                                                                     |
 
 The invariant (REDESIGN I2): MIR lowering and the emitter are total. A well-typed
 HIR lowers to valid MIR and any MIR emits valid C; neither rejects a program or
@@ -281,13 +283,13 @@ lowering shape). For externally visible behaviour, add or extend a test in
 
 Crate layout mirrors the compiler split: [`crates/lsp/src/`](../crates/lsp/src/)
 
-| Module | Change |
-|--------|--------|
-| `legend.rs` | New semantic token type - keep indices in sync with `SemanticTokensLegend` |
-| `highlight/cst.rs` | Classify new AST nodes (accurate name colors) |
-| `highlight/token_kind.rs` | New lexer keyword / operator mapping |
-| `diagnostics.rs` | New diagnostic sources (e.g. HIR after v0.5) |
-| `server/` | New LSP methods |
+| Module                    | Change                                                                     |
+| ------------------------- | -------------------------------------------------------------------------- |
+| `legend.rs`               | New semantic token type - keep indices in sync with `SemanticTokensLegend` |
+| `highlight/cst.rs`        | Classify new AST nodes (accurate name colors)                              |
+| `highlight/token_kind.rs` | New lexer keyword / operator mapping                                       |
+| `diagnostics.rs`          | New diagnostic sources (e.g. HIR after v0.5)                               |
+| `server/`                 | New LSP methods                                                            |
 
 Tests live in each module’s `#[cfg(test)]` block. See [`editor-setup.md`](editor-setup.md).
 

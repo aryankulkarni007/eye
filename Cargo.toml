@@ -1,20 +1,20 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/token",
-    "crates/diagnostics",
-    "crates/lexer",
-    "crates/syntax",
-    "crates/parser",
-    "crates/ast",
-    "crates/hir",
-    "crates/mir",
-    "crates/xtask",
-    "crates/codegen",
-    "crates/lsp",
-    "crates/typeck",
-    "crates/effect",
-    "crates/database",
+  "crates/token",
+  "crates/diagnostics",
+  "crates/lexer",
+  "crates/syntax",
+  "crates/parser",
+  "crates/ast",
+  "crates/hir",
+  "crates/mir",
+  "crates/xtask",
+  "crates/codegen",
+  "crates/lsp",
+  "crates/typeck",
+  "crates/effect",
+  "crates/database",
 ]
 
 [profile.dev]
@@ -32,14 +32,14 @@ edition = "2024"
 [workspace.dependencies]
 # external
 anyhow = "1.0.102"
-criterion = { version = "0.5", features = ["cargo_bench_support"] }
+criterion = { version = "0.8", features = ["cargo_bench_support"] }
 drop_bomb = "0.1.5"
 logos = "0.16"
 memchr = "2.8.0"
 memmap2 = "0.9.10"
 proc-macro2 = "1"
 quote = "1"
-rowan = "0.16.1"
+rowan = "0.17.0"
 rustc-hash = "2.1.2"
 ryu = "1.0"
 itoa = "1.0"
@@ -50,11 +50,11 @@ insta = "1"
 thin-vec = "0.2.18"
 smallvec = "1.15.1"
 la-arena = "0.3"
-salsa = "0.27"
+salsa = "0.28"
 rayon = "1"
 mimalloc = "0.1"
 thiserror = "2"
-ariadne = "0.5"
+ariadne = "0.6"
 clap = { version = "4", features = ["derive"] }
 # internal - keyed by short lib name, backed by `eye-*` packages
 token = { path = "crates/token", package = "eye-token" }
@@ -65,7 +65,7 @@ parser = { path = "crates/parser", package = "eye-parser" }
 ast = { path = "crates/ast", package = "eye-ast" }
 hir = { path = "crates/hir", package = "eye-hir" }
 mir = { path = "crates/mir", package = "eye-mir" }
-codegen = {path = "crates/codegen", package = "eye-codegen"}
+codegen = { path = "crates/codegen", package = "eye-codegen" }
 lsp = { path = "crates/lsp", package = "eye-lsp" }
 typeck = { path = "crates/typeck", package = "eye-typeck" }
 effect = { path = "crates/effect", package = "eye-effect" }

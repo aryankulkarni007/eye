@@ -98,6 +98,7 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
         self.check_matches();
         self.check_value_position_assignments();
         self.check_value_position_voids();
+        self.check_lints();
         self.results
     }
     fn record(&mut self, id: ExprId, ty: TypeRef) {

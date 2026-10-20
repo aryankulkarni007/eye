@@ -5,8 +5,10 @@
 //! [`super::InferCtx::run`] and from the spine.
 
 use ast::{BinOp, UnaryOp};
-use hir::core::{BlockId, EnumId, Expr, ExprId, Literal, Pat, Stmt, Text, TypeKind, TypeRef};
-use syntax::SyntaxNodePtr;
+use hir::core::{
+    BlockId, EnumId, Expr, ExprId, Literal, Pat, Resolution, Stmt, Text, TypeKind, TypeRef,
+};
+use syntax::{SyntaxKind, SyntaxNodePtr};
 
 use crate::InferObserver;
 
@@ -1019,6 +1021,185 @@ impl<'a, O: InferObserver> InferCtx<'a, O> {
                 }
             }
             _ => None,
+        }
+    }
+
+    // --- T1 lints (P0): the first warning-severity judgments. each is a
+    // post-walk sweep over the typed body; none blocks the build (the driver
+    // gate keys on `Severity::Error`).
+
+    /// drive every T1 lint. called once from `run` after the error judgments,
+    /// so each sweep sees the fully-stamped `expr_types`.
+    pub(crate) fn check_lints(&mut self) {
+        self.lint_unsigned_compare_tautologies();
+        self.lint_dead_expression_statements();
+        self.lint_local_ref_returns();
+        self.lint_unused_bindings();
+    }
+
+    /// T50: an order comparison against `0` on an unsigned operand. `u < 0`
+    /// is always false, `u >= 0` always true, `u <= 0` a disguised `== 0`
+    /// (and the mirrored literal-first forms). `-Wtautological-compare`
+    /// parity; `==`/`!=`/`u > 0` stay meaningful and are not flagged.
+    fn lint_unsigned_compare_tautologies(&mut self) {
+        let body = self.body;
+        for (id, e) in body.exprs.iter() {
+            let &Expr::Binary { op, lhs, rhs } = e else {
+                continue;
+            };
+            let zero = |x: ExprId| matches!(body.exprs[x], Expr::Literal(Literal::Int(0)));
+            let (value, verdict) = match op {
+                BinOp::Lt if zero(rhs) => (lhs, "always false"),
+                BinOp::Geq if zero(rhs) => (lhs, "always true"),
+                BinOp::Leq if zero(rhs) => (lhs, "true only at zero - write `== 0`"),
+                BinOp::Gt if zero(lhs) => (rhs, "always false"),
+                BinOp::Leq if zero(lhs) => (rhs, "always true"),
+                BinOp::Geq if zero(lhs) => (rhs, "true only at zero - write `== 0`"),
+                _ => continue,
+            };
+            let Some(ty) = self.ty_of(value) else { continue };
+            let Some(name) = unsigned_int_name(ty, self.types) else {
+                continue;
+            };
+            self.emit_at(
+                id,
+                None,
+                hir::core::TypeError::UnsignedCompareTautology { ty: name, verdict },
+            );
+        }
+    }
+
+    /// T48: an expression statement whose value is pure and discarded - no
+    /// call, no assignment, no control flow - so the statement has no effect
+    /// (`-Wunused-value` parity). block tails are value positions and are not
+    /// statements, so they never reach here.
+    fn lint_dead_expression_statements(&mut self) {
+        let body = self.body;
+        for (_, block) in body.blocks.iter() {
+            for &sid in &block.stmts {
+                let Stmt::Expr(e) = body.stmts[sid] else {
+                    continue;
+                };
+                if self.expr_is_pure(e) {
+                    let fallback = body.source_map.stmt.get(sid.into()).cloned();
+                    self.emit_at(e, fallback, hir::core::TypeError::UnusedExpressionValue);
+                }
+            }
+        }
+    }
+
+    /// whether evaluating an expression has no observable effect. conservative:
+    /// anything that calls, assigns, or transfers control is impure, as is a
+    /// poison `Missing` / unresolved name (its own error covers it). division
+    /// is pure today (no runtime traps yet, P0 T7); revisit when div-by-zero
+    /// traps land.
+    fn expr_is_pure(&self, id: ExprId) -> bool {
+        match &self.body.exprs[id] {
+            Expr::Literal(_) => true,
+            Expr::SizeOf(_) => true,
+            Expr::Path(r) => !matches!(r, Resolution::Unresolved(_)),
+            Expr::Field { base, .. } => self.expr_is_pure(*base),
+            Expr::Index { base, index } => {
+                self.expr_is_pure(*base) && self.expr_is_pure(*index)
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.expr_is_pure(*lhs) && self.expr_is_pure(*rhs)
+            }
+            Expr::Unary { operand, .. }
+            | Expr::Ref { operand }
+            | Expr::Deref { operand }
+            | Expr::Cast { operand, .. } => self.expr_is_pure(*operand),
+            &Expr::Len(operand) => self.expr_is_pure(operand),
+            Expr::ArrayLit(elems) => elems.iter().all(|&e| self.expr_is_pure(e)),
+            Expr::ArrayRepeat { value, .. } => self.expr_is_pure(*value),
+            Expr::StructLit { fields, .. } => {
+                fields.iter().all(|f| self.expr_is_pure(f.value))
+            }
+            // calls, assignments, control flow (`if`/`match`/`loop`/blocks run
+            // statements), `return`/`break`/`continue`, and poison.
+            _ => false,
+        }
+    }
+
+    /// T51: `return &local` (directly, or through a field/index projection
+    /// rooted at a local - parameters included, they are by-value copies).
+    /// the storage ends with the function. direct forms only (the
+    /// `-Wreturn-stack-address` surface); flow through intermediate bindings
+    /// waits on the deferred escape analysis.
+    fn lint_local_ref_returns(&mut self) {
+        let body = self.body;
+        let mut sites: Vec<ExprId> = body
+            .exprs
+            .iter()
+            .filter_map(|(_, e)| match e {
+                &Expr::Return(Some(v)) => Some(v),
+                _ => None,
+            })
+            .collect();
+        // the implicit-return tail is a return site when the fn yields a value.
+        if self.fn_ret.is_some()
+            && let Some(t) = body.tail
+        {
+            sites.push(t);
+        }
+        for v in sites {
+            let Expr::Ref { operand } = body.exprs[v] else {
+                continue;
+            };
+            if let Some(name) = self.local_place_root(operand) {
+                self.emit_at(v, None, hir::core::TypeError::RefToLocalReturned { name });
+            }
+        }
+    }
+
+    /// the local a place expression is rooted at, walking `Field`/`Index`
+    /// projections. a `Deref` breaks the chain: `&(*p).f` points at the
+    /// pointee's storage, not the local's.
+    fn local_place_root(&self, mut e: ExprId) -> Option<Text> {
+        loop {
+            match &self.body.exprs[e] {
+                Expr::Path(Resolution::Local(l)) => {
+                    return Some(self.body.locals[*l].name.clone());
+                }
+                Expr::Field { base, .. } => e = *base,
+                Expr::Index { base, .. } => e = *base,
+                _ => return None,
+            }
+        }
+    }
+
+    /// T49: a local binding or parameter never read in the body. any `Path`
+    /// reference counts as a use (an assignment target included - the
+    /// write-only case is a separate, future lint). a `_`-prefixed name opts
+    /// out (match `_` wildcards bind no local and never reach here). a
+    /// parameter is a local whose pattern pointer is the `Param` node
+    /// (`fn_body.rs` seeds params first), which selects the message wording.
+    fn lint_unused_bindings(&mut self) {
+        let body = self.body;
+        if body.locals.is_empty() {
+            return;
+        }
+        let mut used = vec![false; body.locals.len()];
+        for (_, e) in body.exprs.iter() {
+            if let Expr::Path(Resolution::Local(l)) = e {
+                used[l.raw_idx().into_u32() as usize] = true;
+            }
+        }
+        for (lid, local) in body.locals.iter() {
+            if used[lid.raw_idx().into_u32() as usize] || local.name.starts_with('_') {
+                continue;
+            }
+            let Some(ptr) = body.source_map.pat.get(local.pat.into()).cloned() else {
+                continue;
+            };
+            let param = ptr.kind() == SyntaxKind::Param;
+            self.emit_ptr(
+                Some(ptr),
+                hir::core::TypeError::UnusedBinding {
+                    name: local.name.clone(),
+                    param,
+                },
+            );
         }
     }
 }

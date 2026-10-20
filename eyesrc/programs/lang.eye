@@ -314,17 +314,17 @@ main() {
     -- handle char* yet or some type of C codegen issue. is really a backend
     -- issue, but we need a working transpiler so we have to work around this
     let usize len = 0;
-    let [char*; 10] words = [""; 10];
+    let [ptr; 10] words = [""; 10];
 
     -- WARN: compiler doesn't error on unintialised struct! (wait maybe it does)
     -- WARN: compiler doesn't error when we pass in a field with the wrong type
     -- also a type checker responsibility
-    mut Language lang = Language { len, words };
-    mut Arena arena = Arena { buffer: 0 as uint8*, cap: 0, off: 0 };
+    mut lang = Language { len, words };
+    mut arena = Arena { buffer: 0 as uint8*, cap: 0, off: 0 };
     -- FIX: massive issue
     -- string as a struct field codegens as const char* str
     -- but a string is supposed to be a uint8 array under the hood
-    let Syllable syllable = Syllable { str: "cvc" };
+    let syllable = Syllable { str: "cvc" };
 
     -- FIXED: compiler doesn't error on incorrect args and ordering
     -- and all possible issues with that

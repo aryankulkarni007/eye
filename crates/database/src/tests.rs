@@ -53,13 +53,13 @@ fn set_text_invalidates_and_recomputes() {
     assert!(
         before.contains("int32_t add"),
         "C contains add: {}",
-        *before
+        **before
     );
     assert!(!before.contains("int32_t sub"));
 
     input.set_text(&mut db).to(PROGRAM.replace("add", "sub"));
     let after = c_code(&db, input);
-    assert!(after.contains("int32_t sub"), "C contains sub: {}", *after);
+    assert!(after.contains("int32_t sub"), "C contains sub: {}", **after);
     assert!(!after.contains("int32_t add"));
 }
 

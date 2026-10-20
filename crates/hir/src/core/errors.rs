@@ -17,7 +17,7 @@
 
 use std::fmt;
 
-use diagnostics::{Class, Code, Diagnostic, Span};
+use diagnostics::{Class, Code, Diagnostic, Severity, Span};
 
 use crate::core::Text;
 
@@ -353,6 +353,32 @@ pub enum TypeError {
     /// with no visible lifetime. `&` requires a place: a variable, global,
     /// field, index, or dereference.
     RefOfNonPlace,
+    /// lint (warning): an expression statement whose value is pure and
+    /// discarded - no call, no assignment, no control flow, so evaluating it
+    /// has no effect (`-Wunused-value` parity, P0 T1).
+    UnusedExpressionValue,
+    /// lint (warning): a local binding or parameter that is never read.
+    /// a `_`-prefixed name opts out.
+    UnusedBinding {
+        name: Text,
+        /// `true` for a function parameter (message wording only).
+        param: bool,
+    },
+    /// lint (warning): an order comparison against `0` on an unsigned operand
+    /// is a tautology (`u < 0` always false, `u >= 0` always true) or a
+    /// disguised equality (`u <= 0` is `u == 0`). `-Wtautological-compare`
+    /// parity, P0 T1. `verdict` is the prerendered outcome fragment.
+    UnsignedCompareTautology {
+        ty: Text,
+        verdict: &'static str,
+    },
+    /// lint (warning): `return &local` (directly, or through a field/index
+    /// projection of a local). the storage ends with the function, so the
+    /// reference dangles at every call site (`-Wreturn-stack-address`
+    /// surface; the full escape analysis is deferred, DEFER.md).
+    RefToLocalReturned {
+        name: Text,
+    },
 }
 
 /// `P`: match-analysis errors.
@@ -815,6 +841,22 @@ impl fmt::Display for TypeError {
                 f,
                 "cannot take the address of this expression: `&` requires a place (a variable, field, index, or dereference)"
             ),
+            TypeError::UnusedExpressionValue => write!(
+                f,
+                "this expression has no effect and its value is discarded"
+            ),
+            TypeError::UnusedBinding { name, param } => {
+                let kind = if *param { "parameter" } else { "variable" };
+                write!(f, "unused {kind} `{name}`")
+            }
+            TypeError::UnsignedCompareTautology { ty, verdict } => write!(
+                f,
+                "`{ty}` is unsigned, so this comparison is {verdict}"
+            ),
+            TypeError::RefToLocalReturned { name } => write!(
+                f,
+                "returning a reference to the local `{name}`: its storage ends with this function, so the reference dangles"
+            ),
         }
     }
 }
@@ -1028,6 +1070,13 @@ impl Diagnostic for HirError {
                 TypeError::ArrayElementTypeMismatch { .. } => Code::new(Class::Type, 42),
                 TypeError::CastNotAllowed { .. } => Code::new(Class::Type, 43),
                 TypeError::MixedIntegerWidths { .. } => Code::new(Class::Type, 44),
+                // 45 = DerefOfNonPointer, 46 = IndexOfNonIndexable (above);
+                // 47 is reserved for NonIntegerIndex (ledger, class A row).
+                // 48-51 are the first warnings (P0 T1 lints; severity below).
+                TypeError::UnusedExpressionValue => Code::new(Class::Type, 48),
+                TypeError::UnusedBinding { .. } => Code::new(Class::Type, 49),
+                TypeError::UnsignedCompareTautology { .. } => Code::new(Class::Type, 50),
+                TypeError::RefToLocalReturned { .. } => Code::new(Class::Type, 51),
             },
             HirError::Pattern(e) => match e {
                 PatternError::UnreachableAfterWildcard => Code::new(Class::Pattern, 1),
@@ -1060,6 +1109,31 @@ impl Diagnostic for HirError {
                 EffectError::UnknownEffect { .. } => Code::new(Class::Effect, 1),
                 EffectError::EffectMismatch { .. } => Code::new(Class::Effect, 2),
             },
+        }
+    }
+
+    /// warnings render but do not fail a build (the driver gate keys on any
+    /// `Error`-severity entry). the T1 lints are the first warning-severity
+    /// diagnostics; class stays the concern axis (a lint is a `T`-class
+    /// warning), severity the failure axis - ruled with the P0 T1 build.
+    fn severity(&self) -> Severity {
+        match self {
+            HirError::Type(
+                TypeError::UnusedExpressionValue
+                | TypeError::UnusedBinding { .. }
+                | TypeError::UnsignedCompareTautology { .. }
+                | TypeError::RefToLocalReturned { .. },
+            ) => Severity::Warning,
+            _ => Severity::Error,
+        }
+    }
+
+    fn help(&self) -> Option<std::borrow::Cow<'static, str>> {
+        match self {
+            HirError::Type(TypeError::UnusedBinding { name, .. }) => Some(
+                std::borrow::Cow::Owned(format!("rename to `_{name}` if this is intentional")),
+            ),
+            _ => None,
         }
     }
 

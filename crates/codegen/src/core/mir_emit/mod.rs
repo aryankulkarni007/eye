@@ -179,6 +179,67 @@ impl<'a> MirGen<'a> {
             self.gen_enum(e);
         }
         let nodes = topo_order(self.hir, self.expr_type_seed);
+
+        // the topology over-collects array wrappers: an array type reachable
+        // only through a reference that decays (a string literal decayed to
+        // `char*`/`uint8*`) never materializes its wrapper, and the dead
+        // typedef trips `-Wunused-const-variable`-class review noise (P0 T1
+        // wrapper DCE). so: capture each type definition and everything after
+        // the type-declaration section into side buffers first, then keep an
+        // array wrapper only if a kept definition or the rest of the unit
+        // actually names it (fixpoint, since a nested wrapper is named by its
+        // outer wrapper's definition). struct/union/opaque declarations are
+        // never dropped - eye declared them, only wrappers are synthesized.
+        let node_defs: Vec<String> = nodes
+            .iter()
+            .map(|node| {
+                let saved = std::mem::take(&mut self.output);
+                self.gen_type_def(node);
+                std::mem::replace(&mut self.output, saved)
+            })
+            .collect();
+        let tail = {
+            let saved = std::mem::take(&mut self.output);
+            self.gen_tail_sections();
+            std::mem::replace(&mut self.output, saved)
+        };
+        let names: Vec<Option<String>> = {
+            let types = &self.hir.types;
+            nodes
+                .iter()
+                .map(|node| match node {
+                    TypeNode::Array { elem, len } => {
+                        Some(array_wrapper_name(*elem, *len, types))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut keep: Vec<bool> = names.iter().map(|n| n.is_none()).collect();
+        loop {
+            let mut changed = false;
+            for i in 0..nodes.len() {
+                if keep[i] {
+                    continue;
+                }
+                let name = names[i].as_deref().expect("unkept nodes are wrappers");
+                // a wrapper's own definition names itself; only *other* kept
+                // text keeps it alive.
+                let referenced = tail.contains(name)
+                    || node_defs
+                        .iter()
+                        .enumerate()
+                        .any(|(j, txt)| j != i && keep[j] && txt.contains(name));
+                if referenced {
+                    keep[i] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
         let mut any_fwd = false;
         // opaque FFI types (`extern { type FILE; }`): forward typedef only,
         // never a definition - the c side owns the layout, eye only passes
@@ -195,23 +256,32 @@ impl<'a> MirGen<'a> {
             self.w(format_args!("typedef union {0} {0};\n", u.name));
             any_fwd = true;
         }
-        {
-            let types = &self.hir.types;
-            for node in &nodes {
-                if let TypeNode::Array { elem, len } = node {
-                    let name = array_wrapper_name(*elem, *len, types);
-                    self.w(format_args!("typedef struct {0} {0};\n", name));
-                    any_fwd = true;
-                }
+        for (i, name) in names.iter().enumerate() {
+            if keep[i]
+                && let Some(name) = name
+            {
+                self.w(format_args!("typedef struct {0} {0};\n", name));
+                any_fwd = true;
             }
         }
         if any_fwd {
             self.output.push('\n');
         }
-        for node in &nodes {
-            self.gen_type_def(node);
+        for (i, def) in node_defs.iter().enumerate() {
+            if keep[i] {
+                self.output.push_str(def);
+            }
         }
+        self.output.push_str(&tail);
 
+        self.output
+    }
+
+    /// everything after the type-declaration section, in file order: globals,
+    /// string statics, extern prototypes, function definitions, the entry
+    /// shim. factored out so `gen_all` can capture it into a side buffer for
+    /// the wrapper-DCE reference scan.
+    fn gen_tail_sections(&mut self) {
         // module-level statics: top-level `let`/`mut` globals (HORIZON0 C3),
         // emitted at file scope before the functions that reference them.
         self.gen_globals();
@@ -265,8 +335,6 @@ impl<'a> MirGen<'a> {
             }
             self.output.push_str("}\n");
         }
-
-        self.output
     }
 
     /// whether the unit needs the emitter's own `printf` prototype: some body

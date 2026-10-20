@@ -49,7 +49,10 @@ rewording a message breaks tests.
   crate, before boxing, which removes the message-text fragility.
 - Span is homogenised: `enum Span { Range(TextRange), Ptr(SyntaxNodePtr) }`. HIR
   needs `Ptr` because ranges shift across edits; lexer and parser use `Range`.
-- Severity: `enum Severity { Error, Warning }`.
+- Severity: `enum Severity { Error, Warning }`. first `Warning` customers are
+  the P0 T1 lints (T48-51, 2026-07-12): warnings render but never fail a
+  build; the driver gate keys on `Error`-severity entries only. see
+  [LINT.md](LINT.md).
 - Emission API is homogeneous: `Sink::emit(primary_span, kind)`. The sink
   accumulates and never halts mid-pass.
 - Display and render via `thiserror` per variant (`#[error("...")]`). Caveat:

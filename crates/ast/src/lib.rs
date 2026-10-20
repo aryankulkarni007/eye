@@ -36,13 +36,11 @@ pub use generated::*;
 pub trait AstNode {
     /// true if a node of this [`SyntaxKind`] can be cast to `Self`.
     fn can_cast(kind: SyntaxKind) -> bool
-    where
-        Self: Sized;
+        where Self: Sized;
 
     /// downcast an untyped node. returns `None` if the kind does not match.
     fn cast(syntax: SyntaxNode) -> Option<Self>
-    where
-        Self: Sized;
+        where Self: Sized;
 
     /// the untyped node underneath - the escape hatch back to the CST.
     fn syntax(&self) -> &SyntaxNode;
@@ -57,10 +55,8 @@ pub struct AstChildren<N> {
 
 impl<N> AstChildren<N> {
     fn new(parent: &SyntaxNode) -> Self {
-        AstChildren {
-            inner: parent.children(),
-            ph: PhantomData,
-        }
+        AstChildren { inner: parent.children(),
+                      ph: PhantomData }
     }
 }
 
@@ -76,8 +72,9 @@ impl<N: AstNode> Iterator for AstChildren<N> {
 /// cheap cursor walk over a node's immediate children - recomputed on every
 /// call, never cached.
 pub mod support {
-    use super::{AstChildren, AstNode};
     use syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
+
+    use super::{AstChildren, AstNode};
 
     /// the first child node castable to `N`.
     pub fn child<N: AstNode>(parent: &SyntaxNode) -> Option<N> {
@@ -92,10 +89,9 @@ pub mod support {
     /// the first *direct* child token of exactly `kind`. tokens nested inside
     /// a child node are not direct children, so this never reaches into them.
     pub fn token(parent: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxToken> {
-        parent
-            .children_with_tokens()
-            .filter_map(|e| e.into_token())
-            .find(|t| t.kind() == kind)
+        parent.children_with_tokens()
+              .filter_map(|e| e.into_token())
+              .find(|t| t.kind() == kind)
     }
 }
 
@@ -163,13 +159,13 @@ impl Literal {
     /// the literal's category, derived from its token kind.
     pub fn literal_kind(&self) -> Option<LiteralKind> {
         Some(match self.token()?.kind() {
-            SyntaxKind::Int => LiteralKind::Int,
-            SyntaxKind::Float => LiteralKind::Float,
-            SyntaxKind::String => LiteralKind::String,
-            SyntaxKind::True | SyntaxKind::False => LiteralKind::Bool,
-            SyntaxKind::Char => LiteralKind::Char,
-            _ => return None,
-        })
+                 SyntaxKind::Int => LiteralKind::Int,
+                 SyntaxKind::Float => LiteralKind::Float,
+                 SyntaxKind::String => LiteralKind::String,
+                 SyntaxKind::True | SyntaxKind::False => LiteralKind::Bool,
+                 SyntaxKind::Char => LiteralKind::Char,
+                 _ => return None,
+             })
     }
 }
 
@@ -201,26 +197,26 @@ impl BinOp {
     /// the operator a token kind denotes, or `None` for a non-operator kind.
     fn from_kind(kind: SyntaxKind) -> Option<BinOp> {
         Some(match kind {
-            T![+] => BinOp::Add,
-            T![-] => BinOp::Sub,
-            T![*] => BinOp::Mul,
-            T![/] => BinOp::Div,
-            T![%] => BinOp::Rem,
-            T![&&] => BinOp::And,
-            T![||] => BinOp::Or,
-            T![==] => BinOp::Eq,
-            T![!=] => BinOp::Neq,
-            T![<] => BinOp::Lt,
-            T![>] => BinOp::Gt,
-            T![<=] => BinOp::Leq,
-            T![>=] => BinOp::Geq,
-            T![&] => BinOp::BitAnd,
-            T![|] => BinOp::BitOr,
-            T![^] => BinOp::BitXor,
-            T![<<] => BinOp::Shl,
-            T![>>] => BinOp::Shr,
-            _ => return None,
-        })
+                 T![+] => BinOp::Add,
+                 T![-] => BinOp::Sub,
+                 T![*] => BinOp::Mul,
+                 T![/] => BinOp::Div,
+                 T![%] => BinOp::Rem,
+                 T![&&] => BinOp::And,
+                 T![||] => BinOp::Or,
+                 T![==] => BinOp::Eq,
+                 T![!=] => BinOp::Neq,
+                 T![<] => BinOp::Lt,
+                 T![>] => BinOp::Gt,
+                 T![<=] => BinOp::Leq,
+                 T![>=] => BinOp::Geq,
+                 T![&] => BinOp::BitAnd,
+                 T![|] => BinOp::BitOr,
+                 T![^] => BinOp::BitXor,
+                 T![<<] => BinOp::Shl,
+                 T![>>] => BinOp::Shr,
+                 _ => return None,
+             })
     }
 }
 
@@ -279,11 +275,11 @@ impl UnaryOp {
     /// the prefix operator a token kind denotes, or `None` otherwise.
     fn from_kind(kind: SyntaxKind) -> Option<UnaryOp> {
         Some(match kind {
-            T![-] => UnaryOp::Neg,
-            T![!] => UnaryOp::Not,
-            T![~] => UnaryOp::BitNot,
-            _ => return None,
-        })
+                 T![-] => UnaryOp::Neg,
+                 T![!] => UnaryOp::Not,
+                 T![~] => UnaryOp::BitNot,
+                 _ => return None,
+             })
     }
 }
 
@@ -329,19 +325,19 @@ impl AssignOp {
     /// the assignment operator a token kind denotes, or `None` otherwise.
     fn from_kind(kind: SyntaxKind) -> Option<AssignOp> {
         Some(match kind {
-            T![=] => AssignOp::Assign,
-            T![+=] => AssignOp::AddAssign,
-            T![-=] => AssignOp::SubAssign,
-            T![*=] => AssignOp::MulAssign,
-            T![/=] => AssignOp::DivAssign,
-            T![%=] => AssignOp::RemAssign,
-            T![&=] => AssignOp::BitAndAssign,
-            T![|=] => AssignOp::BitOrAssign,
-            T![^=] => AssignOp::BitXorAssign,
-            T![<<=] => AssignOp::ShlAssign,
-            T![>>=] => AssignOp::ShrAssign,
-            _ => return None,
-        })
+                 T![=] => AssignOp::Assign,
+                 T![+=] => AssignOp::AddAssign,
+                 T![-=] => AssignOp::SubAssign,
+                 T![*=] => AssignOp::MulAssign,
+                 T![/=] => AssignOp::DivAssign,
+                 T![%=] => AssignOp::RemAssign,
+                 T![&=] => AssignOp::BitAndAssign,
+                 T![|=] => AssignOp::BitOrAssign,
+                 T![^=] => AssignOp::BitXorAssign,
+                 T![<<=] => AssignOp::ShlAssign,
+                 T![>>=] => AssignOp::ShrAssign,
+                 _ => return None,
+             })
     }
 
     /// the binary operator a compound assignment desugars to (`a += b` is
@@ -349,18 +345,18 @@ impl AssignOp {
     /// compound form uniformly instead of enumerating each one.
     pub fn to_bin_op(self) -> Option<BinOp> {
         Some(match self {
-            AssignOp::Assign => return None,
-            AssignOp::AddAssign => BinOp::Add,
-            AssignOp::SubAssign => BinOp::Sub,
-            AssignOp::MulAssign => BinOp::Mul,
-            AssignOp::DivAssign => BinOp::Div,
-            AssignOp::RemAssign => BinOp::Rem,
-            AssignOp::BitAndAssign => BinOp::BitAnd,
-            AssignOp::BitOrAssign => BinOp::BitOr,
-            AssignOp::BitXorAssign => BinOp::BitXor,
-            AssignOp::ShlAssign => BinOp::Shl,
-            AssignOp::ShrAssign => BinOp::Shr,
-        })
+                 AssignOp::Assign => return None,
+                 AssignOp::AddAssign => BinOp::Add,
+                 AssignOp::SubAssign => BinOp::Sub,
+                 AssignOp::MulAssign => BinOp::Mul,
+                 AssignOp::DivAssign => BinOp::Div,
+                 AssignOp::RemAssign => BinOp::Rem,
+                 AssignOp::BitAndAssign => BinOp::BitAnd,
+                 AssignOp::BitOrAssign => BinOp::BitOr,
+                 AssignOp::BitXorAssign => BinOp::BitXor,
+                 AssignOp::ShlAssign => BinOp::Shl,
+                 AssignOp::ShrAssign => BinOp::Shr,
+             })
     }
 }
 
@@ -395,8 +391,9 @@ impl AssignExpr {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use lexer::{Lexer, SourceText};
+
+    use super::*;
 
     /// lex + parse `src` and cast the CST root to a typed [`SourceFile`].
     fn source_file(src: &str) -> SourceFile {

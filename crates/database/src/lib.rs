@@ -73,6 +73,7 @@ pub struct SourceFileInput {
 /// must re-run.
 #[salsa::interned(debug)]
 pub struct StableFnId<'db> {
+    #[returns(copy)]
     pub file: SourceFileInput,
     pub ptr: SyntaxNodePtr,
 }
@@ -295,7 +296,7 @@ pub fn parse(db: &dyn salsa::Database, file: SourceFileInput) -> Memo<ParseResul
     let lexed = lex(db, file);
     let parse = parser::parse(&lexed.tokens, &source);
     Memo::new(ParseResult {
-        green: parse.green.green().into(),
+        green: parse.green.green().to_owned(),
         diagnostics: parse.diagnostics,
     })
 }
@@ -337,7 +338,7 @@ pub fn lower_fn<'db>(db: &'db dyn salsa::Database, fn_id: StableFnId<'db>) -> Me
     let arena_id = scope
         .fns
         .iter()
-        .find(|(_, p)| *p == ptr)
+        .find(|(_, p)| p == ptr)
         .map(|(id, _)| *id)
         .expect("StableFnId ptr is a collected function");
 
@@ -375,10 +376,10 @@ pub fn typeck_fn<'db>(db: &'db dyn salsa::Database, fn_id: StableFnId<'db>) -> M
     let arena_id = scope
         .fns
         .iter()
-        .find(|(_, p)| *p == ptr)
+        .find(|(_, p)| p == ptr)
         .map(|(id, _)| *id)
         .expect("StableFnId ptr is a collected function");
-    let fn_ret = scope.scope.functions[arena_id].ret;
+    let fn_ret =scope.scope.functions[arena_id].ret;
     let fn_ret_span = scope.scope.functions[arena_id].ret_span.clone();
 
     // no interner clone (S6): `lower_fn` interned this body's types into the

@@ -10,9 +10,6 @@ expression: c
 
 int printf(const char *, ...);
 
-typedef struct __eye_arr_2_5uint8 __eye_arr_2_5uint8;
-
-struct __eye_arr_2_5uint8 { uint8_t data[2]; };
 void __eye_main(void) {
 	int32_t x_0 = 42;
 	printf("%d\n", x_0);

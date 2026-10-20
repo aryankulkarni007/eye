@@ -14,10 +14,8 @@ fn main() -> anyhow::Result<()> {
     let input_path: &Path = cli.input.as_path();
 
     if input_path.extension().and_then(|e| e.to_str()) != Some("eye") {
-        eprintln!(
-            "error: expected a `.eye` source file, got `{}`",
-            input_path.display()
-        );
+        eprintln!("error: expected a `.eye` source file, got `{}`",
+                  input_path.display());
         return Err(anyhow::anyhow!("expected a `.eye` source file"));
     }
 
@@ -34,12 +32,10 @@ fn main() -> anyhow::Result<()> {
     // --- lex ---
     let lexed = database::lex(&db, file);
     if !lexed.diags.is_empty() {
-        diagnostics::render(
-            &source,
-            lexed.diags.clone().into_diags(),
-            None,
-            Some(input_path),
-        );
+        diagnostics::render(&source,
+                            lexed.diags.clone().into_diags(),
+                            None,
+                            Some(input_path));
         return Err(anyhow::anyhow!("lexer errors"));
     }
 
@@ -57,12 +53,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     if !parse.diagnostics.is_empty() {
-        diagnostics::render(
-            &source,
-            parse.diagnostics.clone().into_diags(),
-            Some(&root),
-            Some(input_path),
-        );
+        diagnostics::render(&source,
+                            parse.diagnostics.clone().into_diags(),
+                            Some(&root),
+                            Some(input_path));
         return Err(anyhow::anyhow!("parser errors"));
     }
 
@@ -97,13 +91,15 @@ fn main() -> anyhow::Result<()> {
         }
     }
     if !front_diags.is_empty() {
-        diagnostics::render(
-            &source,
-            front_diags.into_diags(),
-            Some(&root),
-            Some(input_path),
-        );
-        return Err(anyhow::anyhow!("HIR lowering errors"));
+        // warnings render but do not fail the build: only an `Error`-severity
+        // entry halts before codegen (the T1 lints are warning-severity).
+        let diags = front_diags.into_diags();
+        let fatal = diags.iter()
+                         .any(|d| d.kind.severity() == ::diagnostics::Severity::Error);
+        diagnostics::render(&source, diags, Some(&root), Some(input_path));
+        if fatal {
+            return Err(anyhow::anyhow!("HIR lowering errors"));
+        }
     }
 
     // `--check` stops after lowering: every diagnostic phase has run (lexer

@@ -10,6 +10,7 @@ mod branches;
 mod calls;
 mod casts;
 mod let_init;
+mod lints;
 mod matches;
 mod range_arith;
 mod returns;
@@ -31,6 +32,27 @@ fn lower(src: &str) -> HIR {
     hir
 }
 
+/// error-severity diagnostics only: the accepted-case assertions mean "no
+/// errors"; the T1 lints (warning severity) fire on fixtures freely (an
+/// unused binding in a test program is not a rejection). lint assertions use
+/// [`warnings`].
 fn diags(hir: &HIR) -> Vec<&HirError> {
-    hir.diagnostics.entries().iter().map(|(_, e)| e).collect()
+    use diagnostics::Diagnostic as _;
+    hir.diagnostics
+        .entries()
+        .iter()
+        .filter(|(_, e)| e.severity() == diagnostics::Severity::Error)
+        .map(|(_, e)| e)
+        .collect()
+}
+
+/// warning-severity diagnostics (the T1 lints).
+fn warnings(hir: &HIR) -> Vec<&HirError> {
+    use diagnostics::Diagnostic as _;
+    hir.diagnostics
+        .entries()
+        .iter()
+        .filter(|(_, e)| e.severity() == diagnostics::Severity::Warning)
+        .map(|(_, e)| e)
+        .collect()
 }
